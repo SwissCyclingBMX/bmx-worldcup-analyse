@@ -1033,8 +1033,8 @@ with tab_start:
                 race_color = "#999"
             return (
                 f"<div style='line-height:1.1'>"
-                f"<div style='font-size:14px;color:{race_color};font-weight:600'>{race_txt}</div>"
-                f"<div style='font-size:11px;color:{train_color}'>{train_txt}</div>"
+                f"<div style='font-size:14px;color:{race_color} !important;font-weight:600'>{race_txt}</div>"
+                f"<div style='font-size:11px;color:{train_color} !important'>{train_txt}</div>"
                 f"</div>"
             )
 
