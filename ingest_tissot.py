@@ -10,7 +10,7 @@ import requests
 from ingest import init_db, upsert_event, upsert_picks, now_iso
 
 
-BASE = "https://prod.server.tissottiming.com/competitions/bmxwch2025"
+BASE_DEFAULT = "https://prod.server.tissottiming.com/competitions/bmxwch2025"
 DEFAULT_EVENT_ID = "20250726_wch_bmx"
 
 
@@ -32,9 +32,9 @@ def map_group_id(name: str) -> Optional[int]:
         return 93
     if "women u23" in n:
         return 94
-    if "men junior" in n:
+    if "men junior" in n or "junior men" in n:
         return 95
-    if "women junior" in n:
+    if "women junior" in n or "junior women" in n:
         return 96
     return None
 
@@ -89,22 +89,22 @@ def extract_split(result: Dict[str, Any], key_name: str) -> Optional[str]:
     return None
 
 
-def fetch_events() -> List[Dict[str, Any]]:
-    data = http_get_json(f"{BASE}/events")
+def fetch_events(base: str) -> List[Dict[str, Any]]:
+    data = http_get_json(f"{base}/events")
     return data if isinstance(data, list) else []
 
 
-def fetch_phases(event_num: int) -> List[Dict[str, Any]]:
-    data = http_get_json(f"{BASE}/events/{event_num}/phases")
+def fetch_phases(base: str, event_num: int) -> List[Dict[str, Any]]:
+    data = http_get_json(f"{base}/events/{event_num}/phases")
     return data if isinstance(data, list) else []
 
 
-def fetch_results(event_num: int, phase_num: int) -> Dict[str, Any]:
-    return http_get_json(f"{BASE}/events/{event_num}/phases/{phase_num}/results")
+def fetch_results(base: str, event_num: int, phase_num: int) -> Dict[str, Any]:
+    return http_get_json(f"{base}/events/{event_num}/phases/{phase_num}/results")
 
 
-def fetch_startlist(event_num: int, phase_num: int) -> Dict[str, Any]:
-    return http_get_json(f"{BASE}/events/{event_num}/phases/{phase_num}/startlist")
+def fetch_startlist(base: str, event_num: int, phase_num: int) -> Dict[str, Any]:
+    return http_get_json(f"{base}/events/{event_num}/phases/{phase_num}/startlist")
 
 
 def build_pick_order_map(startlist_json: Dict[str, Any]) -> Dict[tuple, int]:
@@ -127,22 +127,22 @@ def build_pick_order_map(startlist_json: Dict[str, Any]) -> Dict[tuple, int]:
     return result
 
 
-def ingest_tissot(event_id: str, only_events: Optional[List[int]] = None) -> int:
+def ingest_tissot(base: str, event_id: str, display_name: str, event_date: str, only_events: Optional[List[int]] = None) -> int:
     conn = sqlite3.connect("bmx.db")
     init_db(conn)
 
     # Event meta (single WM event_id)
     meta = {
         "event_id": event_id,
-        "display_name": "2025 BMX World Championships",
+        "display_name": display_name,
         "location": "World Championships",
         "country": None,
-        "event_date": "2025-07-26",
+        "event_date": event_date,
         "last_seen": now_iso(),
     }
     upsert_event(conn, meta)
 
-    events = fetch_events()
+    events = fetch_events(base)
     total_rows = 0
     seen_at = now_iso()
 
@@ -157,7 +157,7 @@ def ingest_tissot(event_id: str, only_events: Optional[List[int]] = None) -> int
         ev_name = ev.get("name") or ""
         group_id = map_group_id(ev_name)
 
-        phases = fetch_phases(ev_num)
+        phases = fetch_phases(base, ev_num)
         for ph in phases:
             ph_num = ph.get("number") or ph.get("id")
             if ph_num is None:
@@ -169,13 +169,13 @@ def ingest_tissot(event_id: str, only_events: Optional[List[int]] = None) -> int
 
             pick_order_map: Dict[tuple, int] = {}
             try:
-                startlist = fetch_startlist(ev_num, ph_num)
+                startlist = fetch_startlist(base, ev_num, ph_num)
                 if isinstance(startlist, dict):
                     pick_order_map = build_pick_order_map(startlist)
             except Exception:
                 pick_order_map = {}
 
-            data = fetch_results(ev_num, ph_num)
+            data = fetch_results(base, ev_num, ph_num)
             heats = data.get("heats") or []
             for heat in heats:
                 heat_name = heat.get("name") or ""
@@ -237,6 +237,25 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--event-id", default=DEFAULT_EVENT_ID)
     ap.add_argument(
+        "--competition",
+        default="bmxwch2025",
+        help="Tissot competition id, e.g. bmxwch2025, bmxwch2024",
+    )
+    ap.add_argument(
+        "--event-date",
+        default="2025-07-26",
+        help="Event date (YYYY-MM-DD) stored in events table",
+    )
+    ap.add_argument(
+        "--display-name",
+        default="BMX World Championships",
+        help="Display name stored in events table",
+    )
+    ap.add_argument(
+        "--years",
+        help="Comma-separated years to import (e.g. 2024,2023,2022). Overrides --competition/--event-id.",
+    )
+    ap.add_argument(
         "--only-events",
         help="Comma-separated event numbers (e.g. 1,2,3) to restrict import",
     )
@@ -246,8 +265,35 @@ def main() -> None:
     if args.only_events:
         only_events = [int(x.strip()) for x in args.only_events.split(",") if x.strip().isdigit()]
 
-    rows = ingest_tissot(args.event_id, only_events=only_events)
-    print(f"[tissot] imported rows: {rows}")
+    total = 0
+    if args.years:
+        years = [y.strip() for y in args.years.split(",") if y.strip().isdigit()]
+        for y in years:
+            comp = f"bmxwch{y}"
+            base = f"https://prod.server.tissottiming.com/competitions/{comp}"
+            event_id = f"{y}0802_wch_bmx"
+            display = f"BMX World Championships {y}"
+            rows = ingest_tissot(
+                base=base,
+                event_id=event_id,
+                display_name=display,
+                event_date=f"{y}-08-02",
+                only_events=only_events,
+            )
+            print(f"[tissot] {y}: imported rows: {rows}")
+            total += rows
+    else:
+        base = f"https://prod.server.tissottiming.com/competitions/{args.competition}"
+        rows = ingest_tissot(
+            base=base,
+            event_id=args.event_id,
+            display_name=args.display_name,
+            event_date=args.event_date,
+            only_events=only_events,
+        )
+        print(f"[tissot] imported rows: {rows}")
+        total = rows
+    print(f"[tissot] total imported: {total}")
 
 
 if __name__ == "__main__":
