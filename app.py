@@ -1,5 +1,7 @@
 import sqlite3
 import os
+import zipfile
+import requests
 import unicodedata
 import datetime
 import re
@@ -10,6 +12,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 DB_PATH = "bmx.db"
+DB_URL_ZIP = "https://github.com/SwissCyclingBMX/bmx-worldcup-analyse/releases/download/db-latest/bmx_db.zip"
+DB_PATH_CLOUD = "/tmp/bmx.db"
 
 GROUP_MAP = {
     91: "Elite Men",
@@ -58,9 +62,21 @@ def safe_in_clause(values: List[str]) -> Tuple[str, List[str]]:
 # ----------------------------
 @st.cache_data(ttl=30)
 def load_events(cache_bust: int = 0) -> pd.DataFrame:
-    if not os.path.exists(DB_PATH):
-        return pd.DataFrame()
-    conn = sqlite3.connect(DB_PATH)
+    db_path = DB_PATH if os.path.exists(DB_PATH) else DB_PATH_CLOUD
+    if not os.path.exists(db_path):
+        # try download from GitHub release (Streamlit Cloud)
+        try:
+            r = requests.get(DB_URL_ZIP, timeout=30)
+            r.raise_for_status()
+            zip_path = "/tmp/bmx_db.zip"
+            with open(zip_path, "wb") as f:
+                f.write(r.content)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extract("bmx.db", "/tmp")
+            db_path = DB_PATH_CLOUD
+        except Exception:
+            return pd.DataFrame()
+    conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
             """
@@ -149,9 +165,10 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
 
 @st.cache_data(ttl=10)
 def load_picks_for_event(event_id: str) -> pd.DataFrame:
-    if not os.path.exists(DB_PATH):
+    db_path = DB_PATH if os.path.exists(DB_PATH) else DB_PATH_CLOUD
+    if not os.path.exists(db_path):
         return pd.DataFrame()
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
             "SELECT * FROM picks WHERE event_id = ?",
@@ -165,14 +182,15 @@ def load_picks_for_event(event_id: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=10)
 def load_picks_for_events(event_ids: List[str]) -> pd.DataFrame:
-    if not os.path.exists(DB_PATH):
+    db_path = DB_PATH if os.path.exists(DB_PATH) else DB_PATH_CLOUD
+    if not os.path.exists(db_path):
         return pd.DataFrame()
     event_ids = [e for e in event_ids if e]
     if not event_ids:
         return pd.DataFrame()
 
     in_sql, params = safe_in_clause(event_ids)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
             f"SELECT * FROM picks WHERE event_id IN {in_sql}",
@@ -300,12 +318,15 @@ def normalize_training_name(name: str) -> str:
 
 @st.cache_data(ttl=10)
 def load_training_for_events(event_ids: List[str]) -> pd.DataFrame:
+    db_path = DB_PATH if os.path.exists(DB_PATH) else DB_PATH_CLOUD
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
     event_ids = [e for e in event_ids if e]
     if not event_ids:
         return pd.DataFrame()
 
     in_sql, params = safe_in_clause(event_ids)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
             f"""
