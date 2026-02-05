@@ -1,4 +1,5 @@
 import sqlite3
+import os
 import unicodedata
 import datetime
 import re
@@ -57,6 +58,8 @@ def safe_in_clause(values: List[str]) -> Tuple[str, List[str]]:
 # ----------------------------
 @st.cache_data(ttl=30)
 def load_events(cache_bust: int = 0) -> pd.DataFrame:
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
     conn = sqlite3.connect(DB_PATH)
     try:
         df = pd.read_sql_query(
@@ -146,6 +149,8 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
 
 @st.cache_data(ttl=10)
 def load_picks_for_event(event_id: str) -> pd.DataFrame:
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
     conn = sqlite3.connect(DB_PATH)
     try:
         df = pd.read_sql_query(
@@ -160,6 +165,8 @@ def load_picks_for_event(event_id: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=10)
 def load_picks_for_events(event_ids: List[str]) -> pd.DataFrame:
+    if not os.path.exists(DB_PATH):
+        return pd.DataFrame()
     event_ids = [e for e in event_ids if e]
     if not event_ids:
         return pd.DataFrame()
