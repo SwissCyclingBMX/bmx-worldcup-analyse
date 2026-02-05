@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Data / outputs
+bmx.db
+V1_bmx.db
+out/
+*.xls
+*.xlsx
+
+# OS
+.DS_Store
+
+# Streamlit cache
+.streamlit/

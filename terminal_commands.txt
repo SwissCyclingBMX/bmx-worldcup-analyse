@@ -1,0 +1,33 @@
+# BMX Heat Scout – Terminal Commands
+
+# 0) In den Projektordner wechseln
+cd /Users/davidgraf/BMX_WorldCup_Analyse
+
+# 1) Live-DB-Update starten (Polling)
+# Ersetze EVENT_ID durch das Live-Event, z.B. 20250921_bmx
+python3 ingest.py --events EVENT_ID --sleep 15
+
+# 2) App starten (neues Terminal-Fenster/Tab)
+streamlit run app.py
+
+# 3) Einmaliger Import (historisch) – alle bisher bekannten Events
+python3 ingest.py --events \
+  20210508_bmx 20210509_bmx 20210529_bmx 20210530_bmx 20211023_bmx 20211024_bmx 20211030_bmx 20211031_bmx \
+  20220528_bmx 20220529_bmx 20220611_bmx 20220612_bmx 20220924_bmx 20220925_bmx 20221001_bmx 20221002_bmx \
+  20230603_bmx 20230604_bmx 20230624_bmx 20230625_bmx 20230923_bmx 20230924_bmx 20231007_bmx 20231008_bmx \
+  20231013_bmx 20231014_bmx 20240210_bmx 20240211_bmx 20240224_bmx 20240225_bmx 20240427_bmx 20240428_bmx \
+  20250614_bmx 20250615_bmx 20250621_bmx 20250622_bmx 20250920_bmx 20250921_bmx \
+  --once
+
+# 4) Training-Import (automatischer Download) – nur Events 2025+
+for ev in \
+  20250614_bmx 20250615_bmx 20250621_bmx 20250622_bmx 20250920_bmx 20250921_bmx
+ do
+  python3 import_training.py --event "$ev"
+ done
+
+# Optional: Einmaliger Import (historisch) für ein einzelnes Event
+# python3 ingest.py --events EVENT_ID --once
+
+# Optional: Training-Import für ein einzelnes Event
+# python3 import_training.py --event EVENT_ID
