@@ -1039,6 +1039,7 @@ with tab_start:
             )
 
         view = start_df.copy()
+        view["is_baseline"] = view["name"] == rider_selected
         # Avoid duplicate Rider column
         if "name" in view.columns and "Rider" in view.columns:
             view = view.drop(columns=["name"])
@@ -1051,7 +1052,7 @@ with tab_start:
                 r.get("train_best_start"),
                 "race_best_start",
                 "train_best_start",
-                r.get("name") == rider_selected,
+                r.get("is_baseline"),
             ),
             axis=1,
         )
@@ -1061,18 +1062,18 @@ with tab_start:
                 r.get("train_avg3_start"),
                 "race_avg3_start",
                 "train_avg3_start",
-                r.get("name") == rider_selected,
+                r.get("is_baseline"),
             ),
             axis=1,
         )
         view["Best T1"] = view.apply(
-            lambda r: combined_cell(r.get("race_best_t1"), r.get("train_best_t1"), "", "", r.get("name") == rider_selected), axis=1
+            lambda r: combined_cell(r.get("race_best_t1"), r.get("train_best_t1"), "", "", r.get("is_baseline")), axis=1
         )
         view["Ø3 T1"] = view.apply(
-            lambda r: combined_cell(r.get("race_avg3_t1"), r.get("train_avg3_t1"), "", "", r.get("name") == rider_selected), axis=1
+            lambda r: combined_cell(r.get("race_avg3_t1"), r.get("train_avg3_t1"), "", "", r.get("is_baseline")), axis=1
         )
         view["Score"] = view.apply(
-            lambda r: combined_cell(r.get("race_cons_score"), r.get("train_cons_score"), "", "", r.get("name") == rider_selected), axis=1
+            lambda r: combined_cell(r.get("race_cons_score"), r.get("train_cons_score"), "", "", r.get("is_baseline")), axis=1
         )
 
         show_cols = [
