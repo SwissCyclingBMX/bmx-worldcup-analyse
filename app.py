@@ -229,6 +229,20 @@ def live_event_ids_today(events_df: pd.DataFrame) -> List[str]:
     return sorted(live_ids)
 
 
+def short_name(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    parts = [p for p in name.strip().split() if p]
+    if not parts:
+        return ""
+    # If multiple parts, show first initial + last token
+    if len(parts) >= 2:
+        first = parts[0][0].upper()
+        last = parts[-1]
+        return f"{first}. {last}"
+    return parts[0]
+
+
 def normalize_picks_df(df: pd.DataFrame) -> pd.DataFrame:
     """Make columns consistent across historical schema changes."""
     if df is None or df.empty:
@@ -272,6 +286,11 @@ def normalize_picks_df(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["start_dt"] = pd.NaT
 
+    # start_time_string: trim to HH:MM:SS
+    if "start_time_string" in df.columns:
+        sts = df["start_time_string"].fillna("").astype(str)
+        df["start_time_string"] = sts.str.slice(0, 8)
+
     # group_id numeric
     df["group_id"] = pd.to_numeric(df["group_id"], errors="coerce").astype("Int64")
 
@@ -288,6 +307,7 @@ def normalize_picks_df(df: pd.DataFrame) -> pd.DataFrame:
     # Name normalization for analysis grouping
     df["name_norm"] = df["name"].apply(norm_name)
     df["name_key"] = df["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
+    df["name_short"] = df["name"].apply(short_name)
 
     return df
 
@@ -396,6 +416,9 @@ def training_stats(df_train: pd.DataFrame) -> pd.DataFrame:
         name=("name", canonical_name),
         cons_score=("start_s", consistency_score),
     )
+    # round averages for display
+    for c in ["avg_top3_start", "avg_top3_t1", "best_start", "best_t1"]:
+        out[c] = out[c].round(3)
     return out
 
 
@@ -436,6 +459,9 @@ def race_stats(df_race: pd.DataFrame) -> pd.DataFrame:
         name=("name", canonical_name),
         cons_score=("start_s", consistency_score),
     )
+    # round averages for display
+    for c in ["avg_top3_start", "avg_top3_t1", "best_start", "best_t1"]:
+        out[c] = out[c].round(3)
     return out
 
 
@@ -611,6 +637,7 @@ def lane_distribution(df_hist: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------
 st.set_page_config(page_title="BMX Heat Scout", layout="wide")
 st.title("BMX Heat Scout")
+st.caption("Live-Ansicht aktualisiert sich bei Interaktionen (kein Auto-Refresh).")
 
 if "cache_bust" not in st.session_state:
     st.session_state["cache_bust"] = 0
@@ -673,23 +700,34 @@ if df_event.empty:
 # Filters (order: Nation, Rider, Kategorie, Geschlecht)
 nation = st.sidebar.text_input("Nation Filter (z.B. SUI) – leer = alle", value="SUI").strip().upper()
 show_times = st.sidebar.checkbox("Zeiten anzeigen (Start/T1)", value=True)
+training_live = st.sidebar.checkbox("Training-Live Ansicht", value=False)
 
-# Rider filter (only affects heat filtering)
+# Rider filter(s)
 all_names = sorted([n for n in df_event["name"].dropna().unique().tolist() if isinstance(n, str) and n.strip()])
 if "rider_filter" not in st.session_state:
     st.session_state["rider_filter"] = []
 
-options_riders = st.session_state["rider_filter"] if st.session_state["rider_filter"] else all_names
-rider_selected_list = st.sidebar.multiselect(
-    "Rider Filter (optional, leer = alle)",
-    options=options_riders,
-    key="rider_filter",
-)
-if len(rider_selected_list) > 1:
-    st.sidebar.warning("Bitte nur einen Rider auswählen.")
-    st.session_state["rider_filter"] = rider_selected_list[:1]
-    rider_selected_list = rider_selected_list[:1]
-rider_selected = rider_selected_list[0] if rider_selected_list else "Alle"
+if training_live:
+    rider_live_selected = st.sidebar.multiselect(
+        "Rider Filter (Live, leer = alle)",
+        options=all_names,
+        default=[],
+        key="rider_filter_live",
+    )
+    rider_selected = "Alle"
+else:
+    options_riders = st.session_state["rider_filter"] if st.session_state["rider_filter"] else all_names
+    rider_selected_list = st.sidebar.multiselect(
+        "Rider Filter (optional, leer = alle)",
+        options=options_riders,
+        key="rider_filter",
+    )
+    if len(rider_selected_list) > 1:
+        st.sidebar.warning("Bitte nur einen Rider auswählen.")
+        st.session_state["rider_filter"] = rider_selected_list[:1]
+        rider_selected_list = rider_selected_list[:1]
+    rider_selected = rider_selected_list[0] if rider_selected_list else "Alle"
+    rider_live_selected = []
 
 # Kategorie Filter
 level_sel = st.sidebar.multiselect(
@@ -735,6 +773,82 @@ if st.sidebar.button("Cache leeren"):
     st.experimental_rerun()
 
 # (Rider filter moved above)
+
+# ----------------------------
+# Training Live View
+# ----------------------------
+if training_live:
+    st.subheader("Training Live – Zeiten (aktuelles Event)")
+
+    metric_options = {
+        "Start to Bottom": "start",
+        "Start to Turn 1": "t1",
+        "Split first Straight": "split_t1",
+    }
+    metric_label = st.selectbox("Rundenzeit anzeigen:", list(metric_options.keys()), index=0, key="live_metric")
+    metric_col = metric_options[metric_label]
+
+    df_live = df_event.copy()
+    if nation:
+        df_live = df_live[df_live["nation"].fillna("").str.upper() == nation]
+    if rider_live_selected:
+        df_live = df_live[df_live["name"].isin(rider_live_selected)]
+
+    if df_live.empty:
+        st.info("Keine Live-Trainingsdaten mit den aktuellen Filtern.")
+        st.stop()
+
+    df_live["start_s"] = df_live["start"].apply(parse_time_to_seconds)
+    df_live["t1_s"] = df_live["t1"].apply(parse_time_to_seconds)
+    df_live["split_t1"] = df_live["t1_s"] - df_live["start_s"]
+    if metric_col in ["start", "t1"]:
+        df_live["metric_s"] = df_live[metric_col + "_s"]
+    else:
+        df_live["metric_s"] = df_live[metric_col]
+
+    # Row key = start_time_string (fallback to heat_id)
+    df_live["start_label"] = df_live["start_time_string"].fillna("").astype(str)
+    df_live.loc[df_live["start_label"] == "", "start_label"] = df_live["heat_id"].astype(str)
+
+    riders = rider_live_selected if rider_live_selected else sorted(df_live["name"].dropna().unique().tolist())
+    mat = (
+        df_live[df_live["name"].isin(riders)]
+        .groupby(["start_label", "name"])["metric_s"]
+        .min()
+        .reset_index()
+        .pivot(index="start_label", columns="name", values="metric_s")
+    )
+    mat = mat.reindex(columns=riders)
+    mat = mat.reset_index().rename(columns={"start_label": "Start"})
+    st.dataframe(mat, use_container_width=True, height=320, hide_index=True)
+
+    # Last available gate table
+    st.markdown("**Letzte verfügbare Gates (aktuellste Messung):**")
+    df_last = df_live.copy()
+    # derive a sortable time key from start_time_string
+    df_last["start_ts"] = pd.to_timedelta(df_last["start_time_string"], errors="coerce")
+    if df_last["start_ts"].notna().any():
+        latest_ts = df_last["start_ts"].max()
+        df_last = df_last[df_last["start_ts"] == latest_ts].copy()
+    else:
+        df_last = df_last.sort_values(["heat_id"], ascending=False).head(8).copy()
+
+    df_last = df_last.sort_values(["lane_idx", "lane"], na_position="last", kind="stable")
+    # compute split for display
+    df_last["split"] = df_last["t1_s"] - df_last["start_s"]
+    last_cols = ["start_time_string", "name", "start", "split", "t1"]
+    last_cols = [c for c in last_cols if c in df_last.columns]
+    df_last = df_last[last_cols].rename(
+        columns={
+            "start_time_string": "Starttime",
+            "name": "Name",
+            "start": "Start",
+            "split": "Split",
+            "t1": "T1",
+        }
+    )
+    st.dataframe(df_last, use_container_width=True, height=240, hide_index=True)
+    st.stop()
 
 # ----------------------------
 # Heats table + selection
@@ -784,395 +898,439 @@ hid = int(chosen["heat_id"])
 gid = int(chosen["group_id"]) if pd.notna(chosen.get("group_id")) else None
 
 # Startlist (PickOrder / Lane)
-st.subheader("Startliste (PickOrder / Lane)")
+tab_start, tab_rounds = st.tabs(["Startliste - Gate Pick", "Time Analyse"])
 
-df_heat = df_event[(df_event["round_key"] == rk) & (df_event["heat_id"] == hid)].copy()
-if gid is not None:
-    df_heat = df_heat[df_heat["group_id"] == gid].copy()
-df_heat["name_norm"] = df_heat["name"].apply(norm_name)
-df_heat["name_key"] = df_heat["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
+with tab_start:
+    st.subheader("Startliste (PickOrder / Lane)")
 
-df_heat = df_heat.sort_values(["pick_order"], na_position="last", kind="stable")
+    df_heat = df_event[(df_event["round_key"] == rk) & (df_event["heat_id"] == hid)].copy()
+    if gid is not None:
+        df_heat = df_heat[df_heat["group_id"] == gid].copy()
+    df_heat["name_norm"] = df_heat["name"].apply(norm_name)
+    df_heat["name_key"] = df_heat["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
 
-start_cols = ["nation", "bib", "name", "pick_order", "chosen_lane"]
-start_cols = [c for c in start_cols if c in df_heat.columns]
-start_df = df_heat[start_cols].copy()
-start_df["name_norm"] = start_df["name"].apply(norm_name)
-start_df["name_key"] = start_df["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
+    df_heat = df_heat.sort_values(["pick_order"], na_position="last", kind="stable")
 
-# Training stats for riders in heat
-if show_times:
-    df_train = load_training_for_events(analysis_event_ids)
-    if not df_train.empty:
-        stats = training_stats(df_train)
-        stats_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]
-        stats = stats[stats_cols]
-        start_df = start_df.merge(stats, on="name_key", how="left")
-        start_df = start_df.rename(
-            columns={
-                "best_start": "train_best_start",
-                "best_t1": "train_best_t1",
-                "avg_top3_start": "train_avg3_start",
-                "avg_top3_t1": "train_avg3_t1",
-                "cons_score": "train_cons_score",
-            }
-        )
+    start_cols = ["nation", "bib", "name", "pick_order", "chosen_lane"]
+    start_cols = [c for c in start_cols if c in df_heat.columns]
+    start_df = df_heat[start_cols].copy()
+    start_df["name_norm"] = start_df["name"].apply(norm_name)
+    start_df["name_key"] = start_df["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
+    start_df["name_short"] = df_heat["name_short"].values
+    start_df["Rider"] = start_df["name_short"]
 
-    # Race stats for Startliste:
-    # - If Round 1: use other selected analysis events (e.g., previous day)
-    # - Else: use current event up to (but not including) the selected heat
-    is_round1 = False
-    rt = str(chosen.get("round_title") or "").strip().lower()
-    if rt.startswith("round 1") or rt.startswith("runde 1"):
-        is_round1 = True
+    # Training stats for riders in heat
+    if show_times:
+        df_train = load_training_for_events(analysis_event_ids)
+        if not df_train.empty:
+            stats = training_stats(df_train)
+            stats_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]
+            stats = stats[stats_cols]
+            start_df = start_df.merge(stats, on="name_key", how="left")
+            start_df = start_df.rename(
+                columns={
+                    "best_start": "train_best_start",
+                    "best_t1": "train_best_t1",
+                    "avg_top3_start": "train_avg3_start",
+                    "avg_top3_t1": "train_avg3_t1",
+                    "cons_score": "train_cons_score",
+                }
+            )
 
-    if is_round1:
-        df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
-        # Use only the immediately previous selected event (by event_id date)
-        prev_event_id = None
-        if analysis_event_ids:
-            try:
-                current_date = int(str(event_id)[:8])
-                candidates = [e for e in analysis_event_ids if e != event_id and str(e)[:8].isdigit()]
-                candidates_sorted = sorted(candidates, key=lambda x: int(str(x)[:8]))
-                prevs = [e for e in candidates_sorted if int(str(e)[:8]) < current_date]
-                if prevs:
-                    prev_event_id = prevs[-1]
-            except Exception:
-                prev_event_id = None
-        if prev_event_id:
-            df_race_hist = df_race_hist[df_race_hist["event_id"] == prev_event_id].copy()
-        else:
-            df_race_hist = df_race_hist.iloc[0:0].copy()
-    else:
-        df_race_hist = df_event.copy()
-        if not df_race_hist.empty:
-            if "start_dt" in df_race_hist.columns and pd.notna(chosen.get("start_dt")):
-                df_race_hist = df_race_hist[df_race_hist["start_dt"] < chosen.get("start_dt")].copy()
+        # Race stats for Startliste:
+        # - If Round 1: use other selected analysis events (e.g., previous day)
+        # - Else: use current event up to (but not including) the selected heat
+        is_round1 = False
+        rt = str(chosen.get("round_title") or "").strip().lower()
+        if rt.startswith("round 1") or rt.startswith("runde 1"):
+            is_round1 = True
+
+        if is_round1:
+            df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
+            # Use only the immediately previous selected event (by event_id date)
+            prev_event_id = None
+            if analysis_event_ids:
+                try:
+                    current_date = int(str(event_id)[:8])
+                    candidates = [e for e in analysis_event_ids if e != event_id and str(e)[:8].isdigit()]
+                    candidates_sorted = sorted(candidates, key=lambda x: int(str(x)[:8]))
+                    prevs = [e for e in candidates_sorted if int(str(e)[:8]) < current_date]
+                    if prevs:
+                        prev_event_id = prevs[-1]
+                except Exception:
+                    prev_event_id = None
+            if prev_event_id:
+                df_race_hist = df_race_hist[df_race_hist["event_id"] == prev_event_id].copy()
             else:
-                # Fallback: use round_key/heat_id ordering
-                df_race_hist = df_race_hist[
-                    (df_race_hist["round_key"] < rk)
-                    | ((df_race_hist["round_key"] == rk) & (df_race_hist["heat_id"] < hid))
-                ].copy()
-
-    if not df_race_hist.empty:
-        heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
-        df_race_hist = df_race_hist[df_race_hist["name_norm"].isin(heat_riders_norm)].copy()
-    race = race_stats(df_race_hist) if not df_race_hist.empty else pd.DataFrame()
-    if not race.empty:
-        race = race[["name_norm", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]]
-        start_df = start_df.merge(race, on="name_norm", how="left")
-        start_df = start_df.rename(
-            columns={
-                "best_start": "race_best_start",
-                "best_t1": "race_best_t1",
-                "avg_top3_start": "race_avg3_start",
-                "avg_top3_t1": "race_avg3_t1",
-                "cons_score": "race_cons_score",
-            }
-        )
-
-# Render Startliste
-if show_times:
-    def fmt_val(v):
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return ""
-        return f"{v:.3f}" if isinstance(v, (int, float)) else str(v)
-
-    # Baseline: only when a rider is selected
-    baseline = {}
-    if rider_selected != "Alle":
-        base_rows = start_df[start_df["name"] == rider_selected]
-        if not base_rows.empty:
-            base_row = base_rows.iloc[0]
-            baseline = {
-                "race_best_start": base_row.get("race_best_start"),
-                "race_avg3_start": base_row.get("race_avg3_start"),
-                "train_best_start": base_row.get("train_best_start"),
-                "train_avg3_start": base_row.get("train_avg3_start"),
-            }
-
-    def color_for(metric, v):
-        if metric not in baseline or baseline[metric] is None or pd.isna(baseline[metric]):
-            return "#222"
-        base = baseline[metric]
-        better = v < base  # lower is better for start times
-        return "#c0392b" if better else "#1e8449"
-
-    def combined_cell(race_v, train_v, metric_race, metric_train, is_baseline):
-        race_txt = fmt_val(race_v)
-        train_txt = fmt_val(train_v)
-        race_color = color_for(metric_race, race_v) if race_txt else "#222"
-        train_color = color_for(metric_train, train_v) if train_txt else "#666"
-        # Baseline rider should stay black
-        if is_baseline:
-            race_color = "#222"
-            train_color = "#666"
-        if not race_txt and train_txt:
-            race_txt = "—"
-            race_color = "#999"
-        return (
-            f"<div style='line-height:1.1'>"
-            f"<div style='font-size:14px;color:{race_color};font-weight:600'>{race_txt}</div>"
-            f"<div style='font-size:11px;color:{train_color}'>{train_txt}</div>"
-            f"</div>"
-        )
-
-    view = start_df.copy()
-    view = view.rename(columns={"bib": "Plate"})
-    view["Best Start"] = view.apply(
-        lambda r: combined_cell(
-            r.get("race_best_start"),
-            r.get("train_best_start"),
-            "race_best_start",
-            "train_best_start",
-            r.get("name") == rider_selected,
-        ),
-        axis=1,
-    )
-    view["Ø3 Start"] = view.apply(
-        lambda r: combined_cell(
-            r.get("race_avg3_start"),
-            r.get("train_avg3_start"),
-            "race_avg3_start",
-            "train_avg3_start",
-            r.get("name") == rider_selected,
-        ),
-        axis=1,
-    )
-    view["Best T1"] = view.apply(
-        lambda r: combined_cell(r.get("race_best_t1"), r.get("train_best_t1"), "", "", r.get("name") == rider_selected), axis=1
-    )
-    view["Ø3 T1"] = view.apply(
-        lambda r: combined_cell(r.get("race_avg3_t1"), r.get("train_avg3_t1"), "", "", r.get("name") == rider_selected), axis=1
-    )
-    view["Score"] = view.apply(
-        lambda r: combined_cell(r.get("race_cons_score"), r.get("train_cons_score"), "", "", r.get("name") == rider_selected), axis=1
-    )
-
-    show_cols = [
-        "nation",
-        "Plate",
-        "name",
-        "pick_order",
-        "Best Start",
-        "Ø3 Start",
-        "Best T1",
-        "Ø3 T1",
-        "Score",
-        "chosen_lane",
-    ]
-    view = view[show_cols]
-
-    style = """
-    <style>
-      table.dataframe { font-size: 12px; table-layout: fixed; width: 100%; }
-      table.dataframe th, table.dataframe td { padding: 6px 6px; border-bottom: 1px solid #eee; }
-      table.dataframe th { text-align: left; }
-      table.dataframe td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      table.dataframe td:nth-child(1), table.dataframe th:nth-child(1) { width: 45px; text-align:center; }
-      table.dataframe td:nth-child(2), table.dataframe th:nth-child(2) { width: 45px; text-align:center; }
-      table.dataframe td:nth-child(3), table.dataframe th:nth-child(3) { width: 140px; }
-      table.dataframe td:nth-child(4), table.dataframe th:nth-child(4) { width: 55px; text-align:center; }
-      table.dataframe td:nth-child(5), table.dataframe th:nth-child(5) { width: 55px; text-align:center; }
-      table.dataframe td:nth-child(n+6), table.dataframe th:nth-child(n+6) { width: 85px; text-align:center; }
-    </style>
-    """
-    html = view.to_html(index=False, escape=False)
-    html = html.replace(
-        "<table border=\"1\" class=\"dataframe\">",
-        "<table class='dataframe' style='width:100%;border-collapse:collapse;'>",
-    )
-    components.html(style + html, height=360, scrolling=True)
-else:
-    start_df_simple = start_df.rename(columns={"bib": "Plate"})
-    start_df_simple = start_df_simple[["nation", "Plate", "name", "pick_order", "chosen_lane"]]
-    st.dataframe(start_df_simple, use_container_width=True, height=320, hide_index=True)
-
-# ----------------------------
-# Round-Start Matrix (selected heat riders, current event)
-# ----------------------------
-metric_options = {
-    "Start to Bottom": "start",
-    "Start to Turn 1": "t1",
-    "Start to Turn 2": "t2",
-    "Start to Turn 3": "t3",
-    "Laptime": "time",
-    "Split first Straight": "split_t1",
-    "Split second straight": "split_t2",
-    "Split third Straight": "split_t3",
-    "Split last Straight": "split_time",
-}
-metric_label = st.selectbox("Rundenzeit anzeigen:", list(metric_options.keys()), index=0)
-metric_col = metric_options[metric_label]
-st.markdown(f"**{metric_label}-Zeiten pro Runde (aktuelles Event, Rider im Heat):**")
-round_order = (
-    df_event[df_event["group_id"] == gid][["round_key", "round_title"]]
-    .dropna()
-    .drop_duplicates()
-    .sort_values(["round_key"], kind="stable")
-)
-round_titles = round_order["round_title"].tolist()
-
-if round_titles:
-    # Build matrix: rows=round_title, cols=riders
-    riders = (
-        df_heat.sort_values(["pick_order"], na_position="last", kind="stable")["name"]
-        .dropna()
-        .unique()
-        .tolist()
-    )
-    if riders:
-        df_round = df_event[(df_event["name"].isin(riders)) & (df_event["group_id"] == gid)].copy()
-        df_round["start_s"] = df_round["start"].apply(parse_time_to_seconds)
-        df_round["t1_s"] = df_round["t1"].apply(parse_time_to_seconds)
-        df_round["t2_s"] = df_round["t2"].apply(parse_time_to_seconds)
-        df_round["t3_s"] = df_round["t3"].apply(parse_time_to_seconds)
-        df_round["time_s"] = df_round["time"].apply(parse_time_to_seconds)
-        df_round["split_t1"] = df_round["t1_s"] - df_round["start_s"]
-        df_round["split_t2"] = df_round["t2_s"] - df_round["t1_s"]
-        df_round["split_t3"] = df_round["t3_s"] - df_round["t2_s"]
-        df_round["split_time"] = df_round["time_s"] - df_round["t3_s"]
-        if metric_col in ["start", "t1", "t2", "t3", "time"]:
-            df_round["metric_s"] = df_round[metric_col + "_s"]
+                df_race_hist = df_race_hist.iloc[0:0].copy()
         else:
-            df_round["metric_s"] = df_round[metric_col]
-        # best (min) per rider per round
-        mat = (
-            df_round.groupby(["round_title", "name"])["metric_s"]
-            .min()
-            .reset_index()
-            .pivot(index="round_title", columns="name", values="metric_s")
+            df_race_hist = df_event.copy()
+            if not df_race_hist.empty:
+                if "start_dt" in df_race_hist.columns and pd.notna(chosen.get("start_dt")):
+                    df_race_hist = df_race_hist[df_race_hist["start_dt"] < chosen.get("start_dt")].copy()
+                else:
+                    # Fallback: use round_key/heat_id ordering
+                    df_race_hist = df_race_hist[
+                        (df_race_hist["round_key"] < rk)
+                        | ((df_race_hist["round_key"] == rk) & (df_race_hist["heat_id"] < hid))
+                    ].copy()
+
+        if not df_race_hist.empty:
+            heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
+            df_race_hist = df_race_hist[df_race_hist["name_norm"].isin(heat_riders_norm)].copy()
+        race = race_stats(df_race_hist) if not df_race_hist.empty else pd.DataFrame()
+        if not race.empty:
+            race = race[["name_norm", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]]
+            start_df = start_df.merge(race, on="name_norm", how="left")
+            start_df = start_df.rename(
+                columns={
+                    "best_start": "race_best_start",
+                    "best_t1": "race_best_t1",
+                    "avg_top3_start": "race_avg3_start",
+                    "avg_top3_t1": "race_avg3_t1",
+                    "cons_score": "race_cons_score",
+                }
+            )
+
+    # Render Startliste
+    if show_times:
+        def fmt_val(v):
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return ""
+            return f"{v:.3f}" if isinstance(v, (int, float)) else str(v)
+
+        # Baseline: only when a rider is selected
+        baseline = {}
+        if rider_selected != "Alle":
+            base_rows = start_df[start_df["name"] == rider_selected]
+            if not base_rows.empty:
+                base_row = base_rows.iloc[0]
+                baseline = {
+                    "race_best_start": base_row.get("race_best_start"),
+                    "race_avg3_start": base_row.get("race_avg3_start"),
+                    "train_best_start": base_row.get("train_best_start"),
+                    "train_avg3_start": base_row.get("train_avg3_start"),
+                }
+
+        def color_for(metric, v):
+            if metric not in baseline or baseline[metric] is None or pd.isna(baseline[metric]):
+                return "#222"
+            base = baseline[metric]
+            better = v < base  # lower is better for start times
+            return "#c0392b" if better else "#1e8449"
+
+        def combined_cell(race_v, train_v, metric_race, metric_train, is_baseline):
+            race_txt = fmt_val(race_v)
+            train_txt = fmt_val(train_v)
+            race_color = color_for(metric_race, race_v) if race_txt else "#222"
+            train_color = color_for(metric_train, train_v) if train_txt else "#666"
+            # Baseline rider should stay black
+            if is_baseline:
+                race_color = "#222"
+                train_color = "#666"
+            if not race_txt and train_txt:
+                race_txt = "—"
+                race_color = "#999"
+            return (
+                f"<div style='line-height:1.1'>"
+                f"<div style='font-size:14px;color:{race_color};font-weight:600'>{race_txt}</div>"
+                f"<div style='font-size:11px;color:{train_color}'>{train_txt}</div>"
+                f"</div>"
+            )
+
+        view = start_df.copy()
+        # Avoid duplicate Rider column
+        if "name" in view.columns and "Rider" in view.columns:
+            view = view.drop(columns=["name"])
+        view = view.rename(columns={"bib": "Plate", "name": "Rider"})
+        if "name_short" in view.columns:
+            view["Rider"] = view["name_short"]
+        view["Best Start"] = view.apply(
+            lambda r: combined_cell(
+                r.get("race_best_start"),
+                r.get("train_best_start"),
+                "race_best_start",
+                "train_best_start",
+                r.get("name") == rider_selected,
+            ),
+            axis=1,
         )
-        # keep row order
-        mat = mat.reindex(round_titles)
-        mat = mat.reindex(columns=riders)
-        # Optional: sort rows by selected rider's times (NaN last)
-        if rider_selected != "Alle" and rider_selected in mat.columns:
-            sort_col = mat[rider_selected]
-            sort_key = sort_col.fillna(sort_col.max() if pd.notna(sort_col.max()) else 0) + 1e9 * sort_col.isna()
-            mat = mat.assign(_sort_key=sort_key).sort_values("_sort_key").drop(columns=["_sort_key"])
-        mat = mat.reset_index().rename(columns={"round_title": "Round"})
-        st.dataframe(mat, use_container_width=True, height=240, hide_index=True)
+        view["Ø3 Start"] = view.apply(
+            lambda r: combined_cell(
+                r.get("race_avg3_start"),
+                r.get("train_avg3_start"),
+                "race_avg3_start",
+                "train_avg3_start",
+                r.get("name") == rider_selected,
+            ),
+            axis=1,
+        )
+        view["Best T1"] = view.apply(
+            lambda r: combined_cell(r.get("race_best_t1"), r.get("train_best_t1"), "", "", r.get("name") == rider_selected), axis=1
+        )
+        view["Ø3 T1"] = view.apply(
+            lambda r: combined_cell(r.get("race_avg3_t1"), r.get("train_avg3_t1"), "", "", r.get("name") == rider_selected), axis=1
+        )
+        view["Score"] = view.apply(
+            lambda r: combined_cell(r.get("race_cons_score"), r.get("train_cons_score"), "", "", r.get("name") == rider_selected), axis=1
+        )
+
+        show_cols = [
+            "nation",
+            "Plate",
+            "Rider",
+            "pick_order",
+            "Best Start",
+            "Ø3 Start",
+            "Best T1",
+            "Ø3 T1",
+            "Score",
+            "chosen_lane",
+        ]
+        view = view[show_cols]
+
+        style = """
+        <style>
+          table.dataframe { font-size: 12px; table-layout: fixed; width: 100%; }
+          table.dataframe th, table.dataframe td { padding: 6px 6px; border-bottom: 1px solid #eee; }
+          table.dataframe th { text-align: left; }
+          table.dataframe td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+          table.dataframe td:nth-child(1), table.dataframe th:nth-child(1) { width: 45px; text-align:center; }
+          table.dataframe td:nth-child(2), table.dataframe th:nth-child(2) { width: 45px; text-align:center; }
+          table.dataframe td:nth-child(3), table.dataframe th:nth-child(3) { width: 140px; }
+          table.dataframe td:nth-child(4), table.dataframe th:nth-child(4) { width: 55px; text-align:center; }
+          table.dataframe td:nth-child(5), table.dataframe th:nth-child(5) { width: 55px; text-align:center; }
+          table.dataframe td:nth-child(n+6), table.dataframe th:nth-child(n+6) { width: 85px; text-align:center; }
+        </style>
+        """
+        html = view.to_html(index=False, escape=False)
+        html = html.replace(
+            "<table border=\"1\" class=\"dataframe\">",
+            "<table class='dataframe' style='width:100%;border-collapse:collapse;'>",
+        )
+        components.html(style + html, height=360, scrolling=True)
+        if rider_selected != "Alle":
+            st.caption("Farben: Rot = schneller als gewählter Rider, Grün = langsamer. Vergleich nur für Start-Zeiten.")
     else:
-        st.info("Keine Rider im Heat für Rundentabelle gefunden.")
-else:
-    st.info("Keine Rundendaten im aktuellen Event gefunden.")
+        start_df_simple = start_df.rename(columns={"bib": "Plate", "name": "Rider"})
+        start_df_simple = start_df_simple[["nation", "Plate", "Rider", "pick_order", "chosen_lane"]]
+        st.dataframe(start_df_simple, use_container_width=True, height=320, hide_index=True)
 
-# ----------------------------
-# Analysis
-# ----------------------------
-st.divider()
-st.subheader("Analyse (ausgewählte Events)")
+    # --- startlist tab: analysis tables in requested order ---
+    df_hist_heat = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
+    if not df_hist_heat.empty and not df_heat.empty:
+        heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
+        df_hist_heat = df_hist_heat[df_hist_heat["name_norm"].isin(heat_riders_norm)].copy()
 
-if not analysis_event_ids:
-    st.info("Wähle links mindestens ein Analyse-Event aus.")
-    st.stop()
-
-df_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
-if df_hist.empty:
-    st.warning("Keine Picks für die ausgewählten Analyse-Events gefunden.")
-    st.stop()
-
-# df_hist_all already respects allowed_group_ids
-
-# Nur Rider aus dem gewählten Heat analysieren
-heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
-df_hist = df_hist[df_hist["name_norm"].isin(heat_riders_norm)].copy()
-if df_hist.empty:
-    st.info("Keine Analyse-Daten für die Rider im gewählten Heat gefunden.")
-    st.stop()
-
-# Training stats summary (optional)
-if show_times:
-    df_train = load_training_for_events(analysis_event_ids)
-    if not df_train.empty and "name_key" in df_train.columns:
-        df_train = df_train[df_train["name_key"].isin(set(df_heat["name_key"].dropna().tolist()))].copy()
-    if not df_train.empty:
-        st.markdown("**Training-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
-        ts = training_stats(df_train)
-        ts = ts.rename(
-            columns={
-                "best_start": "best_start",
-                "best_t1": "best_t1",
-                "avg_top3_start": "avg3_start",
-                "avg_top3_t1": "avg3_t1",
-                "cons_score": "cons_score",
-            }
+    if not df_hist_heat.empty and not df_heat.empty:
+        # Build pick_order map for sorting (current heat)
+        po_map = (
+            df_heat[["name_norm", "pick_order"]]
+            .dropna()
+            .drop_duplicates()
+            .set_index("name_norm")["pick_order"]
+            .to_dict()
         )
-        ts_view = ts[["name", "best_start", "best_t1", "avg3_start", "avg3_t1", "cons_score"]].rename(
-            columns={
-                "name": "Rider",
-                "best_start": "Best S",
-                "best_t1": "Best T1",
-                "avg3_start": "Ø3 S",
-                "avg3_t1": "Ø3 T1",
-                "cons_score": "Score",
-            }
+
+        # Lane distribution per rider (SECOND)
+        st.markdown("**Lane-Verteilung (pick_order → chosen_lane) pro Rider:**")
+        dist_df = lane_distribution(df_hist_heat)
+        if dist_df.empty:
+            st.info("Keine Verteilung berechenbar (chosen_lane / pick_order fehlen).")
+        else:
+            dist_df = dist_df.copy()
+            dist_df["po_sort"] = dist_df["name"].map(lambda n: po_map.get(norm_name(n), 9999))
+
+            def move_symbol(row):
+                try:
+                    po = int(row["pick_order"])
+                    cl = int(row["chosen_lane"])
+                except Exception:
+                    return ""
+                if cl == po:
+                    return ""
+                return "→" if cl > po else "←"
+
+            dist_df["move"] = dist_df.apply(move_symbol, axis=1)
+
+            def color_move(val):
+                if val == "→":
+                    return "color: #1f77b4; font-weight: 700;"
+                if val == "←":
+                    return "color: #2ca02c; font-weight: 700;"
+                return ""
+
+            dist_df = dist_df.sort_values(["po_sort", "name", "pick_order", "chosen_lane"], kind="stable")
+            styled = dist_df[["name", "pick_order", "chosen_lane", "move", "count"]].style.applymap(
+                color_move, subset=["move"]
+            )
+            st.dataframe(styled, use_container_width=True, height=360, hide_index=True)
+
+        # Summary per rider (THIRD)
+        st.markdown("**Zusammenfassung pro Rider (nur Fakten aus ausgewählten Events):**")
+        sum_df = rider_summary(df_hist_heat)
+        if sum_df.empty:
+            st.info("Keine verwertbaren Picks (chosen_lane / pick_order fehlen).")
+        else:
+            sum_df = sum_df.copy()
+            sum_df["po_sort"] = sum_df["name"].map(lambda n: po_map.get(norm_name(n), 9999))
+            sum_df = sum_df.sort_values(["po_sort", "name"], kind="stable")
+            st.caption("favorite_share = Anteil der häufigsten Lane-Wahl (Mode) an allen Picks des Riders (0–1).")
+            st.dataframe(
+                sum_df[["name", "picks_n", "mean_pick_order", "mean_chosen_lane", "fav_lane", "favorite_share", "taktik"]],
+                use_container_width=True,
+                height=320,
+                hide_index=True,
+            )
+    else:
+        st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
+
+with tab_rounds:
+    mode_time = st.radio("Modus", ["Heat", "Athleten"], index=0, horizontal=True)
+    if mode_time == "Athleten":
+        # Use sidebar filters (Nation + Rider) instead of a separate filter
+        base_df = df_event.copy()
+        if nation:
+            base_df = base_df[base_df["nation"].fillna("").str.upper() == nation].copy()
+
+        if training_live:
+            selected_riders_time = rider_live_selected[:]
+        else:
+            selected_riders_time = [] if rider_selected == "Alle" else [rider_selected]
+
+        riders_pool = sorted(base_df["name"].dropna().unique().tolist())
+        riders = selected_riders_time if selected_riders_time else riders_pool
+        rk = None
+        hid = None
+        gid = None
+        df_heat = base_df[base_df["name"].isin(riders)].copy()
+    else:
+        selected_riders_time = None
+    # ----------------------------
+    # Round-Start Matrix (selected heat riders, current event)
+    # ----------------------------
+    metric_options = {
+        "Start to Bottom": "start",
+        "Start to Turn 1": "t1",
+        "Start to Turn 2": "t2",
+        "Start to Turn 3": "t3",
+        "Laptime": "time",
+        "Split first Straight": "split_t1",
+        "Split second straight": "split_t2",
+        "Split third Straight": "split_t3",
+        "Split last Straight": "split_time",
+    }
+    metric_label = st.selectbox("Segment anzeigen:", list(metric_options.keys()), index=0)
+    metric_col = metric_options[metric_label]
+    st.markdown(f"**{metric_label}-Zeiten pro Runde (aktuelles Event, Rider im Heat):**")
+    if mode_time == "Athleten":
+        round_order = (
+            df_event[["round_key", "round_title"]]
+            .dropna()
+            .drop_duplicates()
+            .sort_values(["round_key"], kind="stable")
         )
-        st.dataframe(ts_view, use_container_width=True, height=240, hide_index=True)
-    # Race stats summary
-    rs = race_stats(df_hist)
-    if not rs.empty:
-        st.markdown("**Race-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
-        rs_view = rs[["name", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]].rename(
-            columns={
-                "name": "Rider",
-                "best_start": "Best S",
-                "best_t1": "Best T1",
-                "avg_top3_start": "Ø3 S",
-                "avg_top3_t1": "Ø3 T1",
-                "cons_score": "Score",
-            }
+    else:
+        round_order = (
+            df_event[df_event["group_id"] == gid][["round_key", "round_title"]]
+            .dropna()
+            .drop_duplicates()
+            .sort_values(["round_key"], kind="stable")
         )
-        st.dataframe(rs_view, use_container_width=True, height=240, hide_index=True)
+    round_titles = round_order["round_title"].tolist()
 
-# Summary per rider
-st.markdown("**Zusammenfassung pro Rider (nur Fakten aus ausgewählten Events):**")
-sum_df = rider_summary(df_hist)
+    if round_titles:
+        # Build matrix: rows=round_title, cols=riders
+        if mode_time == "Athleten":
+            riders = selected_riders_time if selected_riders_time else riders_pool
+        else:
+            riders = (
+                df_heat.sort_values(["pick_order"], na_position="last", kind="stable")["name"]
+                .dropna()
+                .unique()
+                .tolist()
+            )
+        if riders:
+            if mode_time == "Athleten":
+                df_round = df_event[df_event["name"].isin(riders)].copy()
+            else:
+                df_round = df_event[(df_event["name"].isin(riders)) & (df_event["group_id"] == gid)].copy()
+            df_round["start_s"] = df_round["start"].apply(parse_time_to_seconds)
+            df_round["t1_s"] = df_round["t1"].apply(parse_time_to_seconds)
+            df_round["t2_s"] = df_round["t2"].apply(parse_time_to_seconds)
+            df_round["t3_s"] = df_round["t3"].apply(parse_time_to_seconds)
+            df_round["time_s"] = df_round["time"].apply(parse_time_to_seconds)
+            df_round["split_t1"] = df_round["t1_s"] - df_round["start_s"]
+            df_round["split_t2"] = df_round["t2_s"] - df_round["t1_s"]
+            df_round["split_t3"] = df_round["t3_s"] - df_round["t2_s"]
+            df_round["split_time"] = df_round["time_s"] - df_round["t3_s"]
+            if metric_col in ["start", "t1", "t2", "t3", "time"]:
+                df_round["metric_s"] = df_round[metric_col + "_s"]
+            else:
+                df_round["metric_s"] = df_round[metric_col]
+            # best (min) per rider per round
+            mat = (
+                df_round.groupby(["round_title", "name"])["metric_s"]
+                .min()
+                .reset_index()
+                .pivot(index="round_title", columns="name", values="metric_s")
+            )
+            # keep row order
+            mat = mat.reindex(round_titles)
+            mat = mat.reindex(columns=riders)
+            # Optional: sort rows by selected rider's times (NaN last)
+            if rider_selected != "Alle" and rider_selected in mat.columns:
+                sort_col = mat[rider_selected]
+                sort_key = sort_col.fillna(sort_col.max() if pd.notna(sort_col.max()) else 0) + 1e9 * sort_col.isna()
+                mat = mat.assign(_sort_key=sort_key).sort_values("_sort_key").drop(columns=["_sort_key"])
+            mat = mat.round(3).reset_index().rename(columns={"round_title": "Round"})
+            st.dataframe(mat, use_container_width=True, height=240, hide_index=True)
+        else:
+            st.info("Keine Rider im Heat für Rundentabelle gefunden.")
+    else:
+        st.info("Keine Rundendaten im aktuellen Event gefunden.")
 
-if sum_df.empty:
-    st.info("Keine verwertbaren Picks (chosen_lane / pick_order fehlen).")
-else:
-    # Explain favorite_share once
-    st.caption("favorite_share = Anteil der häufigsten Lane-Wahl (Mode) an allen Picks des Riders (0–1).")
-    st.dataframe(
-        sum_df[["name", "picks_n", "mean_pick_order", "mean_chosen_lane", "fav_lane", "favorite_share", "taktik"]],
-        use_container_width=True,
-        height=320,
-        hide_index=True,
-    )
-
-# Lane distribution per rider with pick_order before chosen_lane
-st.markdown("**Lane-Verteilung (pick_order → chosen_lane) pro Rider:**")
-dist_df = lane_distribution(df_hist)
-if dist_df.empty:
-    st.info("Keine Verteilung berechenbar (chosen_lane / pick_order fehlen).")
-else:
-    # Visual cue: pick_order -> chosen_lane
-    def move_symbol(row):
-        try:
-            po = int(row["pick_order"])
-            cl = int(row["chosen_lane"])
-        except Exception:
-            return ""
-        if cl == po:
-            return ""
-        return "→" if cl > po else "←"
-
-    dist_df = dist_df.copy()
-    dist_df["move"] = dist_df.apply(move_symbol, axis=1)
-
-    def color_move(val):
-        if val == "→":
-            return "color: #1f77b4; font-weight: 700;"  # blue
-        if val == "←":
-            return "color: #2ca02c; font-weight: 700;"  # green
-        return ""
-
-    styled = (
-        dist_df[["name", "pick_order", "chosen_lane", "move", "count"]]
-        .style.applymap(color_move, subset=["move"])
-    )
-    st.dataframe(styled, use_container_width=True, height=360, hide_index=True)
+    # Analyse (ausgewählte Events) in Time Analyse
+    if not analysis_event_ids:
+        st.info("Wähle links mindestens ein Analyse-Event aus.")
+    else:
+        df_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
+        if df_hist.empty:
+            st.warning("Keine Picks für die ausgewählten Analyse-Events gefunden.")
+        else:
+            heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
+            df_hist = df_hist[df_hist["name_norm"].isin(heat_riders_norm)].copy()
+            if df_hist.empty:
+                st.info("Keine Analyse-Daten für die Rider im gewählten Heat gefunden.")
+            elif show_times:
+                df_train = load_training_for_events(analysis_event_ids)
+                if not df_train.empty and "name_key" in df_train.columns:
+                    df_train = df_train[df_train["name_key"].isin(set(df_heat["name_key"].dropna().tolist()))].copy()
+                if not df_train.empty:
+                    st.markdown("**Training-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
+                    ts = training_stats(df_train)
+                    ts_view = ts[["name", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]].rename(
+                        columns={
+                            "name": "Rider",
+                            "best_start": "Best S",
+                            "best_t1": "Best T1",
+                            "avg_top3_start": "Ø3 S",
+                            "avg_top3_t1": "Ø3 T1",
+                            "cons_score": "Score",
+                        }
+                    )
+                    st.dataframe(ts_view, use_container_width=True, height=240, hide_index=True)
+                rs = race_stats(df_hist)
+                if not rs.empty:
+                    st.markdown("**Race-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
+                    rs_view = rs[["name", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]].rename(
+                        columns={
+                            "name": "Rider",
+                            "best_start": "Best S",
+                            "best_t1": "Best T1",
+                            "avg_top3_start": "Ø3 S",
+                            "avg_top3_t1": "Ø3 T1",
+                            "cons_score": "Score",
+                        }
+                    )
+                    st.dataframe(rs_view, use_container_width=True, height=240, hide_index=True)
