@@ -76,18 +76,21 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
             db_path = DB_PATH_CLOUD
         except Exception:
             return pd.DataFrame()
-    conn = sqlite3.connect(db_path)
     try:
-        df = pd.read_sql_query(
-            """
-            SELECT event_id, display_name, location, country, event_date
-            FROM events
-            ORDER BY event_id DESC
-            """,
-            conn,
-        )
-    finally:
-        conn.close()
+        conn = sqlite3.connect(db_path)
+        try:
+            df = pd.read_sql_query(
+                """
+                SELECT event_id, display_name, location, country, event_date
+                FROM events
+                ORDER BY event_id DESC
+                """,
+                conn,
+            )
+        finally:
+            conn.close()
+    except Exception:
+        return pd.DataFrame()
 
     if df.empty:
         return df
