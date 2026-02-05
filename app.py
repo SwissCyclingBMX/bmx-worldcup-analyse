@@ -635,8 +635,33 @@ def lane_distribution(df_hist: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------
 # UI
 # ----------------------------
-st.set_page_config(page_title="BMX Heat Scout", layout="wide")
+st.set_page_config(page_title="BMX Heat Scout", layout="wide", initial_sidebar_state="expanded")
 st.title("BMX Heat Scout")
+
+# Mobile hint for sidebar (iPhone Safari shows a tiny handle)
+st.markdown(
+    """
+    <style>
+    @media (max-width: 900px) {
+      .sidebar-hint {
+        display: block;
+        background: #f1f3f5;
+        border: 1px solid #dee2e6;
+        padding: 10px 12px;
+        border-radius: 8px;
+        font-size: 14px;
+        color: #222;
+        margin: 8px 0 16px 0;
+      }
+    }
+    @media (min-width: 901px) {
+      .sidebar-hint { display: none; }
+    }
+    </style>
+    <div class="sidebar-hint">Filter öffnen: Tippe oben links auf die zwei kleinen Pfeile.</div>
+    """,
+    unsafe_allow_html=True,
+)
 st.caption("Live-Ansicht aktualisiert sich bei Interaktionen (kein Auto-Refresh).")
 
 if "cache_bust" not in st.session_state:
