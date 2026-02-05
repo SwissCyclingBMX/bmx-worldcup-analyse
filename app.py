@@ -12,7 +12,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 DB_PATH = "bmx.db"
-DB_URL_ZIP = "https://github.com/user-attachments/files/25094120/bmx_db.zip"
+DB_URL_ZIP = "https://github.com/SwissCyclingBMX/bmx-worldcup-analyse/releases/download/db-latest/bmx_db.zip"
 DB_PATH_CLOUD = "/tmp/bmx.db"
 
 GROUP_MAP = {
