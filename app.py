@@ -72,7 +72,19 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
             with open(zip_path, "wb") as f:
                 f.write(r.content)
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extract("bmx.db", "/tmp")
+                db_members = [m for m in zf.namelist() if m.lower().endswith(".db")]
+                if not db_members:
+                    return pd.DataFrame()
+                # extract first .db file found
+                member = db_members[0]
+                zf.extract(member, "/tmp")
+                # normalize to /tmp/bmx.db if needed
+                extracted_path = os.path.join("/tmp", member)
+                if extracted_path != DB_PATH_CLOUD:
+                    try:
+                        os.replace(extracted_path, DB_PATH_CLOUD)
+                    except Exception:
+                        pass
             db_path = DB_PATH_CLOUD
         except Exception:
             return pd.DataFrame()
