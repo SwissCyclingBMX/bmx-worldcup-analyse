@@ -25,11 +25,15 @@ def map_group_id(name: str) -> Optional[int]:
         return None
     n = name.strip().lower()
     # tokenize on non-letters to avoid "men" matching "women"
-    tokens = re.findall(r"[a-z]+", n)
+    tokens = re.findall(r"[a-z0-9]+", n)
     has_men = "men" in tokens
     has_women = "women" in tokens
     has_elite = "elite" in tokens
-    has_u23 = "u23" in tokens or ("under" in tokens and "23" in tokens)
+    has_u23 = (
+        "u23" in tokens
+        or ("u" in tokens and "23" in tokens)
+        or ("under" in tokens and "23" in tokens)
+    )
     has_junior = "junior" in tokens
 
     if has_elite and has_men:
