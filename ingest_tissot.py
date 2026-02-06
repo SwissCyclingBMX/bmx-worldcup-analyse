@@ -31,6 +31,8 @@ def map_group_id(name: str) -> Optional[int]:
     has_elite = "elite" in tokens
     has_u23 = (
         "u23" in tokens
+        or any("u23" in t for t in tokens)
+        or any("under23" in t for t in tokens)
         or ("u" in tokens and "23" in tokens)
         or ("under" in tokens and "23" in tokens)
     )
