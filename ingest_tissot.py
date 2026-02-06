@@ -24,17 +24,25 @@ def map_group_id(name: str) -> Optional[int]:
     if not name:
         return None
     n = name.strip().lower()
-    if "men elite" in n:
+    # tokenize on non-letters to avoid "men" matching "women"
+    tokens = re.findall(r"[a-z]+", n)
+    has_men = "men" in tokens
+    has_women = "women" in tokens
+    has_elite = "elite" in tokens
+    has_u23 = "u23" in tokens or ("under" in tokens and "23" in tokens)
+    has_junior = "junior" in tokens
+
+    if has_elite and has_men:
         return 91
-    if "women elite" in n:
+    if has_elite and has_women:
         return 92
-    if "men u23" in n:
+    if has_u23 and has_men:
         return 93
-    if "women u23" in n:
+    if has_u23 and has_women:
         return 94
-    if "men junior" in n or "junior men" in n:
+    if has_junior and has_men:
         return 95
-    if "women junior" in n or "junior women" in n:
+    if has_junior and has_women:
         return 96
     return None
 
@@ -79,13 +87,20 @@ def parse_heat_number(name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _norm_key(s: Any) -> str:
+    return re.sub(r"\\s+", " ", str(s or "")).strip().lower()
+
+
 def extract_split(result: Dict[str, Any], key_name: str) -> Optional[str]:
     splits = result.get("splits") or []
+    target = _norm_key(key_name)
     for s in splits:
-        if str(s.get("key")).lower() == key_name.lower():
-            return s.get("value")
-        if str(s.get("name")).lower() == key_name.lower():
-            return s.get("value")
+        if _norm_key(s.get("key")) == target or _norm_key(s.get("name")) == target:
+            val = s.get("value")
+            if val is None:
+                return None
+            val = str(val).strip()
+            return val if val != "" else None
     return None
 
 
