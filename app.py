@@ -756,16 +756,20 @@ gender_sel = st.sidebar.multiselect(
 )
 
 allowed_group_ids = []
-if level_sel and gender_sel:
-    for lvl in level_sel:
-        for gen in gender_sel:
-            label = f"{lvl} {gen}"
-            for gid, cat in GROUP_MAP.items():
-                if cat == label:
-                    allowed_group_ids.append(gid)
-else:
+levels_all = ["Elite", "U23", "Junior"]
+genders_all = ["Men", "Women"]
+
+if not level_sel and not gender_sel:
     # Empty selection means "show all"
     allowed_group_ids = []
+else:
+    # If one side is empty, treat it as "all" for the other side
+    levels_use = level_sel if level_sel else levels_all
+    genders_use = gender_sel if gender_sel else genders_all
+    labels = {f"{lvl} {gen}" for lvl in levels_use for gen in genders_use}
+    for gid, cat in GROUP_MAP.items():
+        if cat in labels:
+            allowed_group_ids.append(gid)
 
 # Preload analysis history for race stats (used later)
 df_hist_all = load_picks_for_events(analysis_event_ids) if analysis_event_ids else pd.DataFrame()
