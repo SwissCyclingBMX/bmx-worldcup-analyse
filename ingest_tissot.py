@@ -94,19 +94,28 @@ def parse_heat_number(name: str) -> int:
 
 
 def _norm_key(s: Any) -> str:
-    return re.sub(r"\\s+", " ", str(s or "")).strip().lower()
+    # normalize to alnum-only for robust matching (e.g., "Corner 1", "Corner-1", "Corner 1")
+    return re.sub(r"[^a-z0-9]", "", str(s or "").strip().lower())
 
 
-def extract_split(result: Dict[str, Any], key_name: str) -> Optional[str]:
+def _split_value(s: Dict[str, Any]) -> Optional[str]:
+    val = s.get("value")
+    if val is None:
+        return None
+    val = str(val).strip()
+    return val if val != "" else None
+
+
+def extract_split_any(result: Dict[str, Any], targets: List[str]) -> Optional[str]:
     splits = result.get("splits") or []
-    target = _norm_key(key_name)
+    targets_norm = {_norm_key(t) for t in targets}
     for s in splits:
-        if _norm_key(s.get("key")) == target or _norm_key(s.get("name")) == target:
-            val = s.get("value")
-            if val is None:
-                return None
-            val = str(val).strip()
-            return val if val != "" else None
+        key_norm = _norm_key(s.get("key"))
+        name_norm = _norm_key(s.get("name"))
+        if key_norm in targets_norm or name_norm in targets_norm:
+            val = _split_value(s)
+            if val is not None:
+                return val
     return None
 
 
@@ -210,10 +219,10 @@ def ingest_tissot(base: str, event_id: str, display_name: str, event_date: str, 
                     if bib is None:
                         continue
 
-                    start = extract_split(res, "Reaction Time")
-                    t1 = extract_split(res, "Corner 1")
-                    t2 = extract_split(res, "Corner 2")
-                    t3 = extract_split(res, "Corner 3")
+                    start = extract_split_any(res, ["Reaction Time", "ReactionTime", "Start", "Start Time"])
+                    t1 = extract_split_any(res, ["Corner 1", "Corner1", "Split 1", "Split1", "Intermediate 1", "Int1", "T1"])
+                    t2 = extract_split_any(res, ["Corner 2", "Corner2", "Split 2", "Split2", "Intermediate 2", "Int2", "T2"])
+                    t3 = extract_split_any(res, ["Corner 3", "Corner3", "Split 3", "Split3", "Intermediate 3", "Int3", "T3"])
                     time = res.get("time") or res.get("value")
 
                     rider_key = rider.get("key")
