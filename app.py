@@ -20,6 +20,8 @@ GROUP_MAP = {
     92: "Elite Women",
     93: "U23 Men",
     94: "U23 Women",
+    95: "Junior Men",
+    96: "Junior Women",
 }
 NOT_UPCOMING_STATUS = {
     "finished",
@@ -156,15 +158,27 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
     ).str.strip()
 
 
+    # Exclude World Championships from round numbering
+    is_wch = (
+        df["event_id"].astype(str).str.contains("wch", case=False, regex=False)
+        | df["display_name"].fillna("").astype(str).str.contains("world championship", case=False, regex=False)
+        | df["display_name"].fillna("").astype(str).str.contains("world championships", case=False, regex=False)
+    )
+
     # Always assign sequential rounds per year (chronological by event_id)
     df["_event_day"] = pd.to_datetime(df["event_id"].astype(str).str.slice(0, 8), format="%Y%m%d", errors="coerce")
     df["round_num"] = pd.NA
-    for yr, grp in df.sort_values(["_event_day", "event_id"]).groupby("year"):
+    for yr, grp in df.loc[~is_wch].sort_values(["_event_day", "event_id"]).groupby("year"):
         df.loc[grp.index, "round_num"] = range(1, len(grp) + 1)
 
     df["label_short"] = "ROUND " + df["round_num"].astype("Int64").astype(str) + " - " + loc_clean
     df["label_short"] = df["label_short"].str.strip()
     df["label_analysis"] = df["label_short"] + " - " + df["year"].astype(str)
+
+    # World Championships: no round numbering
+    wch_label = "World Championships - " + df["year"].astype(str)
+    df["label_short"] = df["label_short"].where(~is_wch, wch_label)
+    df["label_analysis"] = df["label_analysis"].where(~is_wch, wch_label)
     df = df.drop(columns=["_event_day", "round_num"])
 
     # Disambiguate duplicates only within the same year (avoid cross-year event_id noise)
@@ -732,7 +746,7 @@ else:
 # Kategorie Filter
 level_sel = st.sidebar.multiselect(
     "Kategorie",
-    options=["Elite", "U23"],
+    options=["Elite", "U23", "Junior"],
     default=["Elite", "U23"],
 )
 gender_sel = st.sidebar.multiselect(
@@ -1113,7 +1127,14 @@ with tab_start:
         if rider_selected != "Alle":
             st.caption("Farben: Rot = schneller als gewählter Rider, Grün = langsamer. Vergleich nur für Start-Zeiten.")
     else:
-        start_df_simple = start_df.rename(columns={"bib": "Plate", "name": "Rider"})
+        start_df_simple = start_df.copy()
+        if "name_short" in start_df_simple.columns:
+            start_df_simple["Rider"] = start_df_simple["name_short"]
+        if "name" in start_df_simple.columns:
+            start_df_simple = start_df_simple.drop(columns=["name"])
+        start_df_simple = start_df_simple.rename(columns={"bib": "Plate"})
+        # drop any accidental duplicate columns
+        start_df_simple = start_df_simple.loc[:, ~start_df_simple.columns.duplicated()]
         start_df_simple = start_df_simple[["nation", "Plate", "Rider", "pick_order", "chosen_lane"]]
         st.dataframe(start_df_simple, use_container_width=True, height=320, hide_index=True)
 
