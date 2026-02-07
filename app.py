@@ -716,8 +716,13 @@ nation = st.sidebar.text_input("Nation Filter (z.B. SUI) – leer = alle", value
 show_times = st.sidebar.checkbox("Zeiten anzeigen (Start/T1)", value=True)
 training_live = st.sidebar.checkbox("Training-Live Ansicht", value=False)
 
-# Rider filter(s)
-all_names = sorted([n for n in df_event["name"].dropna().unique().tolist() if isinstance(n, str) and n.strip()])
+# Rider filter(s) - show only riders that match other filters (nation/category/gender)
+df_rider_pool = df_event.copy()
+if nation:
+    df_rider_pool = df_rider_pool[df_rider_pool["nation"].fillna("").str.upper() == nation]
+if allowed_group_ids:
+    df_rider_pool = df_rider_pool[df_rider_pool["group_id"].isin(allowed_group_ids)].copy()
+all_names = sorted([n for n in df_rider_pool["name"].dropna().unique().tolist() if isinstance(n, str) and n.strip()])
 if "rider_filter" not in st.session_state:
     st.session_state["rider_filter"] = []
 
@@ -730,7 +735,8 @@ if training_live:
     )
     rider_selected = "Alle"
 else:
-    options_riders = st.session_state["rider_filter"] if st.session_state["rider_filter"] else all_names
+    # keep current selections visible, but allow adding more
+    options_riders = sorted(set(all_names) | set(st.session_state["rider_filter"]))
     rider_selected_list = st.sidebar.multiselect(
         "Rider Filter (optional, leer = alle)",
         options=options_riders,
