@@ -736,11 +736,8 @@ else:
         options=options_riders,
         key="rider_filter",
     )
-    if len(rider_selected_list) > 1:
-        st.sidebar.warning("Bitte nur einen Rider auswählen.")
-        st.session_state["rider_filter"] = rider_selected_list[:1]
-        rider_selected_list = rider_selected_list[:1]
-    rider_selected = rider_selected_list[0] if rider_selected_list else "Alle"
+    # allow multi-select; baseline comparison only if exactly one selected
+    rider_selected = rider_selected_list[0] if len(rider_selected_list) == 1 else "Alle"
     rider_live_selected = []
 
 # Kategorie Filter
@@ -879,8 +876,9 @@ heats = build_heats(df_event)
 df_filter = df_event.copy()
 if nation:
     df_filter = df_filter[df_filter["nation"].fillna("").str.upper() == nation]
-if rider_selected != "Alle":
-    df_filter = df_filter[df_filter["name"] == rider_selected].copy()
+# Rider filter affects heats list only (multi-select supported)
+if rider_selected_list:
+    df_filter = df_filter[df_filter["name"].isin(rider_selected_list)].copy()
 
 heats_f = build_heats(df_filter)
 
@@ -1222,7 +1220,7 @@ with tab_rounds:
         if training_live:
             selected_riders_time = rider_live_selected[:]
         else:
-            selected_riders_time = [] if rider_selected == "Alle" else [rider_selected]
+            selected_riders_time = rider_selected_list[:]
 
         riders_pool = sorted(base_df["name"].dropna().unique().tolist())
         riders = selected_riders_time if selected_riders_time else riders_pool
