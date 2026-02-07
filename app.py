@@ -1280,20 +1280,35 @@ with tab_rounds:
     metric_label = st.selectbox("Segment anzeigen:", list(metric_options.keys()), index=0)
     metric_col = metric_options[metric_label]
     st.markdown(f"**{metric_label}-Zeiten pro Runde (aktuelles Event, Rider im Heat):**")
+    def round_sort_key(df_in: pd.DataFrame) -> pd.Series:
+        title = df_in["round_title"].fillna("").astype(str).str.lower()
+        # preferred order for BMX rounds
+        order_map = {
+            "round 1": 1,
+            "runde 1": 1,
+            "lcq": 2,
+            "last chance": 2,
+            "1/8 final": 3,
+            "1/8 finals": 3,
+            "1/8 finale": 3,
+            "1/4 final": 4,
+            "1/4 finals": 4,
+            "1/4 finale": 4,
+            "1/2 final": 5,
+            "1/2 finals": 5,
+            "1/2 finale": 5,
+            "final": 6,
+        }
+        return title.map(order_map).fillna(df_in["round_key"]).fillna(99)
+
     if mode_time == "Athleten":
-        round_order = (
-            df_event[["round_key", "round_title"]]
-            .dropna()
-            .drop_duplicates()
-            .sort_values(["round_key"], kind="stable")
-        )
+        round_order = df_event[["round_key", "round_title"]].dropna().drop_duplicates().copy()
     else:
-        round_order = (
-            df_event[df_event["group_id"] == gid][["round_key", "round_title"]]
-            .dropna()
-            .drop_duplicates()
-            .sort_values(["round_key"], kind="stable")
-        )
+        round_order = df_event[df_event["group_id"] == gid][["round_key", "round_title"]].dropna().drop_duplicates().copy()
+
+    round_order["_rk"] = round_sort_key(round_order)
+    round_order = round_order.sort_values(["_rk", "round_key"], kind="stable")
+    round_order = round_order.drop_duplicates(subset=["round_title"], keep="first").drop(columns=["_rk"])
     round_titles = round_order["round_title"].tolist()
 
     if round_titles:
