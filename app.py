@@ -1330,14 +1330,20 @@ with tab_rounds:
         if df_hist.empty:
             st.warning("Keine Picks für die ausgewählten Analyse-Events gefunden.")
         else:
-            heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
-            df_hist = df_hist[df_hist["name_norm"].isin(heat_riders_norm)].copy()
+            if mode_time == "Athleten" and selected_riders_time:
+                df_hist = df_hist[df_hist["name"].isin(selected_riders_time)].copy()
+            else:
+                heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
+                df_hist = df_hist[df_hist["name_norm"].isin(heat_riders_norm)].copy()
             if df_hist.empty:
                 st.info("Keine Analyse-Daten für die Rider im gewählten Heat gefunden.")
             elif show_times:
                 df_train = load_training_for_events(analysis_event_ids)
                 if not df_train.empty and "name_key" in df_train.columns:
-                    df_train = df_train[df_train["name_key"].isin(set(df_heat["name_key"].dropna().tolist()))].copy()
+                    if mode_time == "Athleten" and selected_riders_time:
+                        df_train = df_train[df_train["name"].isin(selected_riders_time)].copy()
+                    else:
+                        df_train = df_train[df_train["name_key"].isin(set(df_heat["name_key"].dropna().tolist()))].copy()
                 if not df_train.empty:
                     st.markdown("**Training-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
                     ts = training_stats(df_train)
