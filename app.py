@@ -952,7 +952,7 @@ chosen_heat_title = chosen.get("heat_title")
 tab_start, tab_rounds = st.tabs(["Startliste - Gate Pick", "Time Analyse"])
 
 with tab_start:
-    st.subheader("Startliste (PickOrder / Lane)")
+    st.subheader("Startliste - Lane Pick")
 
     df_heat = df_event[(df_event["round_key"] == rk) & (df_event["heat_id"] == hid)].copy()
     if gid is not None:
@@ -1147,8 +1147,8 @@ with tab_start:
 
         style = """
         <style>
-          table.dataframe { font-size: 12px; table-layout: fixed; width: 100%; }
-          table.dataframe th, table.dataframe td { padding: 6px 6px; border-bottom: 1px solid #eee; }
+          table.dataframe { font-size: 12px; table-layout: fixed; width: 100%; color: #111; background: #fff; }
+          table.dataframe th, table.dataframe td { padding: 6px 6px; border-bottom: 1px solid #eee; color: #111; background: #fff; }
           table.dataframe th { text-align: left; }
           table.dataframe td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
           table.dataframe td:nth-child(1), table.dataframe th:nth-child(1) { width: 45px; text-align:center; }
