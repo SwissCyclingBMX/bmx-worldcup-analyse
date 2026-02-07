@@ -1374,7 +1374,10 @@ with tab_rounds:
                 df_hist = df_hist[df_hist["name"].isin(selected_riders_time)].copy()
             else:
                 heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
-                df_hist = df_hist[df_hist["name_norm"].isin(heat_riders_norm)].copy()
+                heat_bibs = set(df_heat["bib"].dropna().tolist()) if "bib" in df_heat.columns else set()
+                df_hist = df_hist[
+                    df_hist["name_norm"].isin(heat_riders_norm) | df_hist.get("bib", pd.Series([], dtype="Int64")).isin(heat_bibs)
+                ].copy()
             if df_hist.empty:
                 st.info("Keine Analyse-Daten für die Rider im gewählten Heat gefunden.")
             elif show_times:
@@ -1383,7 +1386,12 @@ with tab_rounds:
                     if mode_time == "Athleten" and selected_riders_time:
                         df_train = df_train[df_train["name"].isin(selected_riders_time)].copy()
                     else:
-                        df_train = df_train[df_train["name_key"].isin(set(df_heat["name_key"].dropna().tolist()))].copy()
+                        # filter strictly to riders in selected heat (fallback by bib)
+                        heat_names = set(df_heat["name_key"].dropna().tolist())
+                        heat_bibs = set(df_heat["bib"].dropna().tolist()) if "bib" in df_heat.columns else set()
+                        df_train = df_train[
+                            df_train["name_key"].isin(heat_names) | df_train.get("bib", pd.Series([], dtype="Int64")).isin(heat_bibs)
+                        ].copy()
                 if not df_train.empty:
                     st.markdown("**Training-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
                     ts = training_stats(df_train)
