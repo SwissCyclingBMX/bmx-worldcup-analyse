@@ -945,6 +945,8 @@ chosen = heats_f.iloc[options.index(choice)]
 rk = int(chosen["round_key"])
 hid = int(chosen["heat_id"])
 gid = int(chosen["group_id"]) if pd.notna(chosen.get("group_id")) else None
+chosen_round_title = chosen.get("round_title")
+chosen_heat_title = chosen.get("heat_title")
 
 # Startlist (PickOrder / Lane)
 tab_start, tab_rounds = st.tabs(["Startliste - Gate Pick", "Time Analyse"])
@@ -955,6 +957,10 @@ with tab_start:
     df_heat = df_event[(df_event["round_key"] == rk) & (df_event["heat_id"] == hid)].copy()
     if gid is not None:
         df_heat = df_heat[df_heat["group_id"] == gid].copy()
+    if chosen_round_title:
+        df_heat = df_heat[df_heat["round_title"] == chosen_round_title].copy()
+    if chosen_heat_title:
+        df_heat = df_heat[df_heat["heat_title"] == chosen_heat_title].copy()
     df_heat["name_norm"] = df_heat["name"].apply(norm_name)
     df_heat["name_key"] = df_heat["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
 
