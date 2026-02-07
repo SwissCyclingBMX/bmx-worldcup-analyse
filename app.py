@@ -885,6 +885,14 @@ heats_f = build_heats(df_filter)
 # Add Swiss names column always (independent of nation filter)
 heats_f = add_sui_names_column(heats_f, df_event, nation_filter="SUI")
 
+# Extra safety: filter heats by selected riders (multi-select)
+if rider_selected_list:
+    heat_keys = (
+        df_event[df_event["name"].isin(rider_selected_list)][["round_key", "heat_id"]]
+        .drop_duplicates()
+    )
+    heats_f = heats_f.merge(heat_keys, on=["round_key", "heat_id"], how="inner")
+
 # Apply category filter to heats (empty selection = show all)
 if allowed_group_ids:
     heats_f = heats_f[heats_f["group_id"].isin(allowed_group_ids)].copy()
