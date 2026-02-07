@@ -1147,8 +1147,8 @@ with tab_start:
 
         style = """
         <style>
-          table.dataframe { font-size: 12px; table-layout: fixed; width: 100%; color: #111; background: #fff; }
-          table.dataframe th, table.dataframe td { padding: 6px 6px; border-bottom: 1px solid #eee; color: #111; background: #fff; }
+          table.dataframe { font-size: 12px; table-layout: fixed; width: 100%; }
+          table.dataframe th, table.dataframe td { padding: 6px 6px; border-bottom: 1px solid #eee; }
           table.dataframe th { text-align: left; }
           table.dataframe td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
           table.dataframe td:nth-child(1), table.dataframe th:nth-child(1) { width: 45px; text-align:center; }
@@ -1157,6 +1157,11 @@ with tab_start:
           table.dataframe td:nth-child(4), table.dataframe th:nth-child(4) { width: 55px; text-align:center; }
           table.dataframe td:nth-child(5), table.dataframe th:nth-child(5) { width: 55px; text-align:center; }
           table.dataframe td:nth-child(n+6), table.dataframe th:nth-child(n+6) { width: 85px; text-align:center; }
+
+          @media (prefers-color-scheme: dark) {
+            table.dataframe { color: #f1f3f5; background: #1b1b1b; }
+            table.dataframe th, table.dataframe td { color: #f1f3f5; background: #1b1b1b; border-bottom: 1px solid #333; }
+          }
         </style>
         """
         html = view.to_html(index=False, escape=False)
