@@ -560,37 +560,6 @@ def heat_label_row(r: pd.Series) -> str:
 
 
 # ----------------------------
-# HTML table rendering (sticky columns)
-# ----------------------------
-def render_html_table(df: pd.DataFrame, sticky_cols: int = 1, height: Optional[int] = None) -> None:
-    if df is None or df.empty:
-        st.info("Keine Daten.")
-        return
-    rows = len(df)
-    table_height = height if height is not None else min(1200, 40 + rows * 28)
-    html = df.to_html(index=False, escape=False)
-    style = f"""
-    <style>
-      table.dataframe {{ font-size: 12px; table-layout: fixed; width: 100%; }}
-      table.dataframe th, table.dataframe td {{ padding: 6px 6px; border-bottom: 1px solid #eee; }}
-      table.dataframe th {{ text-align: left; }}
-      table.dataframe td {{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-      {"table.dataframe td:nth-child(1), table.dataframe th:nth-child(1) { position: sticky; left: 0; background: #fff; z-index: 2; }" if sticky_cols >= 1 else ""}
-      @media (prefers-color-scheme: dark) {{
-        table.dataframe th, table.dataframe td {{ border-bottom: 1px solid #333; }}
-        {"table.dataframe td:nth-child(1), table.dataframe th:nth-child(1) { background: #1b1b1b; }" if sticky_cols >= 1 else ""}
-      }}
-    </style>
-    """
-    # Replace table tag for consistent styling
-    html = html.replace(
-        "<table border=\"1\" class=\"dataframe\">",
-        "<table class='dataframe' style='width:100%;border-collapse:collapse;'>",
-    )
-    components.html(style + html, height=table_height, scrolling=False)
-
-
-# ----------------------------
 # Analysis
 # ----------------------------
 def canonical_name(series_original: pd.Series) -> str:
@@ -1176,7 +1145,6 @@ with tab_start:
         ]
         view = view[show_cols]
 
-        table_height = min(1200, 40 + len(view) * 28)
         style = """
         <style>
           table.dataframe { font-size: 12px; table-layout: fixed; width: 100%; }
@@ -1190,15 +1158,9 @@ with tab_start:
           table.dataframe td:nth-child(5), table.dataframe th:nth-child(5) { width: 55px; text-align:center; }
           table.dataframe td:nth-child(n+6), table.dataframe th:nth-child(n+6) { width: 85px; text-align:center; }
 
-          /* Sticky Rider column (3rd) */
-          table.dataframe td:nth-child(3), table.dataframe th:nth-child(3) {
-            position: sticky; left: 90px; z-index: 2; background: #fff;
-          }
-
           @media (prefers-color-scheme: dark) {
             table.dataframe { color: #f1f3f5; background: #1b1b1b; }
             table.dataframe th, table.dataframe td { color: #f1f3f5; background: #1b1b1b; border-bottom: 1px solid #333; }
-            table.dataframe td:nth-child(3), table.dataframe th:nth-child(3) { background: #1b1b1b; }
           }
         </style>
         """
@@ -1207,7 +1169,7 @@ with tab_start:
             "<table border=\"1\" class=\"dataframe\">",
             "<table class='dataframe' style='width:100%;border-collapse:collapse;'>",
         )
-        components.html(style + html, height=table_height, scrolling=False)
+        components.html(style + html, height=360, scrolling=True)
         if rider_selected != "Alle":
             st.caption("Farben: Rot = schneller als gewählter Rider, Grün = langsamer. Vergleich nur für Start-Zeiten.")
     else:
@@ -1220,7 +1182,7 @@ with tab_start:
         # drop any accidental duplicate columns
         start_df_simple = start_df_simple.loc[:, ~start_df_simple.columns.duplicated()]
         start_df_simple = start_df_simple[["nation", "Plate", "Rider", "pick_order", "chosen_lane"]]
-        render_html_table(start_df_simple, sticky_cols=1)
+        st.dataframe(start_df_simple, use_container_width=True, height=320, hide_index=True)
 
     # --- startlist tab: analysis tables in requested order ---
     df_hist_heat = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
@@ -1267,16 +1229,10 @@ with tab_start:
                 return ""
 
             dist_df = dist_df.sort_values(["po_sort", "name", "pick_order", "chosen_lane"], kind="stable")
-            def move_html(val: str) -> str:
-                if val == "→":
-                    return "<span style='color:#1f77b4;font-weight:700'>→</span>"
-                if val == "←":
-                    return "<span style='color:#2ca02c;font-weight:700'>←</span>"
-                return ""
-            dist_view = dist_df.copy()
-            dist_view["move"] = dist_view["move"].map(move_html)
-            dist_view = dist_view[["name", "pick_order", "chosen_lane", "move", "count"]]
-            render_html_table(dist_view, sticky_cols=1)
+            styled = dist_df[["name", "pick_order", "chosen_lane", "move", "count"]].style.applymap(
+                color_move, subset=["move"]
+            )
+            st.dataframe(styled, use_container_width=True, height=360, hide_index=True)
 
         # Summary per rider (THIRD)
         st.markdown("**Zusammenfassung pro Rider (nur Fakten aus ausgewählten Events):**")
@@ -1288,8 +1244,12 @@ with tab_start:
             sum_df["po_sort"] = sum_df["name"].map(lambda n: po_map.get(norm_name(n), 9999))
             sum_df = sum_df.sort_values(["po_sort", "name"], kind="stable")
             st.caption("favorite_share = Anteil der häufigsten Lane-Wahl (Mode) an allen Picks des Riders (0–1).")
-            sum_view = sum_df[["name", "picks_n", "mean_pick_order", "mean_chosen_lane", "fav_lane", "favorite_share", "taktik"]]
-            render_html_table(sum_view, sticky_cols=1)
+            st.dataframe(
+                sum_df[["name", "picks_n", "mean_pick_order", "mean_chosen_lane", "fav_lane", "favorite_share", "taktik"]],
+                use_container_width=True,
+                height=320,
+                hide_index=True,
+            )
     else:
         st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
 
@@ -1403,7 +1363,7 @@ with tab_rounds:
             mat = mat.reindex(columns=riders)
             # Keep fixed round order (do not sort by rider)
             mat = mat.round(3).reset_index().rename(columns={"round_title": "Round"})
-            render_html_table(mat, sticky_cols=1)
+            st.dataframe(mat, use_container_width=True, height=240, hide_index=True)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
@@ -1452,7 +1412,7 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
-                    render_html_table(ts_view, sticky_cols=1)
+                    st.dataframe(ts_view, use_container_width=True, height=240, hide_index=True)
                 rs = race_stats(df_hist)
                 if not rs.empty:
                     st.markdown("**Race-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
@@ -1466,4 +1426,4 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
-                    render_html_table(rs_view, sticky_cols=1)
+                    st.dataframe(rs_view, use_container_width=True, height=240, hide_index=True)
