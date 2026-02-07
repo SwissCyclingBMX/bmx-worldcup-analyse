@@ -717,11 +717,28 @@ show_times = st.sidebar.checkbox("Zeiten anzeigen (Start/T1)", value=True)
 training_live = st.sidebar.checkbox("Training-Live Ansicht", value=False)
 
 # Rider filter(s) - show only riders that match other filters (nation/category/gender)
+# Use session_state for category/gender (widgets are rendered below, but state persists)
+level_sel_state = st.session_state.get("level_sel", ["Elite", "U23", "Junior"])
+gender_sel_state = st.session_state.get("gender_sel", ["Men", "Women"])
+
+allowed_group_ids_preview = []
+levels_all = ["Elite", "U23", "Junior"]
+genders_all = ["Men", "Women"]
+if not level_sel_state and not gender_sel_state:
+    allowed_group_ids_preview = []
+else:
+    levels_use = level_sel_state if level_sel_state else levels_all
+    genders_use = gender_sel_state if gender_sel_state else genders_all
+    labels = {f"{lvl} {gen}" for lvl in levels_use for gen in genders_use}
+    for gid, cat in GROUP_MAP.items():
+        if cat in labels:
+            allowed_group_ids_preview.append(gid)
+
 df_rider_pool = df_event.copy()
 if nation:
     df_rider_pool = df_rider_pool[df_rider_pool["nation"].fillna("").str.upper() == nation]
-if allowed_group_ids:
-    df_rider_pool = df_rider_pool[df_rider_pool["group_id"].isin(allowed_group_ids)].copy()
+if allowed_group_ids_preview:
+    df_rider_pool = df_rider_pool[df_rider_pool["group_id"].isin(allowed_group_ids_preview)].copy()
 all_names = sorted([n for n in df_rider_pool["name"].dropna().unique().tolist() if isinstance(n, str) and n.strip()])
 if "rider_filter" not in st.session_state:
     st.session_state["rider_filter"] = []
@@ -751,11 +768,13 @@ level_sel = st.sidebar.multiselect(
     "Kategorie",
     options=["Elite", "U23", "Junior"],
     default=["Elite", "U23"],
+    key="level_sel",
 )
 gender_sel = st.sidebar.multiselect(
     "Geschlecht",
     options=["Men", "Women"],
     default=["Men", "Women"],
+    key="gender_sel",
 )
 
 allowed_group_ids = []
