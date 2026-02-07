@@ -1350,11 +1350,7 @@ with tab_rounds:
             # keep row order
             mat = mat.reindex(round_titles)
             mat = mat.reindex(columns=riders)
-            # Optional: sort rows by selected rider's times (NaN last)
-            if rider_selected != "Alle" and rider_selected in mat.columns:
-                sort_col = mat[rider_selected]
-                sort_key = sort_col.fillna(sort_col.max() if pd.notna(sort_col.max()) else 0) + 1e9 * sort_col.isna()
-                mat = mat.assign(_sort_key=sort_key).sort_values("_sort_key").drop(columns=["_sort_key"])
+            # Keep fixed round order (do not sort by rider)
             mat = mat.round(3).reset_index().rename(columns={"round_title": "Round"})
             st.dataframe(mat, use_container_width=True, height=240, hide_index=True)
         else:
