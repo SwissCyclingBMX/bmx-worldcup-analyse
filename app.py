@@ -62,6 +62,17 @@ def norm_name(s: str) -> str:
     return s
 
 
+def norm_uci_id(v) -> str:
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    # keep digits only
+    s = re.sub(r"\\D+", "", s)
+    return s
+
+
 def safe_in_clause(values: List[str]) -> Tuple[str, List[str]]:
     """Returns ('?, ?, ?', params) for IN clause."""
     values = [v for v in values if v]
@@ -1174,11 +1185,18 @@ with tab_start:
                 if uci_event_id:
                     mr = master[master["uci_event_id"].astype(str) == str(uci_event_id)].copy()
                     if not mr.empty:
-                        mr["uci_id"] = mr["uci_id"].astype(str)
+                        mr["uci_id_norm"] = mr["uci_id"].apply(norm_uci_id)
+                        mr["name_norm"] = (mr["first_name"].astype(str) + " " + mr["last_name"].astype(str)).apply(norm_name)
                         mr["rank"] = pd.to_numeric(mr["rank"], errors="coerce").astype("Int64")
                         # map by uci_id first, fallback by name
-                        final_map = mr.set_index("uci_id")["rank"].to_dict()
-                        view["final_rank"] = view["uci_id"].astype(str).map(final_map)
+                        final_map_uci = mr.set_index("uci_id_norm")["rank"].to_dict()
+                        final_map_name = mr.set_index("name_norm")["rank"].to_dict()
+                        view["uci_id_norm"] = view["uci_id"].apply(norm_uci_id)
+                        view["name_norm"] = view["Rider"].apply(norm_name)
+                        view["final_rank"] = view["uci_id_norm"].map(final_map_uci)
+                        view.loc[view["final_rank"].isna(), "final_rank"] = view.loc[
+                            view["final_rank"].isna(), "name_norm"
+                        ].map(final_map_name)
 
         show_cols = [
             "nation",
