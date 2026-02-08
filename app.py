@@ -1145,6 +1145,9 @@ with tab_start:
             )
 
         view = start_df.copy()
+        # preserve full name for matching (display may be shortened later)
+        if "name" in view.columns:
+            view["name_full"] = view["name"]
         view["is_baseline"] = view["name"] == rider_selected
         # Avoid duplicate Rider column
         if "name" in view.columns and "Rider" in view.columns:
@@ -1207,7 +1210,8 @@ with tab_start:
                             view["uci_id_norm"] = view["uci_id"].apply(norm_uci_id)
                         else:
                             view["uci_id_norm"] = ""
-                        view["name_key"] = view["Rider"].apply(norm_name_key)
+                        name_src = view["name_full"] if "name_full" in view.columns else view["Rider"]
+                        view["name_key"] = name_src.apply(norm_name_key)
                         view["final_rank"] = view["uci_id_norm"].map(final_map_uci)
                         view.loc[view["final_rank"].isna(), "final_rank"] = view.loc[
                             view["final_rank"].isna(), "name_key"
