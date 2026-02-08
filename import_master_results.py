@@ -78,6 +78,17 @@ def import_parquet(path: str, klasse: str = "CM,CDM") -> int:
 
     conn = sqlite3.connect("bmx.db")
     init_master_table(conn)
+
+    # Remove existing rows for the same UCIEventIDs to avoid unique conflicts
+    uci_ids = out["uci_event_id"].dropna().astype(str).unique().tolist()
+    if uci_ids:
+        # delete in chunks to avoid SQLite limits
+        for i in range(0, len(uci_ids), 200):
+            chunk = uci_ids[i:i+200]
+            placeholders = ",".join(["?"] * len(chunk))
+            conn.execute(f"DELETE FROM master_results WHERE uci_event_id IN ({placeholders})", chunk)
+        conn.commit()
+
     # Insert in smaller chunks to avoid SQLite variable limits
     out.to_sql("master_results", conn, if_exists="append", index=False, chunksize=200)
     conn.commit()
