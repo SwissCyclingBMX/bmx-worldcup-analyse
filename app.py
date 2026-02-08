@@ -62,6 +62,16 @@ def norm_name(s: str) -> str:
     return s
 
 
+def norm_name_key(s: str) -> str:
+    """Order-insensitive name key (handles 'LAST First' vs 'First LAST')."""
+    base = norm_name(s)
+    if not base:
+        return ""
+    tokens = base.split()
+    tokens.sort()
+    return " ".join(tokens)
+
+
 def norm_uci_id(v) -> str:
     if v is None:
         return ""
@@ -1186,19 +1196,21 @@ with tab_start:
                     mr = master[master["uci_event_id"].astype(str) == str(uci_event_id)].copy()
                     if not mr.empty:
                         mr["uci_id_norm"] = mr["uci_id"].apply(norm_uci_id)
-                        mr["name_norm"] = (mr["first_name"].astype(str) + " " + mr["last_name"].astype(str)).apply(norm_name)
+                        mr["name_key"] = (
+                            mr["first_name"].astype(str) + " " + mr["last_name"].astype(str)
+                        ).apply(norm_name_key)
                         mr["rank"] = pd.to_numeric(mr["rank"], errors="coerce").astype("Int64")
                         # map by uci_id first, fallback by name
                         final_map_uci = mr.set_index("uci_id_norm")["rank"].to_dict()
-                        final_map_name = mr.set_index("name_norm")["rank"].to_dict()
+                        final_map_name = mr.set_index("name_key")["rank"].to_dict()
                         if "uci_id" in view.columns:
                             view["uci_id_norm"] = view["uci_id"].apply(norm_uci_id)
                         else:
                             view["uci_id_norm"] = ""
-                        view["name_norm"] = view["Rider"].apply(norm_name)
+                        view["name_key"] = view["Rider"].apply(norm_name_key)
                         view["final_rank"] = view["uci_id_norm"].map(final_map_uci)
                         view.loc[view["final_rank"].isna(), "final_rank"] = view.loc[
-                            view["final_rank"].isna(), "name_norm"
+                            view["final_rank"].isna(), "name_key"
                         ].map(final_map_name)
 
         show_cols = [
