@@ -34,10 +34,11 @@ def init_master_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def import_parquet(path: str, klasse: str = "CM") -> int:
+def import_parquet(path: str, klasse: str = "CM,CDM") -> int:
     df = pd.read_parquet(path)
-    # Filter to BMX World Championship class + relevant categories
-    df = df[df["Klasse"] == klasse].copy()
+    # Filter to BMX classes + relevant categories
+    classes = [k.strip() for k in klasse.split(",") if k.strip()]
+    df = df[df["Klasse"].isin(classes)].copy()
     df = df[df["Kategorie"].isin(["Elite", "U23", "Junior"])].copy()
 
     # Normalize gender
