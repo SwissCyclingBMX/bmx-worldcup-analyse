@@ -170,6 +170,7 @@ def ensure_pick_columns(conn: sqlite3.Connection) -> None:
         "t3": "TEXT",
         "t4": "TEXT",
         "time": "TEXT",
+        "rank": "INTEGER",
     }
     cur = conn.execute("PRAGMA table_info(picks)")
     existing = {row[1] for row in cur.fetchall()}
@@ -201,13 +202,13 @@ def upsert_picks(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> None:
         event_id, group_id, round_key, round_title,
         heat_id, heat_title, heat_status, start_time_string,
         bib, name, nation, pick_order, lane, lane_idx,
-        uci_id, start, t1, t2, t3, t4, time,
+        uci_id, start, t1, t2, t3, t4, time, rank,
         seen_at
     ) VALUES (
         :event_id, :group_id, :round_key, :round_title,
         :heat_id, :heat_title, :heat_status, :start_time_string,
         :bib, :name, :nation, :pick_order, :lane, :lane_idx,
-        :uci_id, :start, :t1, :t2, :t3, :t4, :time,
+        :uci_id, :start, :t1, :t2, :t3, :t4, :time, :rank,
         :seen_at
     )
     ON CONFLICT(event_id, round_key, heat_id, bib) DO UPDATE SET
@@ -228,6 +229,7 @@ def upsert_picks(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> None:
         t3=excluded.t3,
         t4=excluded.t4,
         time=excluded.time,
+        rank=excluded.rank,
         seen_at=excluded.seen_at
     """, rows)
     conn.commit()
@@ -322,6 +324,7 @@ def ingest_event_once(conn: sqlite3.Connection, event_id: str, verbose: bool = T
                     "t3": r.get("T3"),
                     "t4": r.get("T4"),
                     "time": r.get("Time"),
+                    "rank": r.get("Pos"),
                     "seen_at": seen_at,
                 })
 

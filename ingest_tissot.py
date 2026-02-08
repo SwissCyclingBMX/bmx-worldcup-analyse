@@ -254,6 +254,7 @@ def ingest_tissot(base: str, event_id: str, display_name: str, event_date: str, 
                         "t3": t3,
                         "t4": None,
                         "time": time,
+                        "rank": res.get("rank"),
                         "seen_at": seen_at,
                     }
                     upsert_picks(conn, [rows])

@@ -23,6 +23,18 @@ GROUP_MAP = {
     95: "Junior Men",
     96: "Junior Women",
 }
+
+# WM UCIEventID map (Copenhagen 2025)
+WCH_UCI_EVENT_MAP = {
+    2025: {
+        "Elite Men": "332756",
+        "Elite Women": "332757",
+        "Junior Men": "332758",
+        "Junior Women": "332759",
+        "U23 Men": "332760",
+        "U23 Women": "332761",
+    }
+}
 NOT_UPCOMING_STATUS = {
     "finished",
     "completed",
@@ -231,6 +243,21 @@ def load_picks_for_events(event_ids: List[str]) -> pd.DataFrame:
     return normalize_picks_df(df)
 
 
+@st.cache_data(ttl=60)
+def load_master_results() -> pd.DataFrame:
+    db_path = DB_PATH if os.path.exists(DB_PATH) else DB_PATH_CLOUD
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    conn = sqlite3.connect(db_path)
+    try:
+        df = pd.read_sql_query("SELECT * FROM master_results", conn)
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+    return df
+
+
 def live_event_ids_today(events_df: pd.DataFrame) -> List[str]:
     if events_df is None or events_df.empty:
         return []
@@ -289,8 +316,8 @@ def normalize_picks_df(df: pd.DataFrame) -> pd.DataFrame:
     if "bib" not in df.columns:
         df["bib"] = None
 
-    # timing fields + uci_id
-    for c in ["uci_id", "start", "t1", "t2", "t3", "t4", "time"]:
+    # timing fields + uci_id + rank
+    for c in ["uci_id", "start", "t1", "t2", "t3", "t4", "time", "rank"]:
         if c not in df.columns:
             df[c] = None
 
@@ -314,6 +341,9 @@ def normalize_picks_df(df: pd.DataFrame) -> pd.DataFrame:
 
     # pick_order numeric
     df["pick_order"] = pd.to_numeric(df["pick_order"], errors="coerce").astype("Int64")
+    # rank numeric
+    if "rank" in df.columns:
+        df["rank"] = pd.to_numeric(df["rank"], errors="coerce").astype("Int64")
 
     # category label
     df["category"] = df["group_id"].astype("Int64").map(GROUP_MAP).fillna(df["group_id"].astype(str))
@@ -1131,18 +1161,40 @@ with tab_start:
             lambda r: combined_cell(r.get("race_cons_score"), r.get("train_cons_score"), "", "", r.get("is_baseline")), axis=1
         )
 
+        # Final rank (Master Results) for WM events
+        if "wch" in str(event_id).lower():
+            master = load_master_results()
+            if not master.empty:
+                try:
+                    year = int(str(event_id)[:4])
+                except Exception:
+                    year = None
+                cat_label = GROUP_MAP.get(gid, "")
+                uci_event_id = WCH_UCI_EVENT_MAP.get(year, {}).get(cat_label)
+                if uci_event_id:
+                    mr = master[master["uci_event_id"].astype(str) == str(uci_event_id)].copy()
+                    if not mr.empty:
+                        mr["uci_id"] = mr["uci_id"].astype(str)
+                        mr["rank"] = pd.to_numeric(mr["rank"], errors="coerce").astype("Int64")
+                        # map by uci_id first, fallback by name
+                        final_map = mr.set_index("uci_id")["rank"].to_dict()
+                        view["final_rank"] = view["uci_id"].astype(str).map(final_map)
+
         show_cols = [
             "nation",
             "Plate",
             "Rider",
             "pick_order",
+            "rank",
             "Best Start",
             "Ø3 Start",
             "Best T1",
             "Ø3 T1",
             "Score",
             "chosen_lane",
+            "final_rank",
         ]
+        show_cols = [c for c in show_cols if c in view.columns]
         view = view[show_cols]
 
         style = """
