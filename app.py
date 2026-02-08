@@ -1488,9 +1488,30 @@ with tab_rounds:
                                 final_row[r] = final_map_name.get(norm_name_key(r), pd.NA)
                             extra_rows.append(final_row)
 
+            # Format per-round cells with rank in each field (e.g., "2.345 (1)")
+            display = mat.copy()
+            round_set = set(round_titles)
+            for idx in range(len(display)):
+                if display.loc[idx, "Round"] not in round_set:
+                    continue
+                row_vals = pd.to_numeric(display.loc[idx, riders], errors="coerce")
+                row_ranks = row_vals.rank(method="min", ascending=True)
+                formatted = {}
+                for r in riders:
+                    v = row_vals.get(r)
+                    if pd.isna(v):
+                        formatted[r] = None
+                    else:
+                        rk = row_ranks.get(r)
+                        rk_txt = "" if pd.isna(rk) else str(int(rk))
+                        formatted[r] = f"{v:.3f} ({rk_txt})"
+                for r, v in formatted.items():
+                    display.at[idx, r] = v
+
             if extra_rows:
-                mat = pd.concat([mat, pd.DataFrame(extra_rows)], ignore_index=True)
-            st.dataframe(mat, use_container_width=True, height=240, hide_index=True)
+                extra_df = pd.DataFrame(extra_rows)
+                display = pd.concat([display, extra_df], ignore_index=True)
+            st.dataframe(display, use_container_width=True, height=240, hide_index=True)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
