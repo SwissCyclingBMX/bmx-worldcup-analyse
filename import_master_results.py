@@ -77,7 +77,8 @@ def import_parquet(path: str, klasse: str = "CM") -> int:
 
     conn = sqlite3.connect("bmx.db")
     init_master_table(conn)
-    out.to_sql("master_results", conn, if_exists="append", index=False, method="multi")
+    # Insert in smaller chunks to avoid SQLite variable limits
+    out.to_sql("master_results", conn, if_exists="append", index=False, chunksize=200)
     conn.commit()
     conn.close()
     return len(out)
