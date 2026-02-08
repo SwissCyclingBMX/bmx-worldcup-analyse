@@ -1229,7 +1229,6 @@ with tab_start:
             "Ø3 T1",
             "Score",
             "chosen_lane",
-            "final_rank",
         ]
         show_cols = [c for c in show_cols if c in view.columns]
         view = view[show_cols]
@@ -1452,6 +1451,45 @@ with tab_rounds:
             mat = mat.reindex(columns=riders)
             # Keep fixed round order (do not sort by rider)
             mat = mat.round(3).reset_index().rename(columns={"round_title": "Round"})
+
+            # Add per-rider rank (based on best metric in this event) and final rank (WM)
+            extra_rows = []
+            try:
+                rider_best = df_round.groupby("name")["metric_s"].min()
+                if not rider_best.empty:
+                    ranks = rider_best.rank(method="min", ascending=True).astype("Int64")
+                    rank_row = {"Round": f"Rank ({metric_label})"}
+                    for r in riders:
+                        rank_row[r] = ranks.get(r, pd.NA)
+                    extra_rows.append(rank_row)
+            except Exception:
+                pass
+
+            # Final rank from Master Results for WM events
+            if "wch" in str(event_id).lower():
+                master = load_master_results()
+                if not master.empty:
+                    try:
+                        year = int(str(event_id)[:4])
+                    except Exception:
+                        year = None
+                    cat_label = GROUP_MAP.get(gid, "")
+                    uci_event_id = WCH_UCI_EVENT_MAP.get(year, {}).get(cat_label)
+                    if uci_event_id:
+                        mr = master[master["uci_event_id"].astype(str) == str(uci_event_id)].copy()
+                        if not mr.empty:
+                            mr["name_key"] = (
+                                mr["first_name"].astype(str) + " " + mr["last_name"].astype(str)
+                            ).apply(norm_name_key)
+                            mr["rank"] = pd.to_numeric(mr["rank"], errors="coerce").astype("Int64")
+                            final_map_name = mr.set_index("name_key")["rank"].to_dict()
+                            final_row = {"Round": "Final Rank"}
+                            for r in riders:
+                                final_row[r] = final_map_name.get(norm_name_key(r), pd.NA)
+                            extra_rows.append(final_row)
+
+            if extra_rows:
+                mat = pd.concat([mat, pd.DataFrame(extra_rows)], ignore_index=True)
             st.dataframe(mat, use_container_width=True, height=240, hide_index=True)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
