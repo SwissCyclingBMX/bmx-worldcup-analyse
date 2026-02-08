@@ -1191,7 +1191,10 @@ with tab_start:
                         # map by uci_id first, fallback by name
                         final_map_uci = mr.set_index("uci_id_norm")["rank"].to_dict()
                         final_map_name = mr.set_index("name_norm")["rank"].to_dict()
-                        view["uci_id_norm"] = view["uci_id"].apply(norm_uci_id)
+                        if "uci_id" in view.columns:
+                            view["uci_id_norm"] = view["uci_id"].apply(norm_uci_id)
+                        else:
+                            view["uci_id_norm"] = ""
                         view["name_norm"] = view["Rider"].apply(norm_name)
                         view["final_rank"] = view["uci_id_norm"].map(final_map_uci)
                         view.loc[view["final_rank"].isna(), "final_rank"] = view.loc[
