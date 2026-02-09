@@ -93,6 +93,19 @@ def extract_uci_id(raw: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _extract_attr_payload(text: str, attr: str) -> Optional[Dict[str, Any]]:
+    for quote in ['"', "'"]:
+        token = f"{attr}={quote}"
+        start = text.find(token)
+        if start != -1:
+            start += len(token)
+            end = text.find(quote, start)
+            if end != -1:
+                data = html.unescape(text[start:end])
+                return json.loads(data)
+    return None
+
+
 def fetch_event_payload(url: str) -> Dict[str, Any]:
     headers = {"X-Inertia": "true", "X-Requested-With": "XMLHttpRequest"}
     r = requests.get(url, headers=headers, timeout=30)
@@ -104,10 +117,9 @@ def fetch_event_payload(url: str) -> Dict[str, Any]:
     text = r.text
     # try to parse payload from HTML
     for attr in ["data-page", "data-payload"]:
-        m = re.search(rf'{attr}=(\"|\')(.*?)(\\1)', text, re.S)
-        if m:
-            data = html.unescape(m.group(2))
-            return json.loads(data)
+        payload = _extract_attr_payload(text, attr)
+        if payload:
+            return payload
     # last resort: try to find JSON object in text
     for pat in [
         r'({"component":.*?"props":.*?})\\s*</script>',
@@ -116,7 +128,7 @@ def fetch_event_payload(url: str) -> Dict[str, Any]:
         m = re.search(pat, text, re.S)
         if m:
             return json.loads(m.group(1))
-    raise RuntimeError("Could not parse JSTiming payload")
+    raise RuntimeError(f"Could not parse JSTiming payload for {url}")
 
 
 def extract_props(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -305,7 +317,10 @@ def main() -> None:
 
     # Ingest race events (all rounds)
     for race_url in args.race:
-        payload = fetch_event_payload(race_url)
+        try:
+            payload = fetch_event_payload(race_url)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load {race_url}: {e}") from e
         props = extract_props(payload)
         event_id, display_name, city, date_yyyymmdd, country = make_event_meta(props, used_ids)
         upsert_event(
