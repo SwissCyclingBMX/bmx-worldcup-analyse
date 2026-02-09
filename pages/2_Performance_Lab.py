@@ -1,5 +1,6 @@
 import sqlite3
 from typing import Optional
+import unicodedata
 
 import altair as alt
 import numpy as np
@@ -67,6 +68,22 @@ def short_name(name: str) -> str:
     return f"{first}. {last}"
 
 
+def clean_spaces(s: str) -> str:
+    return " ".join(str(s or "").strip().split())
+
+
+def norm_uci_id(v: str) -> str:
+    s = "".join(ch for ch in str(v or "").strip() if ch.isdigit())
+    return s if len(s) >= 8 else ""
+
+
+def norm_name_key(name: str) -> str:
+    s = clean_spaces(name).lower()
+    s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+    s = "".join(ch for ch in s if ch.isalnum() or ch.isspace())
+    return " ".join(sorted(s.split()))
+
+
 @st.cache_data(show_spinner=False)
 def load_perf_data(db_path: str = DB_PATH) -> pd.DataFrame:
     conn = sqlite3.connect(db_path)
@@ -118,12 +135,37 @@ def load_perf_data(db_path: str = DB_PATH) -> pd.DataFrame:
     df["category"] = [c[0] for c in cats]
     df["gender"] = [c[1] for c in cats]
 
-    df["rider_id"] = (
-        df["uci_id"].fillna("").astype(str).str.strip().replace("", np.nan)
-        .fillna(df["name"].fillna("").astype(str).str.strip() + "|" + df["nation"].fillna("").astype(str).str.strip())
+    df["nation_u"] = df["nation"].fillna("").astype(str).str.upper().str.strip()
+    df["name_clean"] = df["name"].fillna("").astype(str).apply(clean_spaces)
+    df["name_key"] = df["name_clean"].apply(norm_name_key)
+    df["uci_norm"] = df["uci_id"].fillna("").astype(str).apply(norm_uci_id)
+
+    # Canonical rider identity:
+    # 1) by UCI ID if available
+    # 2) else by normalized name + nation (order/accents-insensitive)
+    df["rider_id"] = np.where(
+        df["uci_norm"] != "",
+        "uci:" + df["uci_norm"],
+        "name:" + df["name_key"] + "|" + df["nation_u"],
     )
-    df["rider_label"] = (df["name"].fillna("").astype(str).str.strip() + " (" + df["nation"].fillna("").astype(str).str.upper() + ")").str.strip()
-    df["rider_short"] = df["name"].fillna("").astype(str).apply(short_name)
+    df["rider_label_raw"] = (df["name_clean"] + " (" + df["nation_u"] + ")").str.strip()
+
+    # Choose one stable label per rider_id to avoid duplicate filter entries.
+    label_counts = (
+        df.groupby(["rider_id", "rider_label_raw"], as_index=False)
+        .size()
+        .rename(columns={"size": "cnt"})
+    )
+    label_counts["name_len"] = label_counts["rider_label_raw"].astype(str).str.len()
+    label_counts = label_counts.sort_values(
+        ["rider_id", "cnt", "name_len", "rider_label_raw"],
+        ascending=[True, False, False, True],
+    )
+    label_map = label_counts.drop_duplicates(subset=["rider_id"]).set_index("rider_id")["rider_label_raw"].to_dict()
+    df["rider_label"] = df["rider_id"].map(label_map).fillna(df["rider_label_raw"])
+
+    name_part = df["rider_label"].str.replace(r"\s*\([A-Z]{2,3}\)\s*$", "", regex=True)
+    df["rider_short"] = name_part.apply(short_name)
     return df
 
 
