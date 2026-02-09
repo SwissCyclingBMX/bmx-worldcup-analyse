@@ -107,6 +107,26 @@ def fmt_table(df: pd.DataFrame, time_cols: Optional[List[str]] = None, score_col
     return out
 
 
+def render_html_table(df: pd.DataFrame, html: Optional[str] = None, row_h: int = 26, min_h: int = 120) -> None:
+    if df is None:
+        return
+    if html is None:
+        html = df.to_html(index=False, escape=False, classes="bmx-table")
+    style = """
+    <style>
+      table.bmx-table { font-size: 12px; width: 100%; border-collapse: collapse; }
+      table.bmx-table th, table.bmx-table td { border-bottom: 1px solid #eee; padding: 4px 6px; text-align: center; }
+      table.bmx-table th:first-child, table.bmx-table td:first-child { text-align: left; }
+      @media (prefers-color-scheme: dark) {
+        table.bmx-table { color: #f1f3f5; background: #1b1b1b; }
+        table.bmx-table th, table.bmx-table td { color: #f1f3f5; background: #1b1b1b; border-bottom: 1px solid #333; }
+      }
+    </style>
+    """
+    height = max(min_h, int((len(df) + 1) * row_h))
+    components.html(style + html, height=height, scrolling=False)
+
+
 def safe_in_clause(values: List[str]) -> Tuple[str, List[str]]:
     """Returns ('?, ?, ?', params) for IN clause."""
     values = [v for v in values if v]
@@ -1371,10 +1391,28 @@ with tab_start:
                 return ""
 
             dist_df = dist_df.sort_values(["po_sort", "name", "pick_order", "chosen_lane"], kind="stable")
-            styled = dist_df[["name", "pick_order", "chosen_lane", "move", "count"]].style.applymap(
-                color_move, subset=["move"]
-            )
-            st.table(dist_df[["name", "pick_order", "chosen_lane", "move", "count"]])
+            dist_view = dist_df[["name", "pick_order", "chosen_lane", "move", "count"]].copy()
+            # alternate group shading by rider
+            group_flag = []
+            last_name = None
+            toggle = False
+            for n in dist_view["name"].tolist():
+                if n != last_name:
+                    toggle = not toggle
+                    last_name = n
+                group_flag.append(toggle)
+            dist_view["_group"] = group_flag
+
+            def _shade_row(row):
+                if row["_group"]:
+                    return ["background-color: #f3f5f7"] * len(row)
+                return [""] * len(row)
+
+            styled = dist_view.style.apply(_shade_row, axis=1).applymap(color_move, subset=["move"])
+            styled = styled.hide(axis="index").hide(axis="columns", subset=["_group"])
+            html = styled.to_html()
+            html = html.replace("class=\"dataframe\"", "class=\"bmx-table\"")
+            render_html_table(dist_view.drop(columns=["_group"]), html=html, row_h=26, min_h=140)
 
         # Summary per rider (THIRD)
         st.markdown("**Zusammenfassung pro Rider (nur Fakten aus ausgewählten Events):**")
@@ -1387,7 +1425,7 @@ with tab_start:
             sum_df = sum_df.sort_values(["po_sort", "name"], kind="stable")
             st.caption("favorite_share = Anteil der häufigsten Lane-Wahl (Mode) an allen Picks des Riders (0–1).")
             sum_view = sum_df[["name", "picks_n", "mean_pick_order", "mean_chosen_lane", "fav_lane", "favorite_share", "taktik"]]
-            st.table(sum_view)
+            render_html_table(sum_view, row_h=26, min_h=140)
     else:
         st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
 
