@@ -5,7 +5,7 @@ import requests
 import unicodedata
 import datetime
 import re
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 import pandas as pd
 import streamlit as st
