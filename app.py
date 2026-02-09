@@ -1137,6 +1137,7 @@ with tab_start:
 
     # Training stats for riders in heat
     if show_times:
+        training_source_note = "Training-Zeiten: aktuelles Event (Gate Practice)"
         df_train = load_training_for_events(analysis_event_ids)
         if not df_train.empty:
             stats = training_stats(df_train)
@@ -1196,8 +1197,10 @@ with tab_start:
                     df_race_hist = df_prev.copy() if not df_prev.empty else df_race_hist.iloc[0:0].copy()
                 else:
                     df_race_hist = df_race_hist[df_race_hist["event_id"] == prev_event_id].copy()
+                race_source_note = "Race-Zeiten: Vortag gleiche Location (gleiche Serie)"
             else:
                 df_race_hist = df_race_hist.iloc[0:0].copy()
+                race_source_note = "Race-Zeiten: keine Daten (kein Vortag gefunden)"
         else:
             df_race_hist = df_event.copy()
             if not df_race_hist.empty:
@@ -1209,6 +1212,7 @@ with tab_start:
                         (df_race_hist["round_key"] < rk)
                         | ((df_race_hist["round_key"] == rk) & (df_race_hist["heat_id"] < hid))
                     ].copy()
+            race_source_note = "Race-Zeiten: aktuelles Event (nur bis vor den gewählten Heat)"
 
         if not df_race_hist.empty:
             heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
@@ -1407,6 +1411,7 @@ with tab_start:
         )
         html = f"<div style='overflow-x:auto;width:100%;'>{html}</div>"
         components.html(style + html, height=auto_height(view, row_h=38, min_h=200) + 120, scrolling=False)
+        st.caption(f"{race_source_note} | {training_source_note}")
         if rider_selected != "Alle":
             st.caption("Farben: Rot = schneller als gewählter Rider, Grün = langsamer. Vergleich nur für Start-Zeiten.")
     else:
@@ -1741,6 +1746,10 @@ with tab_rounds:
             display = display.astype(str).replace({"nan": ""})
             height = auto_height(display, row_h=34, min_h=140)
             st.dataframe(display, use_container_width=True, height=height, hide_index=True)
+            if mode_time == "Athleten":
+                st.caption("Rundenmatrix: aktuelles Event, nur gewählte Athleten")
+            else:
+                st.caption("Rundenmatrix: aktuelles Event, Rider im gewählten Heat")
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
@@ -1791,6 +1800,7 @@ with tab_rounds:
                     )
                     ts_view = fmt_table(ts_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
                     st.table(ts_view)
+                    st.caption("Training-Zeiten: ausgewählte Analyse-Events (inkl. aktuelles Event)")
                 rs = race_stats(df_hist)
                 if not rs.empty:
                     st.markdown("**Race-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
@@ -1806,3 +1816,4 @@ with tab_rounds:
                     )
                     rs_view = fmt_table(rs_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
                     st.table(rs_view)
+                    st.caption("Race-Zeiten: ausgewählte Analyse-Events")
