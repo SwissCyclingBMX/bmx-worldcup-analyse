@@ -93,6 +93,11 @@ def extract_uci_id(raw: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def event_exists(conn: sqlite3.Connection, event_id: str) -> bool:
+    cur = conn.execute("SELECT 1 FROM events WHERE event_id = ? LIMIT 1", (event_id,))
+    return cur.fetchone() is not None
+
+
 def _extract_attr_payload(text: str, attr: str) -> Optional[Dict[str, Any]]:
     for quote in ['"', "'"]:
         token = f"{attr}={quote}"
@@ -370,17 +375,20 @@ def main() -> None:
                     return abs(int(m["date"]) - int(date_yyyymmdd))
                 candidates.sort(key=_dist)
                 linked_event_id = candidates[0]["event_id"]
-        upsert_event(
-            conn,
-            {
-                "event_id": linked_event_id,
-                "display_name": display_name,
-                "location": city,
-                "country": country,
-                "event_date": f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}",
-                "last_seen": now_iso(),
-            },
-        )
+        if not event_exists(conn, linked_event_id):
+            upsert_event(
+                conn,
+                {
+                    "event_id": linked_event_id,
+                    "display_name": display_name,
+                    "location": city,
+                    "country": country,
+                    "event_date": f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}",
+                    "last_seen": now_iso(),
+                },
+            )
+        else:
+            conn.execute("UPDATE events SET last_seen = ? WHERE event_id = ?", (now_iso(), linked_event_id))
         ingest_training_event(conn, train_url, linked_event_id)
 
     conn.commit()
