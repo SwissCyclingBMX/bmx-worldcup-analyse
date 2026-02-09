@@ -102,11 +102,12 @@ def fetch_event_payload(url: str) -> Dict[str, Any]:
         return r.json()
     # fallback: parse data-page from HTML
     text = r.text
-    # try to parse Inertia data-page from HTML
-    m = re.search(r'data-page=(\"|\')(.*?)(\\1)', text, re.S)
-    if m:
-        data = html.unescape(m.group(2))
-        return json.loads(data)
+    # try to parse payload from HTML
+    for attr in ["data-page", "data-payload"]:
+        m = re.search(rf'{attr}=(\"|\')(.*?)(\\1)', text, re.S)
+        if m:
+            data = html.unescape(m.group(2))
+            return json.loads(data)
     # last resort: try to find JSON object in text
     for pat in [
         r'({"component":.*?"props":.*?})\\s*</script>',
