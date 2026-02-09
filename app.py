@@ -922,7 +922,7 @@ if training_live:
     )
     mat = mat.reindex(columns=riders)
     mat = mat.reset_index().rename(columns={"start_label": "Start"})
-    st.dataframe(mat, use_container_width=True, height=auto_height(mat), hide_index=True)
+    st.table(mat)
 
     # Last available gate table
     st.markdown("**Letzte verfügbare Gates (aktuellste Messung):**")
@@ -949,7 +949,7 @@ if training_live:
             "t1": "T1",
         }
     )
-    st.dataframe(df_last, use_container_width=True, height=auto_height(df_last), hide_index=True)
+    st.table(df_last)
     st.stop()
 
 # ----------------------------
@@ -1287,7 +1287,7 @@ with tab_start:
             "<table border=\"1\" class=\"dataframe\">",
             "<table class='dataframe' style='width:100%;border-collapse:collapse;'>",
         )
-        components.html(style + html, height=360, scrolling=True)
+        components.html(style + html, height=auto_height(view) + 80, scrolling=False)
         if rider_selected != "Alle":
             st.caption("Farben: Rot = schneller als gewählter Rider, Grün = langsamer. Vergleich nur für Start-Zeiten.")
     else:
@@ -1300,7 +1300,7 @@ with tab_start:
         # drop any accidental duplicate columns
         start_df_simple = start_df_simple.loc[:, ~start_df_simple.columns.duplicated()]
         start_df_simple = start_df_simple[["nation", "Plate", "Rider", "pick_order", "chosen_lane"]]
-        st.dataframe(start_df_simple, use_container_width=True, height=auto_height(start_df_simple), hide_index=True)
+        st.table(start_df_simple)
 
     # --- startlist tab: analysis tables in requested order ---
     df_hist_heat = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
@@ -1350,7 +1350,7 @@ with tab_start:
             styled = dist_df[["name", "pick_order", "chosen_lane", "move", "count"]].style.applymap(
                 color_move, subset=["move"]
             )
-            st.dataframe(styled, use_container_width=True, height=auto_height(dist_df), hide_index=True)
+            st.table(dist_df[["name", "pick_order", "chosen_lane", "move", "count"]])
 
         # Summary per rider (THIRD)
         st.markdown("**Zusammenfassung pro Rider (nur Fakten aus ausgewählten Events):**")
@@ -1363,7 +1363,7 @@ with tab_start:
             sum_df = sum_df.sort_values(["po_sort", "name"], kind="stable")
             st.caption("favorite_share = Anteil der häufigsten Lane-Wahl (Mode) an allen Picks des Riders (0–1).")
             sum_view = sum_df[["name", "picks_n", "mean_pick_order", "mean_chosen_lane", "fav_lane", "favorite_share", "taktik"]]
-            st.dataframe(sum_view, use_container_width=True, height=auto_height(sum_view), hide_index=True)
+            st.table(sum_view)
     else:
         st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
 
@@ -1566,7 +1566,7 @@ with tab_rounds:
             row_h = 28
             min_h = 140
             height = max(min_h, int((len(display) + 1) * row_h))
-            st.dataframe(display, use_container_width=True, height=auto_height(display), hide_index=True)
+            st.table(display)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
@@ -1615,7 +1615,7 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
-                    st.dataframe(ts_view, use_container_width=True, height=auto_height(ts_view), hide_index=True)
+                    st.table(ts_view)
                 rs = race_stats(df_hist)
                 if not rs.empty:
                     st.markdown("**Race-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
@@ -1629,4 +1629,4 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
-                    st.dataframe(rs_view, use_container_width=True, height=auto_height(rs_view), hide_index=True)
+                    st.table(rs_view)
