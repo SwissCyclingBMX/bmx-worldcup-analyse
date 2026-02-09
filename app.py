@@ -1123,7 +1123,8 @@ with tab_start:
                 return "#222"
             base = baseline[metric]
             better = v < base  # lower is better for start times
-            return "#c0392b" if better else "#1e8449"
+            # brighter, higher-contrast colors for dark mode
+            return "#ff3b30" if better else "#34c759"
 
         def combined_cell(race_v, train_v, metric_race, metric_train, is_baseline):
             race_txt = fmt_val(race_v)
@@ -1152,7 +1153,7 @@ with tab_start:
         # Avoid duplicate Rider column
         if "name" in view.columns and "Rider" in view.columns:
             view = view.drop(columns=["name"])
-        view = view.rename(columns={"bib": "Plate", "name": "Rider"})
+        view = view.rename(columns={"bib": "Plate", "name": "Rider", "rank": "Heat Rank"})
         if "name_short" in view.columns:
             view["Rider"] = view["name_short"]
         view["Best Start"] = view.apply(
@@ -1222,7 +1223,7 @@ with tab_start:
             "Plate",
             "Rider",
             "pick_order",
-            "rank",
+            "Heat Rank",
             "Best Start",
             "Ø3 Start",
             "Best T1",
@@ -1455,7 +1456,27 @@ with tab_rounds:
             # Add per-rider rank (based on best metric in this event) and final rank (WM)
             extra_rows = []
             try:
-                rider_best = df_round.groupby("name")["metric_s"].min()
+                # Rank should be across the whole event for the category (not just the heat)
+                if gid is not None and "group_id" in df_event.columns:
+                    df_rank_src = df_event[df_event["group_id"] == gid].copy()
+                else:
+                    df_rank_src = df_event.copy()
+                if metric_col in ["start", "t1", "t2", "t3", "time"]:
+                    df_rank_src["metric_s"] = df_rank_src[metric_col].apply(parse_time_to_seconds)
+                else:
+                    # recompute splits for ranking source
+                    df_rank_src["start_s"] = df_rank_src["start"].apply(parse_time_to_seconds)
+                    df_rank_src["t1_s"] = df_rank_src["t1"].apply(parse_time_to_seconds)
+                    df_rank_src["t2_s"] = df_rank_src["t2"].apply(parse_time_to_seconds)
+                    df_rank_src["t3_s"] = df_rank_src["t3"].apply(parse_time_to_seconds)
+                    df_rank_src["time_s"] = df_rank_src["time"].apply(parse_time_to_seconds)
+                    df_rank_src["split_t1"] = df_rank_src["t1_s"] - df_rank_src["start_s"]
+                    df_rank_src["split_t2"] = df_rank_src["t2_s"] - df_rank_src["t1_s"]
+                    df_rank_src["split_t3"] = df_rank_src["t3_s"] - df_rank_src["t2_s"]
+                    df_rank_src["split_time"] = df_rank_src["time_s"] - df_rank_src["t3_s"]
+                    df_rank_src["metric_s"] = df_rank_src[metric_col]
+
+                rider_best = df_rank_src.groupby("name")["metric_s"].min()
                 if not rider_best.empty:
                     ranks = rider_best.rank(method="min", ascending=True).astype("Int64")
                     rank_row = {"Round": f"Rank ({metric_label})"}
