@@ -1383,6 +1383,7 @@ with tab_start:
             "<table border=\"1\" class=\"dataframe\">",
             "<table class='dataframe' style='width:100%;border-collapse:collapse;'>",
         )
+        html = f"<div style='overflow-x:auto;width:100%;'>{html}</div>"
         components.html(style + html, height=auto_height(view) + 80, scrolling=False)
         if rider_selected != "Alle":
             st.caption("Farben: Rot = schneller als gewählter Rider, Grün = langsamer. Vergleich nur für Start-Zeiten.")
