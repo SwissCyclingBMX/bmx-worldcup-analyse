@@ -1838,6 +1838,15 @@ with tab_rounds:
                         df_train = df_train[
                             df_train["name_key"].isin(heat_names) | df_train.get("bib", pd.Series([], dtype="Int64")).isin(heat_bibs)
                         ].copy()
+                        # also filter by category/gender when available
+                        if gid in GROUP_MAP and "category" in df_train.columns:
+                            cat_label = GROUP_MAP.get(gid, "")
+                            if "Elite" in cat_label:
+                                df_train = df_train[df_train["category"].str.contains("Elite", case=False, na=False)]
+                            elif "U23" in cat_label:
+                                df_train = df_train[df_train["category"].str.contains("U23", case=False, na=False)]
+                            elif "Junior" in cat_label:
+                                df_train = df_train[df_train["category"].str.contains("Junior", case=False, na=False)]
                 if not df_train.empty:
                     st.markdown("**Training-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
                     ts = training_stats(df_train)
@@ -1851,8 +1860,9 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
+                    ts_view["Rider"] = ts_view["Rider"].apply(short_name)
                     ts_view = fmt_table(ts_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
-                    st.table(ts_view)
+                    st.dataframe(ts_view, use_container_width=True, height=auto_height(ts_view), hide_index=True)
                     st.caption("Training-Zeiten: ausgewählte Analyse-Events (inkl. aktuelles Event)")
                 rs = race_stats(df_hist)
                 if not rs.empty:
@@ -1867,6 +1877,7 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
+                    rs_view["Rider"] = rs_view["Rider"].apply(short_name)
                     rs_view = fmt_table(rs_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
-                    st.table(rs_view)
+                    st.dataframe(rs_view, use_container_width=True, height=auto_height(rs_view), hide_index=True)
                     st.caption("Race-Zeiten: ausgewählte Analyse-Events")
