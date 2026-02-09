@@ -111,9 +111,22 @@ def render_html_table(df: pd.DataFrame, html: Optional[str] = None, row_h: int =
     if df is None:
         return
     if html is None:
-        html = df.to_html(index=False, escape=False)
+        html = df.to_html(index=False, escape=False, classes="bmx-table")
+    style = """
+    <style>
+      table.bmx-table { font-size: 12px; width: 100%; border-collapse: collapse; }
+      table.bmx-table th, table.bmx-table td { border: 1px solid #e6e6e6; padding: 4px 6px; text-align: center; }
+      table.bmx-table th { background: #f6f7f9; font-weight: 600; }
+      table.bmx-table td:first-child, table.bmx-table th:first-child { text-align: left; }
+      @media (prefers-color-scheme: dark) {
+        table.bmx-table { color: #f1f3f5; background: #1b1b1b; }
+        table.bmx-table th, table.bmx-table td { color: #f1f3f5; background: #1b1b1b; border: 1px solid #333; }
+        table.bmx-table th { background: #242424; }
+      }
+    </style>
+    """
     height = max(min_h, int((len(df) + 1) * row_h))
-    components.html(html, height=height, scrolling=False)
+    components.html(style + html, height=height, scrolling=False)
 
 
 def safe_in_clause(values: List[str]) -> Tuple[str, List[str]]:
@@ -1397,9 +1410,16 @@ with tab_start:
                     return ["background-color: #f3f5f7"] * len(row)
                 return [""] * len(row)
 
-            styled = dist_view.style.apply(_shade_row, axis=1).applymap(color_move, subset=["move"]).hide(axis="index")
+            dist_out = dist_view.drop(columns=["_group"])
+            styled = (
+                dist_out.style
+                .apply(_shade_row, axis=1)
+                .applymap(color_move, subset=["move"])
+                .hide(axis="index")
+                .set_table_attributes('class="bmx-table"')
+            )
             html = styled.to_html()
-            render_html_table(dist_view.drop(columns=["_group"]), html=html, row_h=26, min_h=140)
+            render_html_table(dist_out, html=html, row_h=26, min_h=140)
 
         # Summary per rider (THIRD)
         st.markdown("**Zusammenfassung pro Rider (nur Fakten aus ausgewählten Events):**")
