@@ -94,6 +94,20 @@ def auto_height(df: pd.DataFrame, row_h: int = 28, min_h: int = 120) -> int:
     return max(min_h, int((n + 1) * row_h))
 
 
+def norm_location(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    s = s.strip()
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^A-Za-z0-9 ]+", " ", s)
+    s = s.upper()
+    s = " ".join(s.split())
+    return s
+
+
 def fmt_table(df: pd.DataFrame, time_cols: Optional[List[str]] = None, score_cols: Optional[List[str]] = None) -> pd.DataFrame:
     out = df.copy()
     time_cols = time_cols or []
@@ -109,6 +123,67 @@ def fmt_table(df: pd.DataFrame, time_cols: Optional[List[str]] = None, score_col
                 lambda v: "" if pd.isna(v) else f"{v:.1f}"
             )
     return out
+
+
+def final_rank_map_for_event(event_id: str, gid: Optional[int], events_df: pd.DataFrame, master: pd.DataFrame) -> Dict[str, Any]:
+    if master.empty:
+        return {}
+    event_id_str = str(event_id)
+    # WM: explicit mapping
+    if "wch" in event_id_str.lower():
+        try:
+            year = int(event_id_str[:4])
+        except Exception:
+            year = None
+        cat_label = GROUP_MAP.get(gid, "")
+        uci_event_id = WCH_UCI_EVENT_MAP.get(year, {}).get(cat_label)
+        if not uci_event_id:
+            return {}
+        mr = master[master["uci_event_id"].astype(str) == str(uci_event_id)].copy()
+    # EC/EM: stored with event_id as uci_event_id
+    elif "_euc_" in event_id_str or "_em_" in event_id_str:
+        mr = master[master["uci_event_id"].astype(str) == event_id_str].copy()
+    else:
+        # WC: match by year + location (CDM)
+        try:
+            year = int(event_id_str[:4])
+        except Exception:
+            year = None
+        loc = ""
+        if events_df is not None and "event_id" in events_df.columns:
+            row = events_df.loc[events_df["event_id"] == event_id]
+            if not row.empty:
+                loc = row.iloc[0].get("loc_clean", "") or row.iloc[0].get("location", "")
+        loc_norm = norm_location(loc)
+        mr = master.copy()
+        if "klasse" in mr.columns:
+            mr = mr[mr["klasse"].isin(["CDM"])]
+        if year is not None and "year" in mr.columns:
+            mr = mr[mr["year"] == year]
+        if loc_norm and "location" in mr.columns:
+            mr = mr[mr["location"].apply(norm_location) == loc_norm]
+        # filter by category/gender when possible
+        if gid in GROUP_MAP:
+            cat_label = GROUP_MAP.get(gid, "")
+            if "Elite" in cat_label:
+                cat = "Elite"
+            elif "U23" in cat_label:
+                cat = "U23"
+            elif "Junior" in cat_label:
+                cat = "Junior"
+            else:
+                cat = None
+            gender = "M" if "Men" in cat_label else "W" if "Women" in cat_label else None
+            if cat and "category" in mr.columns:
+                mr = mr[mr["category"] == cat]
+            if gender and "gender" in mr.columns:
+                mr = mr[mr["gender"] == gender]
+
+    if mr.empty:
+        return {}
+    mr["name_key"] = (mr["first_name"].astype(str) + " " + mr["last_name"].astype(str)).apply(norm_name_key)
+    mr["rank"] = pd.to_numeric(mr["rank"], errors="coerce").astype("Int64")
+    return mr.set_index("name_key")["rank"].to_dict()
 
 
 def render_html_table(df: pd.DataFrame, html: Optional[str] = None, row_h: int = 26, min_h: int = 120) -> None:
@@ -1337,37 +1412,14 @@ with tab_start:
             lambda r: combined_cell(r.get("race_cons_score"), r.get("train_cons_score"), "", "", r.get("is_baseline")), axis=1
         )
 
-        # Final rank (Master Results) for WM events
-        if "wch" in str(event_id).lower():
-            master = load_master_results()
-            if not master.empty:
-                try:
-                    year = int(str(event_id)[:4])
-                except Exception:
-                    year = None
-                cat_label = GROUP_MAP.get(gid, "")
-                uci_event_id = WCH_UCI_EVENT_MAP.get(year, {}).get(cat_label)
-                if uci_event_id:
-                    mr = master[master["uci_event_id"].astype(str) == str(uci_event_id)].copy()
-                    if not mr.empty:
-                        mr["uci_id_norm"] = mr["uci_id"].apply(norm_uci_id)
-                        mr["name_key"] = (
-                            mr["first_name"].astype(str) + " " + mr["last_name"].astype(str)
-                        ).apply(norm_name_key)
-                        mr["rank"] = pd.to_numeric(mr["rank"], errors="coerce").astype("Int64")
-                        # map by uci_id first, fallback by name
-                        final_map_uci = mr.set_index("uci_id_norm")["rank"].to_dict()
-                        final_map_name = mr.set_index("name_key")["rank"].to_dict()
-                        if "uci_id" in view.columns:
-                            view["uci_id_norm"] = view["uci_id"].apply(norm_uci_id)
-                        else:
-                            view["uci_id_norm"] = ""
-                        name_src = view["name_full"] if "name_full" in view.columns else view["Rider"]
-                        view["name_key"] = name_src.apply(norm_name_key)
-                        view["final_rank"] = view["uci_id_norm"].map(final_map_uci)
-                        view.loc[view["final_rank"].isna(), "final_rank"] = view.loc[
-                            view["final_rank"].isna(), "name_key"
-                        ].map(final_map_name)
+        # Final rank (Master Results) for WM / EC / EM / WC
+        master = load_master_results()
+        if not master.empty:
+            final_map_name = final_rank_map_for_event(event_id, gid, events, master)
+            if final_map_name:
+                name_src = view["name_full"] if "name_full" in view.columns else view["Rider"]
+                view["name_key"] = name_src.apply(norm_name_key)
+                view["final_rank"] = view["name_key"].map(final_map_name)
 
         show_cols = [
             "nation",
@@ -1666,32 +1718,15 @@ with tab_rounds:
             except Exception:
                 pass
 
-            # Final rank from Master Results (WM via UCI event id, EC/EM via event_id)
-            if "wch" in str(event_id).lower() or "_euc_" in str(event_id) or "_em_" in str(event_id):
-                master = load_master_results()
-                if not master.empty:
-                    uci_event_id = None
-                    if "wch" in str(event_id).lower():
-                        try:
-                            year = int(str(event_id)[:4])
-                        except Exception:
-                            year = None
-                        cat_label = GROUP_MAP.get(gid, "")
-                        uci_event_id = WCH_UCI_EVENT_MAP.get(year, {}).get(cat_label)
-                    else:
-                        uci_event_id = event_id
-                    if uci_event_id:
-                        mr = master[master["uci_event_id"].astype(str) == str(uci_event_id)].copy()
-                        if not mr.empty:
-                            mr["name_key"] = (
-                                mr["first_name"].astype(str) + " " + mr["last_name"].astype(str)
-                            ).apply(norm_name_key)
-                            mr["rank"] = pd.to_numeric(mr["rank"], errors="coerce").astype("Int64")
-                            final_map_name = mr.set_index("name_key")["rank"].to_dict()
-                            final_row = {"Round": "Final Rank"}
-                            for r in riders:
-                                final_row[r] = final_map_name.get(norm_name_key(r), pd.NA)
-                            extra_rows.append(final_row)
+            # Final rank from Master Results (WM / EC / EM / WC)
+            master = load_master_results()
+            if not master.empty:
+                final_map_name = final_rank_map_for_event(event_id, gid, events, master)
+                if final_map_name:
+                    final_row = {"Round": "Final Rank"}
+                    for r in riders:
+                        final_row[r] = final_map_name.get(norm_name_key(r), pd.NA)
+                    extra_rows.append(final_row)
 
             # Format per-round cells with rank in each field (e.g., "2.345 (1)")
             display = mat.copy()
