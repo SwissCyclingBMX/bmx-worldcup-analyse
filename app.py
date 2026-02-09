@@ -1525,7 +1525,7 @@ with tab_start:
             sum_df = sum_df.sort_values(["po_sort", "name"], kind="stable")
             st.caption("favorite_share = Anteil der häufigsten Lane-Wahl (Mode) an allen Picks des Riders (0–1).")
             sum_view = sum_df[["name", "picks_n", "mean_pick_order", "mean_chosen_lane", "fav_lane", "favorite_share", "taktik"]]
-            render_html_table(sum_view, row_h=26, min_h=140)
+            render_html_table(sum_view, row_h=32, min_h=200)
     else:
         st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
 
