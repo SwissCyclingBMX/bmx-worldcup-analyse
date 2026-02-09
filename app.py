@@ -1827,6 +1827,18 @@ with tab_rounds:
             if df_hist.empty:
                 st.info("Keine Analyse-Daten für die Rider im gewählten Heat gefunden.")
             elif show_times:
+                heat_name_keys = set()
+                heat_short_map = {}
+                if mode_time == "Heat" and not df_heat.empty:
+                    heat_name_keys = set(df_heat["name_key"].dropna().tolist())
+                    # map name_key -> short display (from current heat)
+                    heat_short_map = (
+                        df_heat[["name_key", "name_short"]]
+                        .dropna()
+                        .drop_duplicates(subset=["name_key"])
+                        .set_index("name_key")["name_short"]
+                        .to_dict()
+                    )
                 df_train = load_training_for_events(analysis_event_ids)
                 if not df_train.empty and "name_key" in df_train.columns:
                     if mode_time == "Athleten" and selected_riders_time:
@@ -1860,7 +1872,17 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
-                    ts_view["Rider"] = ts_view["Rider"].apply(short_name)
+                    # apply heat-based short names if available
+                    ts_view["name_key"] = ts_view["Rider"].apply(norm_name_key)
+                    if mode_time == "Heat" and heat_name_keys:
+                        ts_view = ts_view[ts_view["name_key"].isin(heat_name_keys)].copy()
+                        if heat_short_map:
+                            ts_view["Rider"] = ts_view["name_key"].map(heat_short_map).fillna(ts_view["Rider"])
+                        else:
+                            ts_view["Rider"] = ts_view["Rider"].apply(short_name)
+                    else:
+                        ts_view["Rider"] = ts_view["Rider"].apply(short_name)
+                    ts_view = ts_view.drop(columns=["name_key"])
                     ts_view = fmt_table(ts_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
                     st.dataframe(ts_view, use_container_width=True, height=auto_height(ts_view), hide_index=True)
                     st.caption("Training-Zeiten: ausgewählte Analyse-Events (inkl. aktuelles Event)")
@@ -1880,7 +1902,16 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
-                    rs_view["Rider"] = rs_view["Rider"].apply(short_name)
+                    rs_view["name_key"] = rs_view["Rider"].apply(norm_name_key)
+                    if mode_time == "Heat" and heat_name_keys:
+                        rs_view = rs_view[rs_view["name_key"].isin(heat_name_keys)].copy()
+                        if heat_short_map:
+                            rs_view["Rider"] = rs_view["name_key"].map(heat_short_map).fillna(rs_view["Rider"])
+                        else:
+                            rs_view["Rider"] = rs_view["Rider"].apply(short_name)
+                    else:
+                        rs_view["Rider"] = rs_view["Rider"].apply(short_name)
+                    rs_view = rs_view.drop(columns=["name_key"])
                     rs_view = fmt_table(rs_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
                     st.dataframe(rs_view, use_container_width=True, height=auto_height(rs_view), hide_index=True)
                     st.caption("Race-Zeiten: ausgewählte Analyse-Events")
