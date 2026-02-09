@@ -1884,6 +1884,7 @@ with tab_rounds:
                         ts_view["Rider"] = ts_view["Rider"].apply(short_name)
                     ts_view = ts_view.drop(columns=["name_key"])
                     ts_view = fmt_table(ts_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
+                    ts_view = ts_view.reset_index(drop=True)
                     st.table(ts_view)
                     st.caption("Training-Zeiten: ausgewählte Analyse-Events (inkl. aktuelles Event)")
                 # keep race stats within same category for heat mode
@@ -1913,5 +1914,6 @@ with tab_rounds:
                         rs_view["Rider"] = rs_view["Rider"].apply(short_name)
                     rs_view = rs_view.drop(columns=["name_key"])
                     rs_view = fmt_table(rs_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
+                    rs_view = rs_view.reset_index(drop=True)
                     st.table(rs_view)
                     st.caption("Race-Zeiten: ausgewählte Analyse-Events")
