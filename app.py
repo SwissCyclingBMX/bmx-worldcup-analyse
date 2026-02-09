@@ -1486,6 +1486,7 @@ with tab_start:
 
             dist_df = dist_df.sort_values(["po_sort", "name", "pick_order", "chosen_lane"], kind="stable")
             dist_view = dist_df[["name", "pick_order", "chosen_lane", "move", "count"]].copy()
+            dist_view["name"] = dist_view["name"].apply(short_name)
             # alternate group shading by rider (keep default pandas table style)
             group_flag = []
             last_name = None
@@ -1525,6 +1526,7 @@ with tab_start:
             sum_df = sum_df.sort_values(["po_sort", "name"], kind="stable")
             st.caption("favorite_share = Anteil der häufigsten Lane-Wahl (Mode) an allen Picks des Riders (0–1).")
             sum_view = sum_df[["name", "picks_n", "mean_pick_order", "mean_chosen_lane", "fav_lane", "favorite_share", "taktik"]]
+            sum_view["name"] = sum_view["name"].apply(short_name)
             render_html_table(sum_view, row_h=32, min_h=200)
     else:
         st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
