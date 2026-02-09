@@ -725,6 +725,17 @@ def lane_distribution(df_hist: pd.DataFrame) -> pd.DataFrame:
 # UI
 # ----------------------------
 st.set_page_config(page_title="BMX Heat Scout", layout="wide", initial_sidebar_state="expanded")
+
+# Remove internal scrollbars for tables
+st.markdown(
+    """
+    <style>
+      div[data-testid="stTable"] { overflow: visible !important; }
+      div[data-testid="stTable"] > div { overflow: visible !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 st.title("BMX Heat Scout")
 st.caption("Live-Ansicht aktualisiert sich bei Interaktionen (kein Auto-Refresh).")
 
