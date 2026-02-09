@@ -1163,51 +1163,32 @@ with tab_start:
 
         if is_round1:
             df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
-            # Use only the immediately previous selected event (by event_id date)
+            # For Round 1: only use previous day of the SAME event/location (no cross-location carryover)
             prev_event_id = None
-            if analysis_event_ids:
-                try:
-                    current_date = int(str(event_id)[:8])
-                    candidates = [e for e in analysis_event_ids if e != event_id and str(e)[:8].isdigit()]
-                    candidates_sorted = sorted(candidates, key=lambda x: int(str(x)[:8]))
-                    prevs = [e for e in candidates_sorted if int(str(e)[:8]) < current_date]
-                    if prevs:
-                        prev_event_id = prevs[-1]
-                except Exception:
-                    prev_event_id = None
-
-            # Fallback: previous event in same series (WC or EC), even if not selected
-            if not prev_event_id:
-                try:
-                    current_date = int(str(event_id)[:8])
-                    series = None
-                    if "event_id" in events.columns:
-                        if "_euc_" in str(event_id):
-                            series = "euc"
-                        elif "_em_" in str(event_id):
-                            series = "em"
-                        elif "wch" in str(event_id).lower():
-                            series = "wch"
-                        else:
-                            series = "wc"
-                    if series in ("wc", "euc"):
-                        ev = events.copy()
-                        ev["_event_day"] = pd.to_datetime(
-                            ev["event_id"].astype(str).str.slice(0, 8), format="%Y%m%d", errors="coerce"
-                        )
-                        # same series only
-                        if series == "euc":
-                            ev = ev[ev["event_id"].astype(str).str.contains("_euc_", regex=False)]
-                        else:
-                            ev = ev[~ev["event_id"].astype(str).str.contains("_euc_", regex=False)]
-                        ev = ev[ev["event_id"] != event_id]
-                        ev = ev[ev["event_id"].astype(str).str.slice(0, 8).str.isdigit()]
-                        ev = ev.sort_values(["_event_day", "event_id"])
-                        prevs = ev[ev["event_id"].astype(str).str.slice(0, 8).astype(int) < current_date]
+            try:
+                current_date = int(str(event_id)[:8])
+                current_loc = (
+                    events.loc[events["event_id"] == event_id, "location"].iloc[0]
+                    if "location" in events.columns and (events["event_id"] == event_id).any()
+                    else ""
+                )
+                series = "euc" if "_euc_" in str(event_id) else "wc"
+                if series in ("wc", "euc") and current_loc:
+                    ev = events.copy()
+                    ev = ev[ev["event_id"] != event_id]
+                    if series == "euc":
+                        ev = ev[ev["event_id"].astype(str).str.contains("_euc_", regex=False)]
+                    else:
+                        ev = ev[~ev["event_id"].astype(str).str.contains("_euc_", regex=False)]
+                    ev = ev[ev["location"] == current_loc]
+                    ev = ev[ev["event_id"].astype(str).str.slice(0, 8).str.isdigit()]
+                    if not ev.empty:
+                        ev["event_date_num"] = ev["event_id"].astype(str).str.slice(0, 8).astype(int)
+                        prevs = ev[ev["event_date_num"] < current_date].sort_values("event_date_num")
                         if not prevs.empty:
                             prev_event_id = prevs.iloc[-1]["event_id"]
-                except Exception:
-                    prev_event_id = None
+            except Exception:
+                prev_event_id = None
 
             if prev_event_id:
                 if df_race_hist.empty or prev_event_id not in df_race_hist["event_id"].unique():
