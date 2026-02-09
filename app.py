@@ -859,6 +859,9 @@ analysis_event_labels = st.sidebar.multiselect(
 
 analysis_event_labels = [x for x in analysis_event_labels if x]
 analysis_event_ids = events.loc[events["label_analysis"].isin(analysis_event_labels), "event_id"].tolist()
+# always include current event for training/race context
+if event_id not in analysis_event_ids:
+    analysis_event_ids.append(event_id)
 
 # Current event picks
 df_event = load_picks_for_event(event_id)
