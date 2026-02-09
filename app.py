@@ -1864,6 +1864,9 @@ with tab_rounds:
                     ts_view = fmt_table(ts_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
                     st.dataframe(ts_view, use_container_width=True, height=auto_height(ts_view), hide_index=True)
                     st.caption("Training-Zeiten: ausgewählte Analyse-Events (inkl. aktuelles Event)")
+                # keep race stats within same category for heat mode
+                if mode_time == "Heat" and gid is not None and "group_id" in df_hist.columns:
+                    df_hist = df_hist[df_hist["group_id"] == gid].copy()
                 rs = race_stats(df_hist)
                 if not rs.empty:
                     st.markdown("**Race-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
