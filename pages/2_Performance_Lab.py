@@ -201,7 +201,9 @@ with col_f4:
 with col_f5:
     sel_gender = st.multiselect("Geschlecht", gender_opts, default=gender_opts)
 with col_f6:
-    sel_nation = st.multiselect("Nation", nation_opts, default=[])
+    if "perf_sel_nation" not in st.session_state:
+        st.session_state["perf_sel_nation"] = ["SUI"] if "SUI" in nation_opts else []
+    sel_nation = st.multiselect("Nation", nation_opts, key="perf_sel_nation")
 
 df_view = df.copy()
 if sel_series:
@@ -215,8 +217,11 @@ if sel_gender:
 if sel_nation:
     df_view = df_view[df_view["nation"].astype(str).str.upper().isin(sel_nation)]
 
-rider_opts = sorted(df_view["rider_label"].dropna().unique().tolist())
-sel_riders = st.multiselect("Rider (optional)", rider_opts, default=[])
+# Keep rider selection stable across filter changes.
+selected_prev = st.session_state.get("perf_sel_riders", [])
+rider_opts_filtered = set(df_view["rider_label"].dropna().unique().tolist())
+rider_opts = sorted(rider_opts_filtered.union(set(selected_prev)))
+sel_riders = st.multiselect("Rider (optional)", rider_opts, key="perf_sel_riders")
 if sel_riders:
     df_view = df_view[df_view["rider_label"].isin(sel_riders)]
 
