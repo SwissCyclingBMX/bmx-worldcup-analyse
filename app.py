@@ -1412,10 +1412,11 @@ with tab_start:
 
             dist_out = dist_view.drop(columns=["_group"])
             styled = (
-                dist_out.style
+                dist_view.style
                 .apply(_shade_row, axis=1)
                 .applymap(color_move, subset=["move"])
                 .hide(axis="index")
+                .hide(axis="columns", subset=["_group"])
                 .set_table_attributes('class="bmx-table"')
             )
             html = styled.to_html()
