@@ -1164,7 +1164,10 @@ with tab_start:
                 tmp = tmp.sort_values("time_s", na_position="last")
                 tmp["Heat Rank"] = range(1, len(tmp) + 1)
                 rank_map = tmp.set_index("name")["Heat Rank"].to_dict()
-                view["Heat Rank"] = view["Rider"].map(rank_map)
+                if "name_full" in view.columns:
+                    view["Heat Rank"] = view["name_full"].map(rank_map)
+                else:
+                    view["Heat Rank"] = view["Rider"].map(rank_map)
             except Exception:
                 pass
         if "name_short" in view.columns:
@@ -1471,8 +1474,25 @@ with tab_rounds:
             # Add per-rider rank (based on best metric in this event) and final rank (WM)
             extra_rows = []
             try:
-                # Rank should follow current filters (not whole category)
-                rider_best = df_round.groupby("name")["metric_s"].min()
+                # Rank across the whole event for the category
+                if gid is not None and "group_id" in df_event.columns:
+                    df_rank_src = df_event[df_event["group_id"] == gid].copy()
+                else:
+                    df_rank_src = df_event.copy()
+                if metric_col in ["start", "t1", "t2", "t3", "time"]:
+                    df_rank_src["metric_s"] = df_rank_src[metric_col].apply(parse_time_to_seconds)
+                else:
+                    df_rank_src["start_s"] = df_rank_src["start"].apply(parse_time_to_seconds)
+                    df_rank_src["t1_s"] = df_rank_src["t1"].apply(parse_time_to_seconds)
+                    df_rank_src["t2_s"] = df_rank_src["t2"].apply(parse_time_to_seconds)
+                    df_rank_src["t3_s"] = df_rank_src["t3"].apply(parse_time_to_seconds)
+                    df_rank_src["time_s"] = df_rank_src["time"].apply(parse_time_to_seconds)
+                    df_rank_src["split_t1"] = df_rank_src["t1_s"] - df_rank_src["start_s"]
+                    df_rank_src["split_t2"] = df_rank_src["t2_s"] - df_rank_src["t1_s"]
+                    df_rank_src["split_t3"] = df_rank_src["t3_s"] - df_rank_src["t2_s"]
+                    df_rank_src["split_time"] = df_rank_src["time_s"] - df_rank_src["t3_s"]
+                    df_rank_src["metric_s"] = df_rank_src[metric_col]
+                rider_best = df_rank_src.groupby("name")["metric_s"].min()
                 if not rider_best.empty:
                     ranks = rider_best.rank(method="min", ascending=True).astype("Int64")
                     rank_row = {"Round": "Segment Rank"}
