@@ -1154,6 +1154,8 @@ with tab_start:
         if "name" in view.columns and "Rider" in view.columns:
             view = view.drop(columns=["name"])
         view = view.rename(columns={"bib": "Plate", "name": "Rider", "rank": "Heat Rank"})
+        if "Heat Rank" in view.columns:
+            view["Heat Rank"] = pd.to_numeric(view["Heat Rank"], errors="coerce").astype("Int64")
         if "name_short" in view.columns:
             view["Rider"] = view["name_short"]
         view["Best Start"] = view.apply(
@@ -1223,13 +1225,13 @@ with tab_start:
             "Plate",
             "Rider",
             "pick_order",
-            "Heat Rank",
             "Best Start",
             "Ø3 Start",
             "Best T1",
             "Ø3 T1",
             "Score",
             "chosen_lane",
+            "Heat Rank",
         ]
         show_cols = [c for c in show_cols if c in view.columns]
         view = view[show_cols]
@@ -1532,11 +1534,10 @@ with tab_rounds:
             if extra_rows:
                 extra_df = pd.DataFrame(extra_rows)
                 display = pd.concat([display, extra_df], ignore_index=True)
-            # auto height so all rows are visible (no vertical scroll)
-            row_h = 28
-            min_h = 120
-            height = max(min_h, int((len(display) + 1) * row_h))
-            st.dataframe(display, use_container_width=True, height=height, hide_index=True)
+            # show all rows without scroll
+            display = display.where(display.notna(), "")
+            display = display.astype(str).replace({"nan": ""})
+            st.table(display)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
