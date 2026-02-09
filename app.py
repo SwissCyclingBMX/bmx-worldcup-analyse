@@ -1751,9 +1751,21 @@ with tab_rounds:
             if extra_rows:
                 extra_df = pd.DataFrame(extra_rows)
                 display = pd.concat([display, extra_df], ignore_index=True)
-            # short names for columns
+            # short names for columns (ensure unique)
             col_map = {r: short_name(r) for r in riders}
             display = display.rename(columns=col_map)
+            # de-duplicate columns if short names collide
+            cols = list(display.columns)
+            seen = {}
+            new_cols = []
+            for c in cols:
+                if c not in seen:
+                    seen[c] = 1
+                    new_cols.append(c)
+                else:
+                    seen[c] += 1
+                    new_cols.append(f"{c} ({seen[c]})")
+            display.columns = new_cols
             # round labels
             round_map = {
                 "round 1": "R1",

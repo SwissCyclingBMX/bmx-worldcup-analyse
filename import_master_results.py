@@ -99,7 +99,7 @@ def import_parquet(path: str, klasse: str = "CM,CDM") -> int:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--parquet", required=True)
-    ap.add_argument("--klasse", default="CM")
+    ap.add_argument("--klasse", default="CM,CDM")
     args = ap.parse_args()
     n = import_parquet(args.parquet, klasse=args.klasse)
     print(f"Imported {n} rows into master_results.")
