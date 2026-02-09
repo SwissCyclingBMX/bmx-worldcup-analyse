@@ -1591,23 +1591,11 @@ with tab_rounds:
                 return round_map.get(tl, v)
             display["Round"] = display["Round"].apply(_map_round)
 
-            # render without index
+            # render as dataframe (same style as before), no index, no scroll
             display = display.where(display.notna(), "")
             display = display.astype(str).replace({"nan": ""})
-            tstyle = """
-            <style>
-              table.round-matrix { font-size: 12px; width: 100%; border-collapse: collapse; }
-              table.round-matrix th, table.round-matrix td { border-bottom: 1px solid #eee; padding: 4px 6px; text-align: center; }
-              table.round-matrix th:first-child, table.round-matrix td:first-child { text-align: left; }
-              @media (prefers-color-scheme: dark) {
-                table.round-matrix { color: #f1f3f5; background: #1b1b1b; }
-                table.round-matrix th, table.round-matrix td { color: #f1f3f5; background: #1b1b1b; border-bottom: 1px solid #333; }
-              }
-            </style>
-            """
-            html = display.to_html(index=False, escape=False, classes="round-matrix")
-            height = 40 + 26 * (len(display) + 1)
-            components.html(tstyle + html, height=height, scrolling=False)
+            height = auto_height(display, row_h=34, min_h=140)
+            st.dataframe(display, use_container_width=True, height=height, hide_index=True)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
