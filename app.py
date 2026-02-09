@@ -1120,7 +1120,7 @@ with tab_start:
 
         def color_for(metric, v):
             if metric not in baseline or baseline[metric] is None or pd.isna(baseline[metric]):
-                return "#222"
+                return None
             base = baseline[metric]
             better = v < base  # lower is better for start times
             # brighter, higher-contrast colors for dark mode
@@ -1129,19 +1129,19 @@ with tab_start:
         def combined_cell(race_v, train_v, metric_race, metric_train, is_baseline):
             race_txt = fmt_val(race_v)
             train_txt = fmt_val(train_v)
-            race_color = color_for(metric_race, race_v) if race_txt else "#222"
-            train_color = color_for(metric_train, train_v) if train_txt else "#666"
+            race_color = color_for(metric_race, race_v) if race_txt else None
+            train_color = color_for(metric_train, train_v) if train_txt else None
             # Baseline rider should stay black
             if is_baseline:
-                race_color = "#222"
-                train_color = "#666"
+                race_color = None
+                train_color = None
             if not race_txt and train_txt:
                 race_txt = "—"
-                race_color = "#999"
+                race_color = None
             return (
                 f"<div style='line-height:1.1'>"
-                f"<div style='font-size:14px;color:{race_color} !important;font-weight:600'>{race_txt}</div>"
-                f"<div style='font-size:11px;color:{train_color} !important'>{train_txt}</div>"
+                f"<div class='race-val' style='font-size:14px;font-weight:600;color:{race_color if race_color else 'inherit'} !important'>{race_txt}</div>"
+                f"<div class='train-val' style='font-size:11px;color:{train_color if train_color else 'inherit'} !important'>{train_txt}</div>"
                 f"</div>"
             )
 
@@ -1156,6 +1156,17 @@ with tab_start:
         view = view.rename(columns={"bib": "Plate", "name": "Rider", "rank": "Heat Rank"})
         if "Heat Rank" in view.columns:
             view["Heat Rank"] = pd.to_numeric(view["Heat Rank"], errors="coerce").astype("Int64")
+        # Fallback: compute heat rank from time if missing
+        if "Heat Rank" in view.columns and view["Heat Rank"].isna().all():
+            try:
+                tmp = df_heat.copy()
+                tmp["time_s"] = tmp["time"].apply(parse_time_to_seconds)
+                tmp = tmp.sort_values("time_s", na_position="last")
+                tmp["Heat Rank"] = range(1, len(tmp) + 1)
+                rank_map = tmp.set_index("name")["Heat Rank"].to_dict()
+                view["Heat Rank"] = view["Rider"].map(rank_map)
+            except Exception:
+                pass
         if "name_short" in view.columns:
             view["Rider"] = view["name_short"]
         view["Best Start"] = view.apply(
@@ -1252,6 +1263,8 @@ with tab_start:
           @media (prefers-color-scheme: dark) {
             table.dataframe { color: #f1f3f5; background: #1b1b1b; }
             table.dataframe th, table.dataframe td { color: #f1f3f5; background: #1b1b1b; border-bottom: 1px solid #333; }
+            .race-val { color: #f1f3f5 !important; }
+            .train-val { color: #a9b0b8 !important; }
           }
         </style>
         """
@@ -1458,30 +1471,11 @@ with tab_rounds:
             # Add per-rider rank (based on best metric in this event) and final rank (WM)
             extra_rows = []
             try:
-                # Rank should be across the whole event for the category (not just the heat)
-                if gid is not None and "group_id" in df_event.columns:
-                    df_rank_src = df_event[df_event["group_id"] == gid].copy()
-                else:
-                    df_rank_src = df_event.copy()
-                if metric_col in ["start", "t1", "t2", "t3", "time"]:
-                    df_rank_src["metric_s"] = df_rank_src[metric_col].apply(parse_time_to_seconds)
-                else:
-                    # recompute splits for ranking source
-                    df_rank_src["start_s"] = df_rank_src["start"].apply(parse_time_to_seconds)
-                    df_rank_src["t1_s"] = df_rank_src["t1"].apply(parse_time_to_seconds)
-                    df_rank_src["t2_s"] = df_rank_src["t2"].apply(parse_time_to_seconds)
-                    df_rank_src["t3_s"] = df_rank_src["t3"].apply(parse_time_to_seconds)
-                    df_rank_src["time_s"] = df_rank_src["time"].apply(parse_time_to_seconds)
-                    df_rank_src["split_t1"] = df_rank_src["t1_s"] - df_rank_src["start_s"]
-                    df_rank_src["split_t2"] = df_rank_src["t2_s"] - df_rank_src["t1_s"]
-                    df_rank_src["split_t3"] = df_rank_src["t3_s"] - df_rank_src["t2_s"]
-                    df_rank_src["split_time"] = df_rank_src["time_s"] - df_rank_src["t3_s"]
-                    df_rank_src["metric_s"] = df_rank_src[metric_col]
-
-                rider_best = df_rank_src.groupby("name")["metric_s"].min()
+                # Rank should follow current filters (not whole category)
+                rider_best = df_round.groupby("name")["metric_s"].min()
                 if not rider_best.empty:
                     ranks = rider_best.rank(method="min", ascending=True).astype("Int64")
-                    rank_row = {"Round": f"Rank ({metric_label})"}
+                    rank_row = {"Round": "Segment Rank"}
                     for r in riders:
                         rank_row[r] = ranks.get(r, pd.NA)
                     extra_rows.append(rank_row)
@@ -1534,10 +1528,23 @@ with tab_rounds:
             if extra_rows:
                 extra_df = pd.DataFrame(extra_rows)
                 display = pd.concat([display, extra_df], ignore_index=True)
-            # show all rows without scroll
+            # render as HTML to avoid index column and shrink round label
             display = display.where(display.notna(), "")
             display = display.astype(str).replace({"nan": ""})
-            st.table(display)
+            tstyle = """
+            <style>
+              table.round-matrix { font-size: 12px; width: 100%; border-collapse: collapse; }
+              table.round-matrix th, table.round-matrix td { border-bottom: 1px solid #eee; padding: 4px 6px; text-align: center; }
+              table.round-matrix th:first-child, table.round-matrix td:first-child { text-align: left; font-size: 11px; color: #666; }
+              @media (prefers-color-scheme: dark) {
+                table.round-matrix { color: #f1f3f5; background: #1b1b1b; }
+                table.round-matrix th, table.round-matrix td { color: #f1f3f5; background: #1b1b1b; border-bottom: 1px solid #333; }
+                table.round-matrix th:first-child, table.round-matrix td:first-child { color: #a9b0b8; }
+              }
+            </style>
+            """
+            html = display.to_html(index=False, escape=False, classes="round-matrix")
+            components.html(tstyle + html, height=40 + 28 * (len(display) + 1), scrolling=False)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
