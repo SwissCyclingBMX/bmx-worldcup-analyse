@@ -1474,11 +1474,16 @@ with tab_rounds:
             # Add per-rider rank (based on best metric in this event) and final rank (WM)
             extra_rows = []
             try:
-                # Rank across the whole event for the category
-                if gid is not None and "group_id" in df_event.columns:
-                    df_rank_src = df_event[df_event["group_id"] == gid].copy()
+                # Segment rank:
+                # - Modus Heat: across whole event for the category
+                # - Modus Athleten: only selected riders
+                if mode_time == "Athleten":
+                    df_rank_src = df_round.copy()
                 else:
-                    df_rank_src = df_event.copy()
+                    if gid is not None and "group_id" in df_event.columns:
+                        df_rank_src = df_event[df_event["group_id"] == gid].copy()
+                    else:
+                        df_rank_src = df_event.copy()
                 if metric_col in ["start", "t1", "t2", "t3", "time"]:
                     df_rank_src["metric_s"] = df_rank_src[metric_col].apply(parse_time_to_seconds)
                 else:
@@ -1548,23 +1553,13 @@ with tab_rounds:
             if extra_rows:
                 extra_df = pd.DataFrame(extra_rows)
                 display = pd.concat([display, extra_df], ignore_index=True)
-            # render as HTML to avoid index column and shrink round label
+            # render as dataframe (same look as before) and show all rows
             display = display.where(display.notna(), "")
             display = display.astype(str).replace({"nan": ""})
-            tstyle = """
-            <style>
-              table.round-matrix { font-size: 12px; width: 100%; border-collapse: collapse; }
-              table.round-matrix th, table.round-matrix td { border-bottom: 1px solid #eee; padding: 4px 6px; text-align: center; }
-              table.round-matrix th:first-child, table.round-matrix td:first-child { text-align: left; font-size: 11px; color: #666; }
-              @media (prefers-color-scheme: dark) {
-                table.round-matrix { color: #f1f3f5; background: #1b1b1b; }
-                table.round-matrix th, table.round-matrix td { color: #f1f3f5; background: #1b1b1b; border-bottom: 1px solid #333; }
-                table.round-matrix th:first-child, table.round-matrix td:first-child { color: #a9b0b8; }
-              }
-            </style>
-            """
-            html = display.to_html(index=False, escape=False, classes="round-matrix")
-            components.html(tstyle + html, height=40 + 28 * (len(display) + 1), scrolling=False)
+            row_h = 28
+            min_h = 140
+            height = max(min_h, int((len(display) + 1) * row_h))
+            st.dataframe(display, use_container_width=True, height=height, hide_index=True)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
