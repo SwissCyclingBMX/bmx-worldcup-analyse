@@ -241,28 +241,49 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
     ).str.strip()
 
 
-    # Exclude World Championships from round numbering
+    # Series detection
     is_wch = (
         df["event_id"].astype(str).str.contains("wch", case=False, regex=False)
         | df["display_name"].fillna("").astype(str).str.contains("world championship", case=False, regex=False)
         | df["display_name"].fillna("").astype(str).str.contains("world championships", case=False, regex=False)
     )
+    is_em = (
+        df["event_id"].astype(str).str.contains("_em_", case=False, regex=False)
+        | df["display_name"].fillna("").astype(str).str.contains("european championship", case=False, regex=False)
+        | df["display_name"].fillna("").astype(str).str.contains("european championships", case=False, regex=False)
+    )
+    is_euc = (
+        df["event_id"].astype(str).str.contains("_euc_", case=False, regex=False)
+        | df["display_name"].fillna("").astype(str).str.contains("european cup", case=False, regex=False)
+    )
+    is_wc = (
+        df["display_name"].fillna("").astype(str).str.contains("world cup", case=False, regex=False)
+    )
 
-    # Always assign sequential rounds per year (chronological by event_id)
+    df["series"] = "wc"
+    df.loc[is_euc, "series"] = "euc"
+    df.loc[is_em, "series"] = "em"
+    df.loc[is_wch, "series"] = "wch"
+
+    # Assign sequential rounds per year and series (WC and EC separate)
     df["_event_day"] = pd.to_datetime(df["event_id"].astype(str).str.slice(0, 8), format="%Y%m%d", errors="coerce")
     df["round_num"] = pd.NA
-    for yr, grp in df.loc[~is_wch].sort_values(["_event_day", "event_id"]).groupby("year"):
+    mask_round = ~(is_wch | is_em)
+    for (yr, series), grp in df.loc[mask_round].sort_values(["_event_day", "event_id"]).groupby(["year", "series"]):
         df.loc[grp.index, "round_num"] = range(1, len(grp) + 1)
 
     df["label_short"] = "ROUND " + df["round_num"].astype("Int64").astype(str) + " - " + loc_clean
     df["label_short"] = df["label_short"].str.strip()
     df["label_analysis"] = df["label_short"] + " - " + df["year"].astype(str)
 
-    # World Championships: no round numbering
+    # Championships: no round numbering
     wch_label = "World Championships - " + df["year"].astype(str)
+    em_label = "European Championships - " + df["year"].astype(str)
     df["label_short"] = df["label_short"].where(~is_wch, wch_label)
     df["label_analysis"] = df["label_analysis"].where(~is_wch, wch_label)
-    df = df.drop(columns=["_event_day", "round_num"])
+    df["label_short"] = df["label_short"].where(~is_em, em_label)
+    df["label_analysis"] = df["label_analysis"].where(~is_em, em_label)
+    df = df.drop(columns=["_event_day", "round_num", "series"])
 
     # Disambiguate duplicates only within the same year (avoid cross-year event_id noise)
     dup = df.duplicated(subset=["year", "label_short"], keep=False)
