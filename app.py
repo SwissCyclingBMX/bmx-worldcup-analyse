@@ -1560,13 +1560,54 @@ with tab_rounds:
             if extra_rows:
                 extra_df = pd.DataFrame(extra_rows)
                 display = pd.concat([display, extra_df], ignore_index=True)
-            # render as dataframe (same look as before) and show all rows
+            # short names for columns
+            col_map = {r: short_name(r) for r in riders}
+            display = display.rename(columns=col_map)
+            # round labels
+            round_map = {
+                "round 1": "R1",
+                "runde 1": "R1",
+                "lcq": "LCQ",
+                "last chance": "LCQ",
+                "1/8 final": "1/8",
+                "1/8 finals": "1/8",
+                "1/8 finale": "1/8",
+                "1/4 final": "1/4",
+                "1/4 finals": "1/4",
+                "1/4 finale": "1/4",
+                "1/2 final": "1/2",
+                "1/2 finals": "1/2",
+                "1/2 finale": "1/2",
+                "final": "F",
+            }
+            def _map_round(v):
+                if not isinstance(v, str):
+                    return v
+                tl = v.strip().lower()
+                if tl == "segment rank":
+                    return "S. Rank"
+                if tl == "final rank":
+                    return "F. Rank"
+                return round_map.get(tl, v)
+            display["Round"] = display["Round"].apply(_map_round)
+
+            # render without index
             display = display.where(display.notna(), "")
             display = display.astype(str).replace({"nan": ""})
-            row_h = 28
-            min_h = 140
-            height = max(min_h, int((len(display) + 1) * row_h))
-            st.table(display)
+            tstyle = """
+            <style>
+              table.round-matrix { font-size: 12px; width: 100%; border-collapse: collapse; }
+              table.round-matrix th, table.round-matrix td { border-bottom: 1px solid #eee; padding: 4px 6px; text-align: center; }
+              table.round-matrix th:first-child, table.round-matrix td:first-child { text-align: left; }
+              @media (prefers-color-scheme: dark) {
+                table.round-matrix { color: #f1f3f5; background: #1b1b1b; }
+                table.round-matrix th, table.round-matrix td { color: #f1f3f5; background: #1b1b1b; border-bottom: 1px solid #333; }
+              }
+            </style>
+            """
+            html = display.to_html(index=False, escape=False, classes="round-matrix")
+            height = 40 + 26 * (len(display) + 1)
+            components.html(tstyle + html, height=height, scrolling=False)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
