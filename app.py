@@ -1666,16 +1666,20 @@ with tab_rounds:
             except Exception:
                 pass
 
-            # Final rank from Master Results for WM events
-            if "wch" in str(event_id).lower():
+            # Final rank from Master Results (WM via UCI event id, EC/EM via event_id)
+            if "wch" in str(event_id).lower() or "_euc_" in str(event_id) or "_em_" in str(event_id):
                 master = load_master_results()
                 if not master.empty:
-                    try:
-                        year = int(str(event_id)[:4])
-                    except Exception:
-                        year = None
-                    cat_label = GROUP_MAP.get(gid, "")
-                    uci_event_id = WCH_UCI_EVENT_MAP.get(year, {}).get(cat_label)
+                    uci_event_id = None
+                    if "wch" in str(event_id).lower():
+                        try:
+                            year = int(str(event_id)[:4])
+                        except Exception:
+                            year = None
+                        cat_label = GROUP_MAP.get(gid, "")
+                        uci_event_id = WCH_UCI_EVENT_MAP.get(year, {}).get(cat_label)
+                    else:
+                        uci_event_id = event_id
                     if uci_event_id:
                         mr = master[master["uci_event_id"].astype(str) == str(uci_event_id)].copy()
                         if not mr.empty:

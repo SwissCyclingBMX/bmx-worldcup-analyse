@@ -93,6 +93,23 @@ def extract_uci_id(raw: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def class_to_cat_gender(code: str) -> Tuple[Optional[str], Optional[str]]:
+    code = (code or "").strip().upper()
+    if code == "ME":
+        return "Elite", "M"
+    if code == "WE":
+        return "Elite", "W"
+    if code == "MU":
+        return "U23", "M"
+    if code == "WU":
+        return "U23", "W"
+    if code == "MJ":
+        return "Junior", "M"
+    if code == "WJ":
+        return "Junior", "W"
+    return None, None
+
+
 def event_exists(conn: sqlite3.Connection, event_id: str) -> bool:
     cur = conn.execute("SELECT 1 FROM events WHERE event_id = ? LIMIT 1", (event_id,))
     return cur.fetchone() is not None
@@ -192,6 +209,48 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
           event_id, category, bib, name, nation, gate, start, t1, source_file, ingested_at
         ) VALUES (
           :event_id, :category, :bib, :name, :nation, :gate, :start, :t1, :source_file, :ingested_at
+        )
+        """,
+        rows,
+    )
+    return len(rows)
+
+
+def upsert_master_results(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS master_results (
+          uci_event_id TEXT NOT NULL,
+          uci_id TEXT NOT NULL,
+          bib INTEGER NOT NULL,
+          last_name TEXT,
+          first_name TEXT,
+          gender TEXT NOT NULL,
+          category TEXT NOT NULL,
+          klasse TEXT,
+          year INTEGER,
+          date TEXT,
+          location TEXT,
+          track TEXT,
+          host_nation TEXT,
+          rank INTEGER,
+          time TEXT,
+          irm TEXT,
+          source TEXT,
+          PRIMARY KEY (uci_event_id, uci_id, bib, category, gender)
+        )
+        """
+    )
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO master_results (
+          uci_event_id, uci_id, bib, last_name, first_name, gender, category, klasse,
+          year, date, location, track, host_nation, rank, time, irm, source
+        ) VALUES (
+          :uci_event_id, :uci_id, :bib, :last_name, :first_name, :gender, :category, :klasse,
+          :year, :date, :location, :track, :host_nation, :rank, :time, :irm, :source
         )
         """,
         rows,
@@ -313,6 +372,56 @@ def ingest_training_event(conn: sqlite3.Connection, url: str, event_id: str) -> 
     return upsert_training_times(conn, rows)
 
 
+def ingest_overall_event(conn: sqlite3.Connection, url: str, event_id: str) -> int:
+    payload = fetch_event_payload(url)
+    props = extract_props(payload)
+    event = props.get("event", {}) or {}
+    name = clean_name(event.get("name", ""))
+    city = event.get("city", "") or ""
+    ioc = (event.get("ioc_code", "") or "").upper()
+    date_raw = event.get("start_date") or event.get("end_date") or ""
+    date_yyyymmdd = parse_date(date_raw) or ""
+    year = int(date_yyyymmdd[:4]) if date_yyyymmdd[:4].isdigit() else None
+
+    heats = props.get("heats") or []
+    rows = []
+    for h in heats:
+        class_code = (h.get("class_code") or "").strip().upper()
+        if class_code not in ALLOWED_CLASSES:
+            continue
+        category, gender = class_to_cat_gender(class_code)
+        for r in (h.get("riders") or []):
+            full_name = (r.get("name") or "").strip()
+            if not full_name:
+                continue
+            bib = r.get("plate")
+            uci_id = extract_uci_id(r.get("id") or "") or ""
+            rank = r.get("rank")
+            result = r.get("result")
+            rows.append(
+                {
+                    "uci_event_id": event_id,
+                    "uci_id": uci_id,
+                    "bib": int(bib) if str(bib).strip().isdigit() else 0,
+                    "last_name": "",
+                    "first_name": full_name,
+                    "gender": gender or "",
+                    "category": category or "",
+                    "klasse": "EM" if "european championship" in name.lower() else "EC",
+                    "year": year,
+                    "date": date_yyyymmdd,
+                    "location": city,
+                    "track": "",
+                    "host_nation": ioc,
+                    "rank": int(rank) if str(rank).strip().isdigit() else None,
+                    "time": result,
+                    "irm": "",
+                    "source": "jstiming_overall",
+                }
+            )
+    return upsert_master_results(conn, rows)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default="bmx.db")
@@ -367,6 +476,11 @@ def main() -> None:
                 ingest_race_event(conn, url, event_id)
             except Exception:
                 continue
+        # overall results (final ranks)
+        try:
+            ingest_overall_event(conn, f"{base}/overall", event_id)
+        except Exception:
+            pass
 
     # Ingest training (gate practice) and link to nearest race by city/date
     for train_url in args.training:
