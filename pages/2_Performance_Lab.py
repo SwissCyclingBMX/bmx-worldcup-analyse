@@ -173,6 +173,41 @@ def round_sort_value(round_title: str) -> int:
     return ROUND_ORDER.get(str(round_title), 999)
 
 
+def traffic_light(score: float) -> str:
+    if pd.isna(score):
+        return "Unklar"
+    if score >= 85:
+        return "Gruen"
+    if score >= 70:
+        return "Gelb"
+    return "Rot"
+
+
+def stability_text(seg_std: float) -> str:
+    if pd.isna(seg_std):
+        return "Unklar"
+    if seg_std <= 0.20:
+        return "Stabil"
+    if seg_std <= 0.45:
+        return "Mittel"
+    return "Volatil"
+
+
+def feedback_text(row: pd.Series) -> str:
+    gap = float(row.get("avg_gap_pct", np.nan))
+    cons = float(row.get("consistency", np.nan))
+    top3 = float(row.get("top3_rate", np.nan))
+    if gap <= 1.2 and cons >= 80:
+        return "Nah an der Spitze, sehr stabil."
+    if gap <= 2.0 and cons >= 70:
+        return "Wettbewerbsfaehig, Konstanz weiter schaerfen."
+    if gap <= 3.0 and top3 >= 25:
+        return "Punktuell schnell, mehr Wiederholbarkeit noetig."
+    if gap > 3.0 and cons < 65:
+        return "Start/T1 und Konstanz als Fokus."
+    return "Solide Basis, gezielt Segmentarbeit einplanen."
+
+
 st.title("Performance Lab")
 st.caption("Mehrjahres-Analyse mit Segment-Ranking und Gap zum Schnellsten.")
 
@@ -266,105 +301,170 @@ metric_c2.metric("Heats", f"{len(df_seg)}")
 metric_c3.metric("Events", f"{df_seg['event_id'].nunique()}")
 metric_c4.metric(f"Segment", seg_name)
 
-st.markdown("### Selection Scoreboard")
-board = rider_summary[
-    ["rider_short", "heats", "events", "avg_gap_pct", "avg_seg_rank", "top3_rate", "consistency", "selection_score"]
-].rename(
-    columns={
-        "rider_short": "Rider",
-        "avg_gap_pct": "Avg Gap %",
-        "avg_seg_rank": "Avg Seg Rank",
-        "top3_rate": "Top3 %",
-        "consistency": "Consistency",
-        "selection_score": "Score",
-    }
-)
-for c in ["Avg Gap %", "Avg Seg Rank", "Top3 %", "Consistency", "Score"]:
-    board[c] = pd.to_numeric(board[c], errors="coerce").round(2)
-st.dataframe(board, use_container_width=True, hide_index=True, height=min(620, 46 + 32 * (len(board) + 1)))
+view_mode = st.radio("Ansicht", ["Simple", "Advanced"], horizontal=True, index=0)
 
-st.markdown("### Visuals")
-top_n = st.slider("Max Rider in Charts", min_value=4, max_value=20, value=10, step=1)
-chart_riders = rider_summary.head(top_n)["rider_id"].tolist()
-df_chart = df_seg[df_seg["rider_id"].isin(chart_riders)].copy()
-label_map = rider_summary.set_index("rider_id")["rider_short"].to_dict()
-df_chart["rider_short"] = df_chart["rider_id"].map(label_map).fillna(df_chart["rider_short"])
+if view_mode == "Simple":
+    simple = rider_summary.copy()
+    simple["Ampel"] = simple["selection_score"].apply(traffic_light)
+    simple["Stabilitaet"] = simple["seg_std"].apply(stability_text)
+    simple["Feedback"] = simple.apply(feedback_text, axis=1)
 
-col_v1, col_v2 = st.columns(2)
-with col_v1:
-    st.markdown(f"**1) Gap % zum Schnellsten ({seg_name})**")
-    gap_bar = (
-        alt.Chart(
-            rider_summary.head(top_n).assign(rider_short=lambda d: d["rider_id"].map(label_map).fillna(d["rider_short"]))
-        )
-        .mark_bar()
-        .encode(
-            x=alt.X("avg_gap_pct:Q", title="Avg Gap %"),
-            y=alt.Y("rider_short:N", sort="-x", title="Rider"),
-            color=alt.Color("selection_score:Q", title="Score", scale=alt.Scale(scheme="tealblues")),
-            tooltip=["rider_label:N", "avg_gap_pct:Q", "avg_seg_rank:Q", "top3_rate:Q", "selection_score:Q"],
-        )
-        .properties(height=380)
+    st.markdown("### Athlete Feedback Board")
+    board = simple[
+        ["rider_short", "selection_score", "Ampel", "avg_gap_pct", "avg_seg_rank", "Stabilitaet", "Feedback", "events", "heats"]
+    ].rename(
+        columns={
+            "rider_short": "Rider",
+            "selection_score": "Score",
+            "avg_gap_pct": "Gap %",
+            "avg_seg_rank": "Seg Rank",
+            "events": "Events",
+            "heats": "Heats",
+        }
     )
-    st.altair_chart(gap_bar, use_container_width=True)
+    for c in ["Score", "Gap %", "Seg Rank"]:
+        board[c] = pd.to_numeric(board[c], errors="coerce").round(2)
+    st.dataframe(board, use_container_width=True, hide_index=True, height=min(700, 46 + 32 * (len(board) + 1)))
 
-with col_v2:
-    st.markdown(f"**2) Rank vs Gap Scatter ({seg_name})**")
-    scatter = (
-        alt.Chart(rider_summary.head(top_n).assign(rider_short=lambda d: d["rider_id"].map(label_map).fillna(d["rider_short"])))
-        .mark_circle(opacity=0.85)
-        .encode(
-            x=alt.X("avg_gap_pct:Q", title="Avg Gap %"),
-            y=alt.Y("avg_seg_rank:Q", title="Avg Segment Rank"),
-            size=alt.Size("heats:Q", title="Heats"),
-            color=alt.Color("rider_short:N", title="Rider"),
-            tooltip=["rider_label:N", "heats:Q", "events:Q", "avg_gap_pct:Q", "avg_seg_rank:Q", "selection_score:Q"],
-        )
-        .properties(height=380)
-    )
-    st.altair_chart(scatter, use_container_width=True)
+    top_n = st.slider("Rider in Visuals", min_value=4, max_value=20, value=10, step=1)
+    chart_df = simple.head(top_n).copy()
+    chart_df["ampel_order"] = chart_df["Ampel"].map({"Gruen": 0, "Gelb": 1, "Rot": 2}).fillna(3)
 
-st.markdown(f"**3) Trend über Events ({seg_name})**")
-trend = (
-    df_chart.groupby(["event_dt", "event_id", "display_name", "rider_id", "rider_short"], as_index=False)
-    .agg(avg_gap_pct=("gap_pct", "mean"), avg_rank=("seg_rank", "mean"))
-    .sort_values("event_dt")
-)
-if not trend.empty:
-    trend["event_label"] = trend["event_dt"].dt.strftime("%Y-%m-%d").fillna("") + " | " + trend["display_name"].fillna("")
-    trend_line = (
-        alt.Chart(trend)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("event_dt:T", title="Event Date"),
-            y=alt.Y("avg_gap_pct:Q", title="Avg Gap %"),
-            color=alt.Color("rider_short:N", title="Rider"),
-            tooltip=["rider_short:N", "event_label:N", "avg_gap_pct:Q", "avg_rank:Q"],
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        st.markdown("**Score (0-100) mit Ampel**")
+        score_chart = (
+            alt.Chart(chart_df)
+            .mark_bar()
+            .encode(
+                x=alt.X("selection_score:Q", title="Score"),
+                y=alt.Y("rider_short:N", sort=alt.SortField(field="selection_score", order="descending"), title="Rider"),
+                color=alt.Color(
+                    "Ampel:N",
+                    scale=alt.Scale(domain=["Gruen", "Gelb", "Rot"], range=["#2e7d32", "#f9a825", "#c62828"]),
+                ),
+                tooltip=["rider_label:N", "selection_score:Q", "avg_gap_pct:Q", "avg_seg_rank:Q", "Stabilitaet:N"],
+            )
+            .properties(height=380)
         )
-        .properties(height=340)
-    )
-    st.altair_chart(trend_line, use_container_width=True)
+        st.altair_chart(score_chart, use_container_width=True)
 
-st.markdown(f"**4) Heatmap Runde x Rider ({seg_name}, Avg Gap %)**")
-heat = (
-    df_chart.groupby(["rider_id", "rider_short", "round_title"], as_index=False)
-    .agg(avg_gap_pct=("gap_pct", "mean"))
-)
-if not heat.empty:
-    heat["round_sort"] = heat["round_title"].apply(round_sort_value)
-    heat = heat.sort_values(["round_sort", "round_title", "rider_short"])
-    heatmap = (
-        alt.Chart(heat)
-        .mark_rect()
-        .encode(
-            x=alt.X("rider_short:N", title="Rider"),
-            y=alt.Y("round_title:N", sort=alt.SortField(field="round_sort", order="ascending"), title="Round"),
-            color=alt.Color("avg_gap_pct:Q", title="Avg Gap %", scale=alt.Scale(scheme="blues")),
-            tooltip=["rider_short:N", "round_title:N", "avg_gap_pct:Q"],
+    with col_s2:
+        st.markdown(f"**Gap % zur Spitze ({seg_name})**")
+        gap_chart = (
+            alt.Chart(chart_df)
+            .mark_bar()
+            .encode(
+                x=alt.X("avg_gap_pct:Q", title="Gap %"),
+                y=alt.Y("rider_short:N", sort=alt.SortField(field="avg_gap_pct", order="ascending"), title="Rider"),
+                color=alt.Color("avg_gap_pct:Q", scale=alt.Scale(scheme="blues"), title="Gap %"),
+                tooltip=["rider_label:N", "avg_gap_pct:Q", "best_gap_pct:Q", "events:Q", "heats:Q"],
+            )
+            .properties(height=380)
         )
-        .properties(height=340)
+        st.altair_chart(gap_chart, use_container_width=True)
+else:
+    st.markdown("### Selection Scoreboard")
+    board = rider_summary[
+        ["rider_short", "heats", "events", "avg_gap_pct", "avg_seg_rank", "top3_rate", "consistency", "selection_score"]
+    ].rename(
+        columns={
+            "rider_short": "Rider",
+            "avg_gap_pct": "Avg Gap %",
+            "avg_seg_rank": "Avg Seg Rank",
+            "top3_rate": "Top3 %",
+            "consistency": "Consistency",
+            "selection_score": "Score",
+        }
     )
-    st.altair_chart(heatmap, use_container_width=True)
+    for c in ["Avg Gap %", "Avg Seg Rank", "Top3 %", "Consistency", "Score"]:
+        board[c] = pd.to_numeric(board[c], errors="coerce").round(2)
+    st.dataframe(board, use_container_width=True, hide_index=True, height=min(620, 46 + 32 * (len(board) + 1)))
+
+    st.markdown("### Visuals")
+    top_n = st.slider("Max Rider in Charts", min_value=4, max_value=20, value=10, step=1)
+    chart_riders = rider_summary.head(top_n)["rider_id"].tolist()
+    df_chart = df_seg[df_seg["rider_id"].isin(chart_riders)].copy()
+    label_map = rider_summary.set_index("rider_id")["rider_short"].to_dict()
+    df_chart["rider_short"] = df_chart["rider_id"].map(label_map).fillna(df_chart["rider_short"])
+
+    col_v1, col_v2 = st.columns(2)
+    with col_v1:
+        st.markdown(f"**1) Gap % zum Schnellsten ({seg_name})**")
+        gap_bar = (
+            alt.Chart(
+                rider_summary.head(top_n).assign(rider_short=lambda d: d["rider_id"].map(label_map).fillna(d["rider_short"]))
+            )
+            .mark_bar()
+            .encode(
+                x=alt.X("avg_gap_pct:Q", title="Avg Gap %"),
+                y=alt.Y("rider_short:N", sort="-x", title="Rider"),
+                color=alt.Color("selection_score:Q", title="Score", scale=alt.Scale(scheme="tealblues")),
+                tooltip=["rider_label:N", "avg_gap_pct:Q", "avg_seg_rank:Q", "top3_rate:Q", "selection_score:Q"],
+            )
+            .properties(height=380)
+        )
+        st.altair_chart(gap_bar, use_container_width=True)
+
+    with col_v2:
+        st.markdown(f"**2) Rank vs Gap Scatter ({seg_name})**")
+        scatter = (
+            alt.Chart(
+                rider_summary.head(top_n).assign(rider_short=lambda d: d["rider_id"].map(label_map).fillna(d["rider_short"]))
+            )
+            .mark_circle(opacity=0.85)
+            .encode(
+                x=alt.X("avg_gap_pct:Q", title="Avg Gap %"),
+                y=alt.Y("avg_seg_rank:Q", title="Avg Segment Rank"),
+                size=alt.Size("heats:Q", title="Heats"),
+                color=alt.Color("rider_short:N", title="Rider"),
+                tooltip=["rider_label:N", "heats:Q", "events:Q", "avg_gap_pct:Q", "avg_seg_rank:Q", "selection_score:Q"],
+            )
+            .properties(height=380)
+        )
+        st.altair_chart(scatter, use_container_width=True)
+
+    st.markdown(f"**3) Trend ueber Events ({seg_name})**")
+    trend = (
+        df_chart.groupby(["event_dt", "event_id", "display_name", "rider_id", "rider_short"], as_index=False)
+        .agg(avg_gap_pct=("gap_pct", "mean"), avg_rank=("seg_rank", "mean"))
+        .sort_values("event_dt")
+    )
+    if not trend.empty:
+        trend["event_label"] = trend["event_dt"].dt.strftime("%Y-%m-%d").fillna("") + " | " + trend["display_name"].fillna("")
+        trend_line = (
+            alt.Chart(trend)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("event_dt:T", title="Event Date"),
+                y=alt.Y("avg_gap_pct:Q", title="Avg Gap %"),
+                color=alt.Color("rider_short:N", title="Rider"),
+                tooltip=["rider_short:N", "event_label:N", "avg_gap_pct:Q", "avg_rank:Q"],
+            )
+            .properties(height=340)
+        )
+        st.altair_chart(trend_line, use_container_width=True)
+
+    st.markdown(f"**4) Heatmap Runde x Rider ({seg_name}, Avg Gap %)**")
+    heat = (
+        df_chart.groupby(["rider_id", "rider_short", "round_title"], as_index=False)
+        .agg(avg_gap_pct=("gap_pct", "mean"))
+    )
+    if not heat.empty:
+        heat["round_sort"] = heat["round_title"].apply(round_sort_value)
+        heat = heat.sort_values(["round_sort", "round_title", "rider_short"])
+        heatmap = (
+            alt.Chart(heat)
+            .mark_rect()
+            .encode(
+                x=alt.X("rider_short:N", title="Rider"),
+                y=alt.Y("round_title:N", sort=alt.SortField(field="round_sort", order="ascending"), title="Round"),
+                color=alt.Color("avg_gap_pct:Q", title="Avg Gap %", scale=alt.Scale(scheme="blues")),
+                tooltip=["rider_short:N", "round_title:N", "avg_gap_pct:Q"],
+            )
+            .properties(height=340)
+        )
+        st.altair_chart(heatmap, use_container_width=True)
 
 st.caption(
     "Hinweis: Der Vergleich über Events basiert auf Segment-Rang und Gap zum Schnellsten pro Heat "
