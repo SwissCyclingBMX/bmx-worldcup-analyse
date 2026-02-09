@@ -204,6 +204,15 @@ def parse_riders(heat: Dict[str, Any]) -> List[Dict[str, Any]]:
     out = []
     for r in riders:
         add = r.get("additional_columns") or {}
+        start_val = add.get("c11")
+        t1_val = add.get("c12")
+        finish_val = add.get("c14")
+        # fallback to result if splits missing (common in gate practice)
+        res_val = r.get("result")
+        if start_val in (None, "") and res_val not in (None, ""):
+            start_val = res_val
+        if finish_val in (None, "") and res_val not in (None, ""):
+            finish_val = res_val
         out.append(
             {
                 "bib": r.get("plate"),
@@ -212,9 +221,9 @@ def parse_riders(heat: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "uci_id": extract_uci_id(r.get("id") or ""),
                 "rank": r.get("rank"),
                 "result": r.get("result"),
-                "start": add.get("c11") or add.get("c11_cname"),
-                "t1": add.get("c12") or add.get("c12_cname"),
-                "finish": add.get("c14") or add.get("c14_cname"),
+                "start": start_val,
+                "t1": t1_val,
+                "finish": finish_val,
             }
         )
     return out
