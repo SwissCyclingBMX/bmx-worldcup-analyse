@@ -100,10 +100,14 @@ def fmt_table(df: pd.DataFrame, time_cols: Optional[List[str]] = None, score_col
     score_cols = score_cols or []
     for c in time_cols:
         if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce").round(3)
+            out[c] = pd.to_numeric(out[c], errors="coerce").apply(
+                lambda v: "" if pd.isna(v) else f"{v:.3f}"
+            )
     for c in score_cols:
         if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce").round(1)
+            out[c] = pd.to_numeric(out[c], errors="coerce").apply(
+                lambda v: "" if pd.isna(v) else f"{v:.1f}"
+            )
     return out
 
 
