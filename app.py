@@ -1017,7 +1017,7 @@ with tab_start:
 
     df_heat = df_heat.sort_values(["pick_order"], na_position="last", kind="stable")
 
-    start_cols = ["nation", "bib", "name", "pick_order", "chosen_lane"]
+    start_cols = ["nation", "bib", "name", "pick_order", "rank", "chosen_lane"]
     start_cols = [c for c in start_cols if c in df_heat.columns]
     start_df = df_heat[start_cols].copy()
     start_df["name_norm"] = start_df["name"].apply(norm_name)
@@ -1532,7 +1532,11 @@ with tab_rounds:
             if extra_rows:
                 extra_df = pd.DataFrame(extra_rows)
                 display = pd.concat([display, extra_df], ignore_index=True)
-            st.dataframe(display, use_container_width=True, height=240, hide_index=True)
+            # auto height so all rows are visible (no vertical scroll)
+            row_h = 28
+            min_h = 120
+            height = max(min_h, int((len(display) + 1) * row_h))
+            st.dataframe(display, use_container_width=True, height=height, hide_index=True)
         else:
             st.info("Keine Rider im Heat für Rundentabelle gefunden.")
     else:
