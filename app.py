@@ -239,6 +239,7 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
         "",
         regex=True,
     ).str.strip()
+    df["loc_clean"] = loc_clean
 
 
     # Series detection
@@ -1169,8 +1170,8 @@ with tab_start:
             try:
                 current_date = int(str(event_id)[:8])
                 current_loc = (
-                    events.loc[events["event_id"] == event_id, "location"].iloc[0]
-                    if "location" in events.columns and (events["event_id"] == event_id).any()
+                    events.loc[events["event_id"] == event_id, "loc_clean"].iloc[0]
+                    if "loc_clean" in events.columns and (events["event_id"] == event_id).any()
                     else ""
                 )
                 series = "euc" if "_euc_" in str(event_id) else "wc"
@@ -1181,7 +1182,8 @@ with tab_start:
                         ev = ev[ev["event_id"].astype(str).str.contains("_euc_", regex=False)]
                     else:
                         ev = ev[~ev["event_id"].astype(str).str.contains("_euc_", regex=False)]
-                    ev = ev[ev["location"] == current_loc]
+                    loc_col = "loc_clean" if "loc_clean" in ev.columns else "location"
+                    ev = ev[ev[loc_col] == current_loc]
                     ev = ev[ev["event_id"].astype(str).str.slice(0, 8).str.isdigit()]
                     if not ev.empty:
                         ev["event_date_num"] = ev["event_id"].astype(str).str.slice(0, 8).astype(int)
