@@ -94,6 +94,19 @@ def auto_height(df: pd.DataFrame, row_h: int = 28, min_h: int = 120) -> int:
     return max(min_h, int((n + 1) * row_h))
 
 
+def fmt_table(df: pd.DataFrame, time_cols: Optional[List[str]] = None, score_cols: Optional[List[str]] = None) -> pd.DataFrame:
+    out = df.copy()
+    time_cols = time_cols or []
+    score_cols = score_cols or []
+    for c in time_cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(3)
+    for c in score_cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").round(1)
+    return out
+
+
 def safe_in_clause(values: List[str]) -> Tuple[str, List[str]]:
     """Returns ('?, ?, ?', params) for IN clause."""
     values = [v for v in values if v]
@@ -1644,7 +1657,8 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
-                    st.table(ts_view)
+                    ts_view = fmt_table(ts_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
+                    st.dataframe(ts_view, use_container_width=True, height=auto_height(ts_view), hide_index=True)
                 rs = race_stats(df_hist)
                 if not rs.empty:
                     st.markdown("**Race-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
@@ -1658,4 +1672,5 @@ with tab_rounds:
                             "cons_score": "Score",
                         }
                     )
-                    st.table(rs_view)
+                    rs_view = fmt_table(rs_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
+                    st.dataframe(rs_view, use_container_width=True, height=auto_height(rs_view), hide_index=True)
