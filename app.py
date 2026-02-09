@@ -1658,7 +1658,7 @@ with tab_rounds:
                         }
                     )
                     ts_view = fmt_table(ts_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
-                    st.dataframe(ts_view, use_container_width=True, height=auto_height(ts_view), hide_index=True)
+                    st.table(ts_view)
                 rs = race_stats(df_hist)
                 if not rs.empty:
                     st.markdown("**Race-Start/T1 (Best & Ø Top-3) + Konstanz-Score:**")
@@ -1673,4 +1673,4 @@ with tab_rounds:
                         }
                     )
                     rs_view = fmt_table(rs_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
-                    st.dataframe(rs_view, use_container_width=True, height=auto_height(rs_view), hide_index=True)
+                    st.table(rs_view)
