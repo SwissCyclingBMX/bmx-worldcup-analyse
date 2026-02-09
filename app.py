@@ -293,6 +293,10 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
         df.loc[grp.index, "round_num"] = range(1, len(grp) + 1)
 
     df["label_short"] = "ROUND " + df["round_num"].astype("Int64").astype(str) + " - " + loc_clean
+    # European Cup prefix
+    df.loc[df["series"] == "euc", "label_short"] = (
+        "EC-" + df.loc[df["series"] == "euc", "label_short"]
+    )
     df["label_short"] = df["label_short"].where(df["round_num"].notna(), df["display_name"])
     df["label_short"] = df["label_short"].str.strip()
     df["label_analysis"] = df["label_short"] + " - " + df["year"].astype(str)
