@@ -96,18 +96,25 @@ def extract_uci_id(raw: str) -> Optional[str]:
 def fetch_event_payload(url: str) -> Dict[str, Any]:
     headers = {"X-Inertia": "true", "X-Requested-With": "XMLHttpRequest"}
     r = requests.get(url, headers=headers, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code} for {url}")
     if "application/json" in r.headers.get("Content-Type", ""):
         return r.json()
     # fallback: parse data-page from HTML
     text = r.text
+    # try to parse Inertia data-page from HTML
     m = re.search(r'data-page=(\"|\')(.*?)(\\1)', text, re.S)
     if m:
         data = html.unescape(m.group(2))
         return json.loads(data)
     # last resort: try to find JSON object in text
-    m = re.search(r'({"component":.*"props":.*})', text)
-    if m:
-        return json.loads(m.group(1))
+    for pat in [
+        r'({"component":.*?"props":.*?})\\s*</script>',
+        r'({"component":.*?"props":.*?})',
+    ]:
+        m = re.search(pat, text, re.S)
+        if m:
+            return json.loads(m.group(1))
     raise RuntimeError("Could not parse JSTiming payload")
 
 
