@@ -233,23 +233,18 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
     # Prefer official rank for finish position if available.
     out["pos_finish"] = out["rank"].where(out["rank"].notna(), out["pos_finish_est"])
 
-    # Top4 median by finish position; fallback to regular heat median if <4 valid riders.
+    # Rank-4 reference by segment time (4th fastest valid time in the heat).
+    # DNFs are ignored by dropping non-numeric/NaN times.
     for seg in ["start", "t1", "t2", "t3", "finish"]:
-        top4 = (
+        rank4 = (
             out.groupby(heat_cols, dropna=False)
-            .apply(
-                lambda g: (
-                    g.loc[(g["pos_finish"] <= 4) & g[seg].notna(), seg].median()
-                    if g.loc[(g["pos_finish"] <= 4) & g[seg].notna(), seg].shape[0] >= 4
-                    else g[seg].median()
-                )
-            )
-            .reset_index(name=f"{seg}_top4_median")
+            .apply(lambda g: g[seg].dropna().nsmallest(4).iloc[-1] if g[seg].notna().sum() >= 4 else np.nan)
+            .reset_index(name=f"{seg}_rank4_ref")
         )
-        out = out.merge(top4, on=heat_cols, how="left")
+        out = out.merge(rank4, on=heat_cols, how="left")
 
         out[f"{seg}_delta_heat_median"] = out[seg] - out[f"{seg}_median"]
-        out[f"{seg}_delta_top4"] = out[seg] - out[f"{seg}_top4_median"]
+        out[f"{seg}_delta_rank4"] = out[seg] - out[f"{seg}_rank4_ref"]
         out[f"{seg}_delta_winner"] = out[seg] - out[f"{seg}_winner"]
 
     # Backward-compatible default reference.
@@ -287,11 +282,11 @@ def make_event_label(df: pd.DataFrame) -> pd.Series:
 def apply_reference(df: pd.DataFrame, ref_key: str) -> pd.DataFrame:
     out = df.copy()
     map_suffix = {
+        "rank4": "rank4",
         "heat_median": "heat_median",
-        "top4": "top4",
         "winner": "winner",
     }
-    suffix = map_suffix.get(ref_key, "heat_median")
+    suffix = map_suffix.get(ref_key, "rank4")
     for seg in ["start", "t1", "t2", "t3", "finish"]:
         src = f"{seg}_delta_{suffix}"
         if src in out.columns:
@@ -372,8 +367,17 @@ if not selected_ids:
     st.warning("Keine Rider fuer die aktuelle Auswahl.")
     st.stop()
 
-ref_label = st.radio("Referenz", ["Heat Median", "Top4 Median", "Winner"], horizontal=True, index=1)
-ref_key = {"Heat Median": "heat_median", "Top4 Median": "top4", "Winner": "winner"}[ref_label]
+ref_label = st.radio(
+    "Referenz",
+    ["Rank 4 (Qualification Cut)", "Rank 1 (Winner)", "Heat Median"],
+    horizontal=True,
+    index=0,
+)
+ref_key = {
+    "Rank 4 (Qualification Cut)": "rank4",
+    "Rank 1 (Winner)": "winner",
+    "Heat Median": "heat_median",
+}[ref_label]
 st.caption(f"Aktive Delta-Referenz: {ref_label}")
 
 base_rel = add_heat_relative_metrics(base_scope)
