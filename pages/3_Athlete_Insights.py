@@ -1025,8 +1025,10 @@ with tabs[0]:
         plot_frames.append(frame)
 
     plot_long = pd.concat(plot_frames, ignore_index=True) if plot_frames else pd.DataFrame()
+    plot_long_base = pd.DataFrame()
     if not plot_long.empty:
         plot_long = plot_long.dropna(subset=["delta"])
+        plot_long_base = plot_long.copy()
         plot_long["series_label"] = plot_long["rider_short"] + " - " + plot_long["metric"]
         x_order_df = (
             plot_long[[x_axis_col, "event_id_dt", "event_dt", "round_order", "heat_sort"]]
@@ -1147,12 +1149,13 @@ with tabs[0]:
 
     # Summary: use Finish Delta by default; fallback to first selected metric.
     summary_label = "Finish Delta" if "Finish Delta" in selected_metric_labels else (selected_metric_labels[0] if selected_metric_labels else None)
-    summary_col = metric_plot_map.get(summary_label) if summary_label else None
     summary_src = pd.DataFrame()
-    if summary_col and summary_col in plot.columns:
-        summary_src = plot[
-            ["year", "rider_short", "event_id", summary_col]
-        ].rename(columns={summary_col: "delta"}).dropna(subset=["delta"])
+    if summary_label and not plot_long_base.empty:
+        summary_src = (
+            plot_long_base[plot_long_base["metric"] == summary_label][["year", "rider_short", "event_id", "delta"]]
+            .dropna(subset=["delta"])
+            .copy()
+        )
 
     summary = (
         summary_src.groupby(["year", "rider_short"], as_index=False)
