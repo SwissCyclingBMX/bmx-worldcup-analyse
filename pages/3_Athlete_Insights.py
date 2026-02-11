@@ -1017,39 +1017,6 @@ with tabs[0]:
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    st.markdown("**Final Rank pro Event (master_results)**")
-    final_rank_tbl = (
-        runs_sel[["event_id", "event_dt", "location", "rider_id", "rider_short", "final_rank_event"]]
-        .groupby(["event_id", "event_dt", "location", "rider_id", "rider_short"], as_index=False)
-        .agg(final_rank_event=("final_rank_event", lambda s: s.dropna().min() if s.notna().any() else np.nan))
-    )
-    if not final_rank_tbl.empty:
-        final_rank_tbl["event_id_dt"] = pd.to_datetime(final_rank_tbl["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce")
-        final_rank_tbl = final_rank_tbl.sort_values(
-            ["event_id_dt", "event_dt", "event_id", "rider_short"],
-            ascending=[True, True, True, True],
-            na_position="last",
-        )
-        final_rank_tbl["event_date"] = final_rank_tbl["event_dt"].dt.strftime("%Y-%m-%d")
-        final_rank_tbl["final_rank_event"] = pd.to_numeric(final_rank_tbl["final_rank_event"], errors="coerce")
-        final_rank_tbl["final_rank_event"] = np.where(
-            final_rank_tbl["final_rank_event"].notna(),
-            final_rank_tbl["final_rank_event"].astype("Int64").astype(str),
-            "NA",
-        )
-        final_rank_tbl = final_rank_tbl.rename(
-            columns={
-                "event_date": "Date",
-                "event_id": "Event",
-                "location": "Location",
-                "rider_short": "Rider",
-                "final_rank_event": "Final Rank",
-            }
-        )
-        st.dataframe(final_rank_tbl[["Date", "Event", "Location", "Rider", "Final Rank"]], use_container_width=True, hide_index=True)
-    else:
-        st.caption("Keine Final-Ranks fuer die aktuelle Auswahl gefunden.")
-
     st.markdown("**Segment Contribution**")
     contrib_src = runs_sel.copy()
     seg_candidates = [
@@ -1556,16 +1523,50 @@ with tabs[7]:
                     sort=x_order,
                     axis=alt.Axis(labelAngle=-55, labelLimit=280, labelOverlap=False),
                 ),
-                y=alt.Y("final_rank:Q", title="Final Rank", scale=alt.Scale(reverse=True)),
+                y=alt.Y(
+                    "final_rank:Q",
+                    title="Final Rank",
+                    scale=alt.Scale(domain=[1, 20], reverse=True, nice=False, clamp=True),
+                ),
                 color=alt.Color("rider_short:N", title="Rider"),
                 detail="rider_short:N",
                 order=alt.Order("x_order:Q", sort="ascending"),
                 tooltip=["event_label:N", "final_rank:Q", "category:N", "gender:N", "event_id:N"],
             )
             st.altair_chart(
-                line.properties(height=360, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}),
+                line.properties(height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}),
                 use_container_width=True,
             )
+
+        st.markdown("**Final Rank pro Event (master_results)**")
+        final_rank_tbl = rider_event.copy()
+        final_rank_tbl["event_id_dt"] = pd.to_datetime(
+            final_rank_tbl["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce"
+        )
+        final_rank_tbl = final_rank_tbl.sort_values(
+            ["event_id_dt", "event_dt", "event_id", "rider_short"],
+            ascending=[True, True, True, True],
+            na_position="last",
+        )
+        final_rank_tbl["Date"] = final_rank_tbl["event_dt"].dt.strftime("%Y-%m-%d")
+        final_rank_tbl["Final Rank"] = pd.to_numeric(final_rank_tbl["final_rank"], errors="coerce")
+        final_rank_tbl["Final Rank"] = np.where(
+            final_rank_tbl["Final Rank"].notna(),
+            final_rank_tbl["Final Rank"].astype("Int64").astype(str),
+            "NA",
+        )
+        final_rank_tbl = final_rank_tbl.rename(
+            columns={
+                "event_id": "Event",
+                "location": "Location",
+                "rider_short": "Rider",
+            }
+        )
+        st.dataframe(
+            final_rank_tbl[["Date", "Event", "Location", "Rider", "Final Rank"]],
+            use_container_width=True,
+            hide_index=True,
+        )
 
         # Requested summary metrics.
         summary = (
