@@ -76,10 +76,73 @@ def short_name(name: str) -> str:
 def parse_event_date(event_date: Optional[str], event_id: str) -> pd.Timestamp:
     s = clean_spaces(event_date or "")
     if s:
+        # Robust handling for mixed numeric formats:
+        # WC can be YYYY-MM-DD, while some sources may use YYYY-DD-MM.
+        m = re.match(r"^(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})$", s)
+        if m:
+            y, a, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            # Prefer YYYY-MM-DD.
+            if 1 <= a <= 12 and 1 <= b <= 31:
+                dt = pd.to_datetime(f"{y:04d}-{a:02d}-{b:02d}", errors="coerce")
+                if pd.notna(dt):
+                    return dt
+            # Fallback YYYY-DD-MM.
+            if 1 <= b <= 12 and 1 <= a <= 31:
+                dt = pd.to_datetime(f"{y:04d}-{b:02d}-{a:02d}", errors="coerce")
+                if pd.notna(dt):
+                    return dt
+        # Generic fallback for text dates (e.g., 21 SEP 2025).
         dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
         if pd.notna(dt):
             return dt
     return pd.to_datetime(str(event_id)[:8], format="%Y%m%d", errors="coerce")
+
+
+def parse_round_code(display_name: str) -> str:
+    m = re.search(r"ROUND\\s*(\\d+)", str(display_name or ""), flags=re.IGNORECASE)
+    if m:
+        return f"R{m.group(1)}"
+    return ""
+
+
+def parse_series_code(display_name: str, event_type: str) -> str:
+    n = str(display_name or "").upper()
+    if "WORLD CHAMPIONSHIP" in n or "WCH" in n:
+        return "WCH"
+    if "EUROPEAN CHAMPIONSHIP" in n or "ECH" in n:
+        return "ECH"
+    if "EUROPE CUP" in n or "EC" in n:
+        return "EC"
+    if "WORLD CUP" in n or " WC " in f" {n} ":
+        return "WC"
+    if event_type in {"WC", "WM", "EC", "EM"}:
+        return event_type
+    return "OTR"
+
+
+def parse_location_short(display_name: str, location: str) -> str:
+    loc = wc_location_clean(location)
+    if loc and loc.lower() != "unknown":
+        return loc
+    n = str(display_name or "")
+    m = re.search(r"ROUND\\s*\\d+\\s*-\\s*([^,]+)", n, flags=re.IGNORECASE)
+    if m:
+        return clean_spaces(m.group(1))
+    parts = [clean_spaces(p) for p in n.split("-") if clean_spaces(p)]
+    if parts:
+        return parts[-1].split(",")[0].strip()
+    return "Unknown"
+
+
+def build_event_short(display_name: str, location: str, event_type: str, max_len: int = 30) -> str:
+    loc = parse_location_short(display_name, location)
+    series = parse_series_code(display_name, event_type)
+    rnd = parse_round_code(display_name)
+    bits = [b for b in [loc, series, rnd] if b]
+    s = " ".join(bits).strip() or "Unknown"
+    if len(s) > max_len:
+        return s[: max_len - 1].rstrip() + "..."
+    return s
 
 
 def norm_location(s: str) -> str:
@@ -181,6 +244,10 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     df["event_dt"] = [parse_event_date(ed, eid) for ed, eid in zip(df["event_date"], df["event_id"])]
     df["year"] = pd.to_numeric(df["event_id"].astype(str).str[:4], errors="coerce").astype("Int64")
     df["location"] = df["location"].fillna("Unknown").astype(str).apply(clean_spaces).replace("", "Unknown")
+    df["event_short"] = [
+        build_event_short(dn, loc, et)
+        for dn, loc, et in zip(df["display_name"], df["location"], df["event_type"])
+    ]
     df["nation"] = df["nation"].fillna("").astype(str).str.upper().str.strip()
 
     cats = df["group_id"].map(lambda g: GROUP_MAP.get(int(g), ("Unknown", "Unknown")) if pd.notna(g) else ("Unknown", "Unknown"))
@@ -247,8 +314,14 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
         field = grp.transform("count")
         out[pct_col] = np.where(field > 1, (out[rank_col] - 1) / (field - 1), np.nan)
 
+    out["rank_bottom"] = out["pos_start"]
+    out["rank_t1"] = out["pos_t1"]
+    out["rank_t2"] = out["pos_t2"]
+    out["rank_t3"] = out["pos_t3"]
+
     # Prefer official rank for finish position if available.
     out["pos_finish"] = out["rank"].where(out["rank"].notna(), out["pos_finish_est"])
+    out["rank_finish"] = out["pos_finish"]
 
     # Rank-4 reference by segment time (4th fastest valid time in the heat).
     # DNFs are ignored by dropping non-numeric/NaN times.
@@ -277,6 +350,19 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
     out["delta_post_t2"] = out["finish_delta"] - out["t2_delta"]
     out["delta_post_t3"] = out["finish_delta"] - out["t3_delta"]
+
+    # Split ranks per heat (smaller split duration = better rank).
+    out["split_bottom_t1"] = out["t1"] - out["start"]
+    out["split_t1_t2"] = out["t2"] - out["t1"]
+    out["split_t2_t3"] = out["t3"] - out["t2"]
+    out["split_t3_finish"] = out["finish"] - out["t3"]
+    for split_col, rank_col in [
+        ("split_bottom_t1", "rank_bottom_t1"),
+        ("split_t1_t2", "rank_t1_t2"),
+        ("split_t2_t3", "rank_t2_t3"),
+        ("split_t3_finish", "rank_t3_finish"),
+    ]:
+        out[rank_col] = out.groupby(heat_cols)[split_col].rank(method="min", ascending=True)
     return out
 
 
@@ -314,6 +400,108 @@ def apply_reference(df: pd.DataFrame, ref_key: str) -> pd.DataFrame:
     out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
     out["delta_post_t2"] = out["finish_delta"] - out["t2_delta"]
     out["delta_post_t3"] = out["finish_delta"] - out["t3_delta"]
+    return out
+
+
+def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["final_rank_event"] = np.nan
+    if out.empty or master.empty:
+        return out
+
+    out["location_norm"] = out["location"].apply(lambda x: norm_location(wc_location_clean(x)))
+    key_rows = (
+        out[
+            [
+                "event_id",
+                "event_type",
+                "year",
+                "location_norm",
+                "category",
+                "gender",
+                "uci_norm",
+                "name_key",
+            ]
+        ]
+        .drop_duplicates()
+        .to_dict("records")
+    )
+
+    subset_cache = {}
+    for r in key_rows:
+        event_id = str(r["event_id"])
+        event_type = str(r["event_type"])
+        year = r["year"]
+        loc_norm = str(r["location_norm"] or "")
+        cat = str(r["category"] or "")
+        gen = "M" if str(r["gender"]) == "Men" else "W" if str(r["gender"]) == "Women" else ""
+        subset_key = (event_id, event_type, year, loc_norm, cat, gen)
+        if subset_key in subset_cache:
+            continue
+
+        mr = master.copy()
+        if event_type in {"EC", "EM"}:
+            mr = mr[mr["uci_event_id"] == event_id]
+        elif event_type == "WC":
+            mr = mr[mr["klasse"].isin(["CDM"])]
+            if pd.notna(year):
+                mr = mr[mr["year"] == int(year)]
+            if loc_norm:
+                mr = mr[mr["location_norm"] == loc_norm]
+            if cat:
+                mr = mr[mr["category"] == cat]
+            if gen:
+                mr = mr[mr["gender"] == gen]
+        elif event_type == "WM":
+            mr = mr[mr["klasse"].isin(["CM"])]
+            if pd.notna(year):
+                mr = mr[mr["year"] == int(year)]
+            if cat:
+                mr = mr[mr["category"] == cat]
+            if gen:
+                mr = mr[mr["gender"] == gen]
+        else:
+            mr = mr.iloc[0:0]
+
+        uci_map = {}
+        name_map = {}
+        if not mr.empty:
+            mru = mr[mr["uci_norm"] != ""].copy()
+            if not mru.empty:
+                uci_map = mru.groupby("uci_norm")["rank"].min().to_dict()
+            mrn = mr[mr["name_key"] != ""].copy()
+            if not mrn.empty:
+                name_map = mrn.groupby("name_key")["rank"].min().to_dict()
+        subset_cache[subset_key] = (uci_map, name_map)
+
+    ranks = []
+    for r in out[
+        ["event_id", "event_type", "year", "location_norm", "category", "gender", "uci_norm", "name_key"]
+    ].to_dict("records"):
+        event_id = str(r["event_id"])
+        event_type = str(r["event_type"])
+        year = r["year"]
+        loc_norm = str(r["location_norm"] or "")
+        cat = str(r["category"] or "")
+        gen = "M" if str(r["gender"]) == "Men" else "W" if str(r["gender"]) == "Women" else ""
+        subset_key = (event_id, event_type, year, loc_norm, cat, gen)
+        uci_map, name_map = subset_cache.get(subset_key, ({}, {}))
+
+        rank_val = np.nan
+        uci = str(r.get("uci_norm") or "")
+        nk = str(r.get("name_key") or "")
+        if uci and uci in uci_map:
+            rank_val = uci_map[uci]
+        elif nk and nk in name_map:
+            rank_val = name_map[nk]
+
+        if pd.notna(rank_val) and float(rank_val) <= 0:
+            rank_val = np.nan
+        ranks.append(rank_val)
+    out["final_rank_event"] = pd.to_numeric(pd.Series(ranks), errors="coerce")
+    out["final_rank_event_display"] = np.where(
+        out["final_rank_event"].notna(), out["final_rank_event"].astype("Int64").astype(str), "NA"
+    )
     return out
 
 
@@ -401,6 +589,7 @@ base_rel = add_heat_relative_metrics(base_scope)
 runs_sel = base_rel[base_rel["rider_id"].isin(selected_ids)].copy()
 runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
 runs_sel = apply_reference(runs_sel, ref_key)
+runs_sel = attach_final_rank_event(runs_sel, master_results)
 runs_sel["event_label"] = make_event_label(runs_sel)
 
 tabs = st.tabs(
@@ -423,10 +612,31 @@ with tabs[0]:
     round_order_map = {"R1": 1, "LCQ": 2, "1/8": 3, "1/4": 4, "1/2": 5, "F": 6}
     plot["round_order"] = plot["round_short"].map(round_order_map).fillna(99)
     plot["heat_sort"] = pd.to_numeric(plot["heat_id"], errors="coerce").fillna(99999)
+    plot["event_label_full"] = plot["display_name"].fillna(plot["event_label"])
     plot["x_key"] = plot["event_label"] + " • " + plot["round_short"]
+    plot["x_label_short"] = plot["event_short"].fillna("Unknown") + " • " + plot["round_short"]
+    plot["x_label_long"] = plot["event_label_full"] + " • " + plot["round_short"]
     plot["rank_num"] = pd.to_numeric(plot["rank"], errors="coerce")
     plot["rank_display"] = np.where(plot["rank_num"].fillna(0) > 0, plot["rank_num"].astype("Int64").astype(str), "unknown")
     plot["reference_type"] = ref_label
+    plot["event_date_display"] = plot["event_dt"].dt.strftime("%Y-%m-%d")
+    for rc in [
+        "rank_bottom",
+        "rank_t1",
+        "rank_t2",
+        "rank_t3",
+        "rank_finish",
+        "rank_bottom_t1",
+        "rank_t1_t2",
+        "rank_t2_t3",
+        "rank_t3_finish",
+    ]:
+        if rc in plot.columns:
+            plot[f"{rc}_display"] = np.where(
+                pd.to_numeric(plot[rc], errors="coerce").notna(),
+                pd.to_numeric(plot[rc], errors="coerce").astype("Int64").astype(str),
+                "NA",
+            )
 
     # Dynamic split deltas (consistent sign: positive = slower than reference).
     plot["delta_bottom_t1"] = plot["t1_delta"] - plot["start_delta"]
@@ -456,6 +666,8 @@ with tabs[0]:
         key="trend_metrics",
     )
     metric_map = dict(available_metrics)
+    long_labels_on_axis = st.toggle("Long labels on axis", value=False, key="trend_long_labels")
+    x_axis_col = "x_label_long" if long_labels_on_axis else "x_label_short"
 
     plot_frames = []
     for metric_label in selected_metric_labels:
@@ -467,7 +679,9 @@ with tabs[0]:
                 "year",
                 "event_dt",
                 "event_label",
+                "event_label_full",
                 "location",
+                "event_date_display",
                 "event_id",
                 "round_title",
                 "round_short",
@@ -479,6 +693,18 @@ with tabs[0]:
                 "rider_short",
                 "reference_type",
                 "x_key",
+                "x_label_short",
+                "x_label_long",
+                "rank_bottom_display",
+                "rank_t1_display",
+                "rank_t2_display",
+                "rank_t3_display",
+                "rank_finish_display",
+                "rank_bottom_t1_display",
+                "rank_t1_t2_display",
+                "rank_t2_t3_display",
+                "rank_t3_finish_display",
+                "final_rank_event_display",
                 metric_col,
             ]
         ].rename(columns={metric_col: "delta"})
@@ -490,13 +716,13 @@ with tabs[0]:
         plot_long = plot_long.dropna(subset=["delta"])
         plot_long["series_label"] = plot_long["rider_short"] + " - " + plot_long["metric"]
         x_order_df = (
-            plot_long[["x_key", "event_dt", "round_order", "heat_sort"]]
+            plot_long[[x_axis_col, "event_dt", "round_order", "heat_sort"]]
             .drop_duplicates()
-            .sort_values(["event_dt", "round_order", "heat_sort", "x_key"], na_position="last")
+            .sort_values(["event_dt", "round_order", "heat_sort", x_axis_col], na_position="last")
         )
-        x_order = x_order_df["x_key"].tolist()
+        x_order = x_order_df[x_axis_col].tolist()
         x_rank_map = {k: i for i, k in enumerate(x_order)}
-        plot_long["x_order"] = plot_long["x_key"].map(x_rank_map)
+        plot_long["x_order"] = plot_long[x_axis_col].map(x_rank_map)
     else:
         x_order = []
 
@@ -505,23 +731,41 @@ with tabs[0]:
             alt.Chart(plot_long)
             .mark_line(point=True)
             .encode(
-                x=alt.X("x_key:N", title="Event • Runde", sort=x_order),
+                x=alt.X(
+                    f"{x_axis_col}:N",
+                    title="Event • Runde",
+                    sort=x_order,
+                    axis=alt.Axis(labelAngle=-55, labelLimit=280, labelOverlap=False),
+                ),
                 y=alt.Y("delta:Q", title="Delta (s)"),
                 color=alt.Color("series_label:N", title="Rider - Metrik"),
                 detail="series_label:N",
                 order=alt.Order("x_order:Q", sort="ascending"),
                 tooltip=[
                     "series_label:N",
-                    "event_label:N",
+                    alt.Tooltip("event_label_full:N", title="event_label"),
+                    alt.Tooltip("event_date_display:N", title="date"),
                     "location:N",
+                    "round_title:N",
                     "round_short:N",
                     "heat_title:N",
                     alt.Tooltip("rank_display:N", title="rank"),
                     alt.Tooltip("delta:Q", title="delta_value", format=".4f"),
                     "reference_type:N",
+                    alt.Tooltip("rank_bottom_display:N", title="rank_bottom"),
+                    alt.Tooltip("rank_t1_display:N", title="rank_t1"),
+                    alt.Tooltip("rank_t2_display:N", title="rank_t2"),
+                    alt.Tooltip("rank_t3_display:N", title="rank_t3"),
+                    alt.Tooltip("rank_finish_display:N", title="rank_finish"),
+                    alt.Tooltip("rank_bottom_t1_display:N", title="rank_bottom_t1"),
+                    alt.Tooltip("rank_t1_t2_display:N", title="rank_t1_t2"),
+                    alt.Tooltip("rank_t2_t3_display:N", title="rank_t2_t3"),
+                    alt.Tooltip("rank_t3_finish_display:N", title="rank_t3_finish"),
+                    alt.Tooltip("final_rank_event_display:N", title="final_rank_event"),
                 ],
             )
-            .properties(height=360)
+            .properties(height=430, padding={"bottom": 130, "left": 5, "right": 5, "top": 10})
+            .configure_axis(labelFontSize=11, titleFontSize=12)
         )
         st.altair_chart(trend_chart, use_container_width=True)
     else:
