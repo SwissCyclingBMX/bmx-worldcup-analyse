@@ -818,8 +818,17 @@ with tabs[0]:
         ("PostT2Delta", "delta_post_t2"),
         ("PostT3Delta", "delta_post_t3"),
     ]
+    available_seg_labels = [label for label, col in seg_candidates if col in contrib_src.columns and contrib_src[col].notna().any()]
+    selected_seg_labels = st.multiselect(
+        "Segmente anzeigen",
+        options=available_seg_labels,
+        default=available_seg_labels,
+        key="trend_contrib_segments",
+    )
     seg_frames = []
     for label, col in seg_candidates:
+        if label not in selected_seg_labels:
+            continue
         if col not in contrib_src.columns:
             continue
         vals = contrib_src[col]
