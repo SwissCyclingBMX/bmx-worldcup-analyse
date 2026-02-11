@@ -1759,19 +1759,20 @@ with tabs[7]:
                 scale=alt.Scale(domain=[1, 32], domainMin=1, domainMax=32, reverse=True, nice=False),
                 axis=alt.Axis(values=[1, 3, 4, 8, 9, 16, 17, 32]),
             )
-            bands = pd.DataFrame(
-                [
-                    {"zone": "1-3", "y0": 1, "y1": 3, "zone_color": "#2ca02c"},
-                    {"zone": "4-8", "y0": 4, "y1": 8, "zone_color": "#f1c40f"},
-                    {"zone": "9-16", "y0": 9, "y1": 16, "zone_color": "#e67e22"},
-                    {"zone": "17-32", "y0": 17, "y1": 32, "zone_color": "#e74c3c"},
-                ]
-            )
-            zone_layer = alt.Chart(bands).mark_rect(opacity=0.12).encode(
-                y=alt.Y("y0:Q", scale=alt.Scale(domain=[1, 32], reverse=True, nice=False), title=None),
-                y2="y1:Q",
-                color=alt.Color("zone:N", scale=alt.Scale(domain=bands["zone"].tolist(), range=bands["zone_color"].tolist()), legend=None),
-            )
+            zone_bands = [
+                {"y0": 1, "y1": 3, "zone_color": "#2ca02c"},
+                {"y0": 4, "y1": 8, "zone_color": "#f1c40f"},
+                {"y0": 9, "y1": 16, "zone_color": "#e67e22"},
+                {"y0": 17, "y1": 32, "zone_color": "#e74c3c"},
+            ]
+            zone_layers = []
+            for z in zone_bands:
+                zdf = pd.DataFrame([z])
+                zlayer = alt.Chart(zdf).mark_rect(color=z["zone_color"], opacity=0.12).encode(
+                    y=alt.Y("y0:Q", scale=alt.Scale(domain=[1, 32], reverse=True, nice=False), title=None),
+                    y2="y1:Q",
+                )
+                zone_layers.append(zlayer)
             line_df = plot_df[(plot_df["final_rank_num"] >= 1) & (plot_df["final_rank_num"] <= 32)].copy()
             overflow_df = plot_df[plot_df["is_overflow"]].copy()
             overflow_df["final_rank_plot"] = 32
@@ -1819,12 +1820,10 @@ with tabs[7]:
                 overflow_base.mark_text(dy=-8, fontSize=10)
                 .encode(text="final_rank_over32_label:N")
             )
-            st.altair_chart(
-                (zone_layer + line + points + overflow_points + over32_text).properties(
-                    height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
-                ),
-                use_container_width=True,
+            trend_chart = alt.layer(*zone_layers, line, points, overflow_points, over32_text).properties(
+                height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
             )
+            st.altair_chart(trend_chart, use_container_width=True)
 
         st.markdown("**Final Rank pro Event (master_results)**")
         final_rank_tbl = rider_event.copy()
@@ -1867,10 +1866,9 @@ with tabs[7]:
                 median_final_rank=("final_rank", "median"),
                 best_final_rank=("final_rank", "min"),
                 worst_final_rank=("final_rank", "max"),
-                finals_count=("reached_phase", lambda s: int((s == "Final").sum())),
+                top16_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 16).sum())),
                 top8_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 8).sum())),
-                top4_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 4).sum())),
-                dnq_count=("final_rank", lambda s: int(pd.to_numeric(s, errors="coerce").isna().sum())),
+                top3_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 3).sum())),
                 variability_final_rank=("final_rank", lambda s: (pd.to_numeric(s, errors="coerce") - pd.to_numeric(s, errors="coerce").median()).abs().median()),
             )
             .sort_values("rider_short", ascending=True, na_position="last")
