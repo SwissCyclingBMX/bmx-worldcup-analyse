@@ -1475,6 +1475,7 @@ with tabs[7]:
         .agg(
             rider_short=("rider_short", "first"),
             rider_label=("rider_label", "first"),
+            event_short=("event_short", "first"),
             category=("category", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
             gender=("gender", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
             event_dt=("event_dt", "first"),
@@ -1498,6 +1499,24 @@ with tabs[7]:
         if plot_df.empty:
             st.info("Keine Final Classification in master_results fuer die aktuelle Auswahl gefunden.")
         else:
+            plot_df["event_id_dt"] = pd.to_datetime(
+                plot_df["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce"
+            )
+            plot_df["x_base_short"] = plot_df["event_short"].fillna("Unknown")
+            dup_short = plot_df.groupby("x_base_short")["event_id"].transform("nunique") > 1
+            plot_df["x_label_short"] = np.where(
+                dup_short,
+                plot_df["x_base_short"] + " (" + plot_df["event_id"].astype(str).str[:8] + ")",
+                plot_df["x_base_short"],
+            )
+            x_order_df = (
+                plot_df[["x_label_short", "event_id_dt", "event_dt", "event_id"]]
+                .drop_duplicates(subset=["x_label_short", "event_id"])
+                .sort_values(["event_id_dt", "event_dt", "event_id"], ascending=[True, True, True], na_position="last")
+            )
+            x_order = x_order_df["x_label_short"].drop_duplicates().tolist()
+            x_rank_map = {k: i for i, k in enumerate(x_order)}
+            plot_df["x_order"] = plot_df["x_label_short"].map(x_rank_map)
             plot_df["event_label"] = (
                 plot_df["event_dt"].dt.strftime("%Y-%m-%d").fillna(plot_df["event_id"])
                 + " | "
@@ -1506,12 +1525,22 @@ with tabs[7]:
                 + plot_df["rider_short"]
             )
             line = alt.Chart(plot_df).mark_line(point=True).encode(
-                x=alt.X("event_dt:T", title="Event Date"),
+                x=alt.X(
+                    "x_label_short:N",
+                    title="Event",
+                    sort=x_order,
+                    axis=alt.Axis(labelAngle=-55, labelLimit=280, labelOverlap=False),
+                ),
                 y=alt.Y("final_rank:Q", title="Final Rank", scale=alt.Scale(reverse=True)),
                 color=alt.Color("rider_short:N", title="Rider"),
-                tooltip=["event_label:N", "final_rank:Q", "category:N", "gender:N"],
+                detail="rider_short:N",
+                order=alt.Order("x_order:Q", sort="ascending"),
+                tooltip=["event_label:N", "final_rank:Q", "category:N", "gender:N", "event_id:N"],
             )
-            st.altair_chart(line.properties(height=320), use_container_width=True)
+            st.altair_chart(
+                line.properties(height=360, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}),
+                use_container_width=True,
+            )
 
         # Requested summary metrics.
         summary = (
