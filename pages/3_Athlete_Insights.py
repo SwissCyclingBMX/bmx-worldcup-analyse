@@ -227,10 +227,11 @@ if all_runs.empty:
 event_type_opts = sorted([x for x in all_runs["event_type"].dropna().unique().tolist() if x])
 year_opts = sorted([int(x) for x in all_runs["year"].dropna().unique().tolist()], reverse=True)
 cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(all_runs["category"].dropna().unique().tolist())]
+gender_opts = [x for x in ["Men", "Women"] if x in set(all_runs["gender"].dropna().unique().tolist())]
 loc_opts = sorted([x for x in all_runs["location"].dropna().unique().tolist() if x])
 nation_opts = sorted([x for x in all_runs["nation"].dropna().unique().tolist() if x])
 
-f1, f2, f3, f4, f5 = st.columns(5)
+f1, f2, f3, f4, f5, f6 = st.columns(6)
 with f1:
     sel_years = st.multiselect("Jahr", year_opts, default=year_opts)
 with f2:
@@ -238,8 +239,10 @@ with f2:
 with f3:
     sel_categories = st.multiselect("Kategorie", cat_opts, default=cat_opts)
 with f4:
-    sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=[])
+    sel_gender = st.multiselect("Geschlecht", gender_opts, default=gender_opts)
 with f5:
+    sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=[])
+with f6:
     sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
 
 base_scope = all_runs.copy()
@@ -249,6 +252,8 @@ if sel_event_types:
     base_scope = base_scope[base_scope["event_type"].isin(sel_event_types)]
 if sel_categories:
     base_scope = base_scope[base_scope["category"].isin(sel_categories)]
+if sel_gender:
+    base_scope = base_scope[base_scope["gender"].isin(sel_gender)]
 if sel_locations:
     base_scope = base_scope[base_scope["location"].isin(sel_locations)]
 
