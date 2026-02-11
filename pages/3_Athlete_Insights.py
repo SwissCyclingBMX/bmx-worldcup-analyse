@@ -1526,7 +1526,8 @@ with tabs[7]:
                 y=alt.Y(
                     "final_rank:Q",
                     title="Final Rank",
-                    scale=alt.Scale(domain=[1, 20], reverse=True, nice=False, clamp=True),
+                    scale=alt.Scale(domain=[1, 20], domainMin=1, domainMax=20, reverse=True, nice=False, clamp=True),
+                    axis=alt.Axis(values=list(range(1, 21))),
                 ),
                 color=alt.Color("rider_short:N", title="Rider"),
                 detail="rider_short:N",
