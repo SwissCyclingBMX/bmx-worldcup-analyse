@@ -483,94 +483,94 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
         return out
 
     out["location_norm"] = out["location"].apply(lambda x: norm_location(wc_location_clean(x)))
-    key_rows = (
-        out[
-            [
-                "event_id",
-                "event_type",
-                "year",
-                "location_norm",
-                "category",
-                "gender",
-                "uci_norm",
-                "name_key",
-            ]
-        ]
-        .drop_duplicates()
-        .to_dict("records")
-    )
+    map_cache = {}
 
-    subset_cache = {}
-    for r in key_rows:
-        event_id = str(r["event_id"])
-        event_type = str(r["event_type"])
-        year = r["year"]
-        loc_norm = str(r["location_norm"] or "")
-        cat = str(r["category"] or "")
-        gen = "M" if str(r["gender"]) == "Men" else "W" if str(r["gender"]) == "Women" else ""
-        subset_key = (event_id, event_type, year, loc_norm, cat, gen)
-        if subset_key in subset_cache:
-            continue
-
-        mr = master.copy()
-        if event_type in {"EC", "EM"}:
-            mr = mr[mr["uci_event_id"] == event_id]
-        elif event_type == "WC":
-            mr = mr[mr["klasse"].isin(["CDM"])]
-            if pd.notna(year):
-                mr = mr[mr["year"] == int(year)]
-            if loc_norm:
-                mr = mr[mr["location_norm"] == loc_norm]
-            if cat:
-                mr = mr[mr["category"] == cat]
-            if gen:
-                mr = mr[mr["gender"] == gen]
-        elif event_type == "WM":
-            mr = mr[mr["klasse"].isin(["CM"])]
-            if pd.notna(year):
-                mr = mr[mr["year"] == int(year)]
-            if cat:
-                mr = mr[mr["category"] == cat]
-            if gen:
-                mr = mr[mr["gender"] == gen]
-        else:
-            mr = mr.iloc[0:0]
-
+    def make_maps(mr_sub: pd.DataFrame):
+        if mr_sub.empty:
+            return {}, {}
         uci_map = {}
         name_map = {}
-        if not mr.empty:
-            mru = mr[mr["uci_norm"] != ""].copy()
-            if not mru.empty:
-                uci_map = mru.groupby("uci_norm")["rank"].min().to_dict()
-            mrn = mr[mr["name_key"] != ""].copy()
-            if not mrn.empty:
-                name_map = mrn.groupby("name_key")["rank"].min().to_dict()
-        subset_cache[subset_key] = (uci_map, name_map)
+        mru = mr_sub[mr_sub["uci_norm"] != ""]
+        if not mru.empty:
+            uci_map = mru.groupby("uci_norm")["rank"].min().to_dict()
+        mrn = mr_sub[mr_sub["name_key"] != ""]
+        if not mrn.empty:
+            name_map = mrn.groupby("name_key")["rank"].min().to_dict()
+        return uci_map, name_map
 
-    ranks = []
-    for r in out[
-        ["event_id", "event_type", "year", "location_norm", "category", "gender", "uci_norm", "name_key"]
-    ].to_dict("records"):
+    def get_rank_for_row(r: dict):
         event_id = str(r["event_id"])
         event_type = str(r["event_type"])
         year = r["year"]
         loc_norm = str(r["location_norm"] or "")
         cat = str(r["category"] or "")
         gen = "M" if str(r["gender"]) == "Men" else "W" if str(r["gender"]) == "Women" else ""
-        subset_key = (event_id, event_type, year, loc_norm, cat, gen)
-        uci_map, name_map = subset_cache.get(subset_key, ({}, {}))
-
-        rank_val = np.nan
         uci = str(r.get("uci_norm") or "")
         nk = str(r.get("name_key") or "")
-        if uci and uci in uci_map:
-            rank_val = uci_map[uci]
-        elif nk and nk in name_map:
-            rank_val = name_map[nk]
 
-        if pd.notna(rank_val) and float(rank_val) <= 0:
-            rank_val = np.nan
-        ranks.append(rank_val)
+        mr_base = master.copy()
+        if event_type in {"EC", "EM"}:
+            mr_base = mr_base[mr_base["uci_event_id"] == event_id]
+            filter_specs = [()]
+        elif event_type == "WC":
+            mr_base = mr_base[mr_base["klasse"].isin(["CDM"])]
+            if pd.notna(year):
+                mr_base = mr_base[mr_base["year"] == int(year)]
+            # strict -> relaxed (to handle mixed source quality)
+            filter_specs = [
+                ("loc", "cat", "gen"),
+                ("loc", "cat"),
+                ("loc", "gen"),
+                ("loc",),
+                ("cat", "gen"),
+                ("cat",),
+                ("gen",),
+                (),
+            ]
+        elif event_type == "WM":
+            mr_base = mr_base[mr_base["klasse"].isin(["CM"])]
+            if pd.notna(year):
+                mr_base = mr_base[mr_base["year"] == int(year)]
+            filter_specs = [
+                ("cat", "gen"),
+                ("cat",),
+                ("gen",),
+                (),
+            ]
+        else:
+            return np.nan
+
+        for spec in filter_specs:
+            cache_key = (event_id, event_type, year, loc_norm, cat, gen, spec)
+            if cache_key in map_cache:
+                uci_map, name_map = map_cache[cache_key]
+            else:
+                mr_sub = mr_base
+                if "loc" in spec and loc_norm:
+                    mr_sub = mr_sub[mr_sub["location_norm"] == loc_norm]
+                if "cat" in spec and cat:
+                    mr_sub = mr_sub[mr_sub["category"] == cat]
+                if "gen" in spec and gen:
+                    mr_sub = mr_sub[mr_sub["gender"] == gen]
+                uci_map, name_map = make_maps(mr_sub)
+                map_cache[cache_key] = (uci_map, name_map)
+
+            if uci and uci in uci_map:
+                val = uci_map[uci]
+                if pd.notna(val) and float(val) > 0:
+                    return val
+            if nk and nk in name_map:
+                val = name_map[nk]
+                if pd.notna(val) and float(val) > 0:
+                    return val
+        return np.nan
+
+    ranks = [
+        get_rank_for_row(r)
+        for r in out[
+            ["event_id", "event_type", "year", "location_norm", "category", "gender", "uci_norm", "name_key"]
+        ].to_dict("records")
+    ]
     out["final_rank_event"] = pd.to_numeric(pd.Series(ranks), errors="coerce")
     out["final_rank_event_display"] = np.where(
         out["final_rank_event"].notna(), out["final_rank_event"].astype("Int64").astype(str), "NA"
