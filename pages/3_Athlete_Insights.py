@@ -704,13 +704,14 @@ if ref_label == "Event Top4 (robust)":
 st.caption(f"Aktive Delta-Referenz: {ref_caption}")
 
 base_rel = add_heat_relative_metrics(base_scope)
-# Final rank mapping is computed from the filtered data scope, independent of
-# the chosen delta reference mode, and merged afterward.
+# Final rank mapping is computed independent of reference mode and merged back
+# with row-level keys to avoid collapsing different rows/riders.
 rank_source = base_rel[base_rel["rider_id"].isin(selected_ids)].copy()
 rank_source = attach_final_rank_event(rank_source, master_results)
+rank_merge_keys = [k for k in ["event_id", "group_id", "round_key", "heat_id", "bib", "rider_id"] if k in rank_source.columns]
 final_rank_map = (
-    rank_source[["event_id", "rider_id", "final_rank_event", "final_rank_event_display"]]
-    .drop_duplicates(subset=["event_id", "rider_id"])
+    rank_source[rank_merge_keys + ["final_rank_event", "final_rank_event_display"]]
+    .drop_duplicates(subset=rank_merge_keys)
     .copy()
 )
 
@@ -724,7 +725,9 @@ runs_sel = apply_reference(
     reference_source=base_rel,
 )
 runs_sel = runs_sel.drop(columns=["final_rank_event", "final_rank_event_display"], errors="ignore")
-runs_sel = runs_sel.merge(final_rank_map, on=["event_id", "rider_id"], how="left")
+runs_sel = runs_sel.merge(final_rank_map, on=rank_merge_keys, how="left")
+if runs_sel["final_rank_event"].notna().sum() == 0:
+    runs_sel = attach_final_rank_event(runs_sel, master_results)
 runs_sel["event_label"] = make_event_label(runs_sel)
 
 tabs = st.tabs(
