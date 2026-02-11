@@ -1509,6 +1509,12 @@ with tabs[7]:
             x_order = x_order_df["x_label_short"].drop_duplicates().tolist()
             x_rank_map = {k: i for i, k in enumerate(x_order)}
             plot_df["x_order"] = plot_df["x_label_short"].map(x_rank_map)
+            plot_df["final_rank_plot"] = pd.to_numeric(plot_df["final_rank"], errors="coerce").clip(lower=1, upper=32)
+            plot_df["final_rank_over32_label"] = np.where(
+                pd.to_numeric(plot_df["final_rank"], errors="coerce") > 32,
+                pd.to_numeric(plot_df["final_rank"], errors="coerce").astype("Int64").astype(str),
+                "",
+            )
             plot_df["event_label"] = (
                 plot_df["event_dt"].dt.strftime("%Y-%m-%d").fillna(plot_df["event_id"])
                 + " | "
@@ -1524,10 +1530,10 @@ with tabs[7]:
                     axis=alt.Axis(labelAngle=-55, labelLimit=280, labelOverlap=False),
                 ),
                 y=alt.Y(
-                    "final_rank:Q",
+                    "final_rank_plot:Q",
                     title="Final Rank",
                     scale=alt.Scale(domain=[1, 32], domainMin=1, domainMax=32, reverse=True, nice=False),
-                    axis=alt.Axis(values=list(range(1, 33))),
+                    axis=alt.Axis(values=[1, 2, 3, 8, 16, 24, 32]),
                 ),
                 color=alt.Color("rider_short:N", title="Rider"),
                 detail="rider_short:N",
@@ -1535,11 +1541,14 @@ with tabs[7]:
                 tooltip=["event_label:N", "final_rank:Q", "category:N", "gender:N", "event_id:N"],
             )
             line = base.mark_line()
-            points_in_range = base.transform_filter(
-                (alt.datum.final_rank >= 1) & (alt.datum.final_rank <= 32)
-            ).mark_point()
+            points = base.mark_point()
+            over32_text = (
+                base.transform_filter(alt.datum.final_rank > 32)
+                .mark_text(dy=-8, fontSize=10)
+                .encode(text="final_rank_over32_label:N")
+            )
             st.altair_chart(
-                (line + points_in_range).properties(
+                (line + points + over32_text).properties(
                     height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
                 ),
                 use_container_width=True,
