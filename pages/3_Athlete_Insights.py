@@ -249,6 +249,7 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     df["finish"] = df["time"]
     df["event_type"] = df["event_id"].apply(infer_event_type)
     df["event_dt"] = [parse_event_date(ed, eid) for ed, eid in zip(df["event_date"], df["event_id"])]
+    df["event_id_dt"] = pd.to_datetime(df["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce")
     df["year"] = pd.to_numeric(df["event_id"].astype(str).str[:4], errors="coerce").astype("Int64")
     df["location"] = df["location"].fillna("Unknown").astype(str).apply(clean_spaces).replace("", "Unknown")
     df["event_short"] = [
@@ -621,7 +622,13 @@ with tabs[0]:
     plot["heat_sort"] = pd.to_numeric(plot["heat_id"], errors="coerce").fillna(99999)
     plot["event_label_full"] = plot["display_name"].fillna(plot["event_label"])
     plot["x_key"] = plot["event_label"] + " • " + plot["round_short"]
-    plot["x_label_short"] = plot["event_short"].fillna("Unknown") + " • " + plot["round_short"]
+    plot["x_base_short"] = plot["event_short"].fillna("Unknown") + " • " + plot["round_short"]
+    dup_short = plot.groupby("x_base_short")["event_id"].transform("nunique") > 1
+    plot["x_label_short"] = np.where(
+        dup_short,
+        plot["x_base_short"] + " (" + plot["event_id"].astype(str).str[:8] + ")",
+        plot["x_base_short"],
+    )
     plot["x_label_long"] = plot["event_label_full"] + " • " + plot["round_short"]
     plot["rank_num"] = pd.to_numeric(plot["rank"], errors="coerce")
     plot["rank_display"] = np.where(plot["rank_num"].fillna(0) > 0, plot["rank_num"].astype("Int64").astype(str), "unknown")
@@ -684,6 +691,7 @@ with tabs[0]:
             [
                 "year",
                 "event_dt",
+                "event_id_dt",
                 "event_label",
                 "event_label_full",
                 "location",
@@ -722,9 +730,15 @@ with tabs[0]:
         plot_long = plot_long.dropna(subset=["delta"])
         plot_long["series_label"] = plot_long["rider_short"] + " - " + plot_long["metric"]
         x_order_df = (
-            plot_long[[x_axis_col, "event_dt", "round_order", "heat_sort"]]
-            .drop_duplicates()
-            .sort_values(["event_dt", "round_order", "heat_sort", x_axis_col], na_position="last")
+            plot_long[[x_axis_col, "event_id_dt", "event_dt", "round_order", "heat_sort"]]
+            .groupby(x_axis_col, as_index=False)
+            .agg(
+                sort_event_id_dt=("event_id_dt", "min"),
+                sort_event_dt=("event_dt", "min"),
+                sort_round=("round_order", "min"),
+                sort_heat=("heat_sort", "min"),
+            )
+            .sort_values(["sort_event_id_dt", "sort_event_dt", "sort_round", "sort_heat", x_axis_col], na_position="last")
         )
         x_order = x_order_df[x_axis_col].tolist()
         x_rank_map = {k: i for i, k in enumerate(x_order)}
