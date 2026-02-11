@@ -304,6 +304,7 @@ def load_master_results(db_path: str = DB_PATH) -> pd.DataFrame:
     mr["category"] = mr["category"].fillna("").astype(str).str.strip()
     mr["location_norm"] = mr["location"].fillna("").astype(str).apply(norm_location)
     mr["uci_event_id"] = mr["uci_event_id"].fillna("").astype(str).str.strip()
+    mr["master_dt"] = pd.to_datetime(mr["date"], errors="coerce")
     return mr
 
 
@@ -505,6 +506,7 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
         loc_norm = str(r["location_norm"] or "")
         cat = str(r["category"] or "")
         gen = "M" if str(r["gender"]) == "Men" else "W" if str(r["gender"]) == "Women" else ""
+        event_dt = pd.to_datetime(r.get("event_dt"), errors="coerce")
         uci = str(r.get("uci_norm") or "")
         nk = str(r.get("name_key") or "")
 
@@ -516,6 +518,10 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
             mr_base = mr_base[mr_base["klasse"].isin(["CDM"])]
             if pd.notna(year):
                 mr_base = mr_base[mr_base["year"] == int(year)]
+            if pd.notna(event_dt):
+                mr_by_day = mr_base[mr_base["master_dt"] == event_dt.normalize()]
+                if not mr_by_day.empty:
+                    mr_base = mr_by_day
             # strict -> relaxed (to handle mixed source quality)
             filter_specs = [
                 ("loc", "cat", "gen"),
@@ -568,7 +574,7 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
     ranks = [
         get_rank_for_row(r)
         for r in out[
-            ["event_id", "event_type", "year", "location_norm", "category", "gender", "uci_norm", "name_key"]
+            ["event_id", "event_type", "year", "event_dt", "location_norm", "category", "gender", "uci_norm", "name_key"]
         ].to_dict("records")
     ]
     out["final_rank_event"] = pd.to_numeric(pd.Series(ranks), errors="coerce")
@@ -1458,6 +1464,7 @@ with tabs[7]:
         .agg(
             rider_short=("rider_short", "first"),
             rider_label=("rider_label", "first"),
+            event_type=("event_type", "first"),
             uci_norm=("uci_norm", "first"),
             name_key=("name_key", "first"),
             category=("category", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
@@ -1467,58 +1474,8 @@ with tabs[7]:
             year=("year", "first"),
         )
     )
-
-    def resolve_final_rank(row: pd.Series) -> float:
-        if master_results.empty:
-            return np.nan
-        event_id = str(row["event_id"])
-        event_type = infer_event_type(event_id)
-        year = int(row["year"]) if pd.notna(row["year"]) else None
-        cat = str(row["category"] or "")
-        gen = "M" if str(row["gender"]) == "Men" else "W" if str(row["gender"]) == "Women" else ""
-
-        mr = master_results.copy()
-        if event_type in {"EC", "EM"}:
-            mr = mr[mr["uci_event_id"] == event_id]
-        elif event_type == "WC":
-            mr = mr[mr["klasse"].isin(["CDM"])]
-            if year is not None:
-                mr = mr[mr["year"] == year]
-            loc_norm = norm_location(wc_location_clean(str(row["location"])))
-            if loc_norm:
-                mr = mr[mr["location_norm"] == loc_norm]
-            if cat:
-                mr = mr[mr["category"] == cat]
-            if gen:
-                mr = mr[mr["gender"] == gen]
-        elif event_type == "WM":
-            mr = mr[mr["klasse"].isin(["CM"])]
-            if year is not None:
-                mr = mr[mr["year"] == year]
-            if cat:
-                mr = mr[mr["category"] == cat]
-            if gen:
-                mr = mr[mr["gender"] == gen]
-        else:
-            return np.nan
-
-        if mr.empty:
-            return np.nan
-
-        uci = str(row.get("uci_norm") or "")
-        if uci:
-            m = mr[mr["uci_norm"] == uci]
-            if not m.empty:
-                return pd.to_numeric(m["rank"], errors="coerce").min()
-
-        nk = str(row.get("name_key") or "")
-        if nk:
-            m = mr[mr["name_key"] == nk]
-            if not m.empty:
-                return pd.to_numeric(m["rank"], errors="coerce").min()
-        return np.nan
-
-    rider_event["final_rank"] = rider_event.apply(resolve_final_rank, axis=1)
+    rider_event = attach_final_rank_event(rider_event, master_results)
+    rider_event["final_rank"] = pd.to_numeric(rider_event["final_rank_event"], errors="coerce")
     rider_event = rider_event.sort_values(["event_dt", "event_id", "rider_short"])
 
     if rider_event.empty:
