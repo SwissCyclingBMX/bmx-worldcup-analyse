@@ -1516,7 +1516,7 @@ with tabs[7]:
                 + " | "
                 + plot_df["rider_short"]
             )
-            line = alt.Chart(plot_df).mark_line(point=True).encode(
+            base = alt.Chart(plot_df).encode(
                 x=alt.X(
                     "x_label_short:N",
                     title="Event",
@@ -1526,16 +1526,22 @@ with tabs[7]:
                 y=alt.Y(
                     "final_rank:Q",
                     title="Final Rank",
-                    scale=alt.Scale(domain=[1, 20], domainMin=1, domainMax=20, reverse=True, nice=False, clamp=True),
-                    axis=alt.Axis(values=list(range(1, 21))),
+                    scale=alt.Scale(domain=[1, 32], domainMin=1, domainMax=32, reverse=True, nice=False),
+                    axis=alt.Axis(values=list(range(1, 33))),
                 ),
                 color=alt.Color("rider_short:N", title="Rider"),
                 detail="rider_short:N",
                 order=alt.Order("x_order:Q", sort="ascending"),
                 tooltip=["event_label:N", "final_rank:Q", "category:N", "gender:N", "event_id:N"],
             )
+            line = base.mark_line()
+            points_in_range = base.transform_filter(
+                (alt.datum.final_rank >= 1) & (alt.datum.final_rank <= 32)
+            ).mark_point()
             st.altair_chart(
-                line.properties(height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}),
+                (line + points_in_range).properties(
+                    height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
+                ),
                 use_container_width=True,
             )
 
