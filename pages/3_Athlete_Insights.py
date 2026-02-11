@@ -230,10 +230,14 @@ cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(all_runs["category
 gender_opts = [x for x in ["Men", "Women"] if x in set(all_runs["gender"].dropna().unique().tolist())]
 loc_opts = sorted([x for x in all_runs["location"].dropna().unique().tolist() if x])
 nation_opts = sorted([x for x in all_runs["nation"].dropna().unique().tolist() if x])
+default_years = [y for y in [2025, 2024, 2023] if y in year_opts]
+if not default_years:
+    default_years = year_opts
+default_nations = ["SUI"] if "SUI" in nation_opts else []
 
 f1, f2, f3, f4, f5, f6 = st.columns(6)
 with f1:
-    sel_years = st.multiselect("Jahr", year_opts, default=year_opts)
+    sel_years = st.multiselect("Jahr", year_opts, default=default_years)
 with f2:
     sel_event_types = st.multiselect("Event Type", event_type_opts, default=event_type_opts)
 with f3:
@@ -241,7 +245,7 @@ with f3:
 with f4:
     sel_gender = st.multiselect("Geschlecht", gender_opts, default=gender_opts)
 with f5:
-    sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=[])
+    sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=default_nations)
 with f6:
     sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
 
