@@ -78,7 +78,7 @@ def parse_event_date(event_date: Optional[str], event_id: str) -> pd.Timestamp:
     event_id_dt = pd.to_datetime(str(event_id)[:8], format="%Y%m%d", errors="coerce")
     if s:
         # Handle date ranges like "10-11 FEB 2024" robustly.
-        m_range = re.match(r"^(\\d{1,2})\\s*-\\s*(\\d{1,2})\\s+([A-Z]{3})\\s+(\\d{4})$", s.upper())
+        m_range = re.match(r"^(\d{1,2})\s*[-–—]\s*(\d{1,2})\s+([A-Z]{3})\s+(\d{4})$", s.upper())
         if m_range:
             d1 = int(m_range.group(1))
             d2 = int(m_range.group(2))
@@ -102,7 +102,7 @@ def parse_event_date(event_date: Optional[str], event_id: str) -> pd.Timestamp:
 
         # Robust handling for mixed numeric formats:
         # WC can be YYYY-MM-DD, while some sources may use YYYY-DD-MM.
-        m = re.match(r"^(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})$", s)
+        m = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$", s)
         if m:
             y, a, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
             candidates = []
