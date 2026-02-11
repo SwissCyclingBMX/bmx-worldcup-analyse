@@ -228,8 +228,9 @@ event_type_opts = sorted([x for x in all_runs["event_type"].dropna().unique().to
 year_opts = sorted([int(x) for x in all_runs["year"].dropna().unique().tolist()], reverse=True)
 cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(all_runs["category"].dropna().unique().tolist())]
 loc_opts = sorted([x for x in all_runs["location"].dropna().unique().tolist() if x])
+nation_opts = sorted([x for x in all_runs["nation"].dropna().unique().tolist() if x])
 
-f1, f2, f3, f4 = st.columns(4)
+f1, f2, f3, f4, f5 = st.columns(5)
 with f1:
     sel_years = st.multiselect("Jahr", year_opts, default=year_opts)
 with f2:
@@ -237,38 +238,45 @@ with f2:
 with f3:
     sel_categories = st.multiselect("Kategorie", cat_opts, default=cat_opts)
 with f4:
+    sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=[])
+with f5:
     sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
 
-base = all_runs.copy()
+base_scope = all_runs.copy()
 if sel_years:
-    base = base[base["year"].isin(sel_years)]
+    base_scope = base_scope[base_scope["year"].isin(sel_years)]
 if sel_event_types:
-    base = base[base["event_type"].isin(sel_event_types)]
+    base_scope = base_scope[base_scope["event_type"].isin(sel_event_types)]
 if sel_categories:
-    base = base[base["category"].isin(sel_categories)]
+    base_scope = base_scope[base_scope["category"].isin(sel_categories)]
 if sel_locations:
-    base = base[base["location"].isin(sel_locations)]
+    base_scope = base_scope[base_scope["location"].isin(sel_locations)]
 
-rider_opts = sorted(base["rider_label"].dropna().unique().tolist())
-if not rider_opts:
+rider_pool = base_scope.copy()
+if sel_nations:
+    rider_pool = rider_pool[rider_pool["nation"].isin(sel_nations)]
+
+rider_opts_filtered = set(rider_pool["rider_label"].dropna().unique().tolist())
+selected_prev = st.session_state.get("insight_riders", [])
+rider_opts = sorted(rider_opts_filtered.union(set(selected_prev)))
+if not rider_opts and not selected_prev:
     st.warning("Keine Rider fuer die aktuelle Filterauswahl.")
     st.stop()
+sel_riders = st.multiselect("Rider Filter (optional, leer = alle)", rider_opts, key="insight_riders")
 
-default_rider = rider_opts[0]
-if "insight_rider" not in st.session_state or st.session_state["insight_rider"] not in rider_opts:
-    st.session_state["insight_rider"] = default_rider
-sel_rider = st.selectbox("Rider", rider_opts, key="insight_rider")
+if sel_riders:
+    selected_ids = rider_pool.loc[rider_pool["rider_label"].isin(sel_riders), "rider_id"].dropna().unique().tolist()
+else:
+    selected_ids = rider_pool["rider_id"].dropna().unique().tolist()
 
-rider_ids = base.loc[base["rider_label"] == sel_rider, "rider_id"].dropna().unique().tolist()
-if not rider_ids:
-    st.warning("Rider nicht gefunden.")
+if not selected_ids:
+    st.warning("Keine Rider fuer die aktuelle Auswahl.")
     st.stop()
 
-rider_id = rider_ids[0]
-base_rel = add_heat_relative_metrics(base)
-runs_rider = base_rel[base_rel["rider_id"] == rider_id].copy()
-runs_rider = runs_rider.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
-runs_rider["event_label"] = make_event_label(runs_rider)
+base_rel = add_heat_relative_metrics(base_scope)
+runs_sel = base_rel[base_rel["rider_id"].isin(selected_ids)].copy()
+runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
+runs_sel["event_label"] = make_event_label(runs_sel)
 
 tabs = st.tabs(
     [
@@ -288,8 +296,8 @@ with tabs[0]:
     show_start = st.toggle("Start Delta anzeigen", value=True, key="trend_show_start")
     show_t1 = st.toggle("T1 Delta anzeigen", value=True, key="trend_show_t1")
 
-    plot = runs_rider.copy()
-    plot["order"] = np.arange(len(plot))
+    plot = runs_sel.copy()
+    plot["order"] = plot.groupby("rider_id").cumcount()
     melt_cols = [("finish_delta", "Finish Delta")]
     if show_start and plot["start_delta"].notna().any():
         melt_cols.append(("start_delta", "Start Delta"))
@@ -298,7 +306,7 @@ with tabs[0]:
 
     plot_long = pd.concat(
         [
-            plot[["order", "event_label", "event_id", "round_title", "heat_id", "heat_title", "rank"]].assign(
+            plot[["order", "event_label", "event_id", "round_title", "heat_id", "heat_title", "rank", "rider_short"]].assign(
                 metric=label,
                 delta=plot[col],
             )
@@ -315,17 +323,18 @@ with tabs[0]:
             .encode(
                 x=alt.X("order:Q", title="Chronologische Runs"),
                 y=alt.Y("delta:Q", title="Delta vs Heat-Median (s)"),
-                color=alt.Color("metric:N", title="Metrik"),
-                tooltip=["event_label:N", "event_id:N", "round_title:N", "heat_title:N", "rank:Q", "metric:N", "delta:Q"],
+                color=alt.Color("rider_short:N", title="Rider"),
+                strokeDash=alt.StrokeDash("metric:N", title="Metrik"),
+                tooltip=["rider_short:N", "event_label:N", "event_id:N", "round_title:N", "heat_title:N", "rank:Q", "metric:N", "delta:Q"],
             )
             .properties(height=360)
         )
         st.altair_chart(trend_chart, use_container_width=True)
     else:
-        st.info("Keine verwertbaren Delta-Daten fuer den gewaehlten Rider.")
+        st.info("Keine verwertbaren Delta-Daten fuer die aktuelle Rider-Auswahl.")
 
     summary = (
-        runs_rider.groupby("year", as_index=False)
+        runs_sel.groupby(["year", "rider_short"], as_index=False)
         .agg(
             n_runs=("event_id", "count"),
             mean_finish_delta=("finish_delta", "mean"),
@@ -344,7 +353,7 @@ with tabs[1]:
     st.subheader("Segment Strength Profile")
     scope = st.selectbox("Scope", ["alle ausgewaehlten Events", "nur Finals", "nur KO-Runden"], index=0, key="seg_scope")
     scope_key = {"alle ausgewaehlten Events": "alle", "nur Finals": "nur Finals", "nur KO-Runden": "nur KO"}[scope]
-    df_scope = apply_scope(runs_rider, scope_key)
+    df_scope = apply_scope(runs_sel, scope_key)
     min_n = st.slider("Min Messungen pro Segment", min_value=5, max_value=80, value=30, step=5)
 
     seg_defs = [("start", "Start"), ("t1", "T1"), ("t2", "T2"), ("t3", "T3"), ("finish", "Finish")]
@@ -425,7 +434,7 @@ with tabs[2]:
     st.subheader("Positions & Overtakes")
     scope = st.selectbox("Scope", ["alle Laeufe", "nur KO", "nur Finals"], index=0, key="pos_scope")
     scope_key = {"alle Laeufe": "alle", "nur KO": "nur KO", "nur Finals": "nur Finals"}[scope]
-    rider_scope = apply_scope(runs_rider, scope_key).copy()
+    rider_scope = apply_scope(runs_sel, scope_key).copy()
 
     if rider_scope.empty:
         st.info("Keine Laeufe im gewaehlten Scope.")
@@ -503,7 +512,7 @@ with tabs[2]:
 with tabs[3]:
     st.subheader("Pressure Performance")
     scope = st.selectbox("Scope", ["alle", "nur KO", "nur Finals"], index=0, key="press_scope")
-    rider_scope = apply_scope(runs_rider, scope)
+    rider_scope = apply_scope(runs_sel, scope)
     if rider_scope.empty:
         st.info("Keine Daten im Scope.")
     else:
@@ -539,7 +548,7 @@ with tabs[4]:
     st.subheader("Track Profile")
     top_n = st.slider("Top N Locations nach Runs", min_value=3, max_value=20, value=8, step=1, key="track_topn")
     show_unknown = st.toggle("Unknown anzeigen", value=False, key="track_unknown")
-    tr = runs_rider.copy()
+    tr = runs_sel.copy()
     if not show_unknown:
         tr = tr[tr["location"].str.lower() != "unknown"]
 
@@ -586,12 +595,12 @@ with tabs[5]:
     b["top3_mean"] = b.groupby(heat_cols)["finish"].transform(lambda s: s.nsmallest(3).mean() if s.notna().sum() >= 3 else np.nan)
     b["finish_pctile"] = b["finish_pct"]
 
-    rr = b[b["rider_id"] == rider_id].copy()
+    rr = b[b["rider_id"].isin(selected_ids)].copy()
     rr["gap_winner"] = rr["finish"] - rr["winner_finish"]
     rr["gap_top3"] = rr["finish"] - rr["top3_mean"]
     rr["event_label"] = make_event_label(rr)
     rr = rr.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
-    rr["order"] = np.arange(len(rr))
+    rr["order"] = rr.groupby("rider_id").cumcount()
 
     metric_col = {"Gap to Winner": "gap_winner", "Gap to Top3 mean": "gap_top3", "Percentile in Heat": "finish_pctile"}[mode]
     mm = rr.dropna(subset=[metric_col]).copy()
@@ -601,8 +610,9 @@ with tabs[5]:
         line = alt.Chart(mm).mark_line(point=True).encode(
             x=alt.X("order:Q", title="Chronologische Runs"),
             y=alt.Y(f"{metric_col}:Q", title=mode),
-            color=alt.Color("phase:N"),
-            tooltip=["event_label:N", "round_title:N", "heat_title:N", "rank:Q", f"{metric_col}:Q"],
+            color=alt.Color("rider_short:N", title="Rider"),
+            strokeDash=alt.StrokeDash("phase:N", title="Phase"),
+            tooltip=["rider_short:N", "event_label:N", "round_title:N", "heat_title:N", "rank:Q", f"{metric_col}:Q"],
         )
         st.altair_chart(line.properties(height=320), use_container_width=True)
 
@@ -615,10 +625,10 @@ with tabs[5]:
 
 with tabs[6]:
     st.subheader("Fatigue / Day Progression")
-    ev = runs_rider.copy()
-    ev = ev.sort_values(["event_id", "round_sort", "heat_id"])
+    ev = runs_sel.copy()
+    ev = ev.sort_values(["rider_id", "event_id", "round_sort", "heat_id"])
     agg_rows = []
-    for event_id, g in ev.groupby("event_id"):
+    for (rid, event_id), g in ev.groupby(["rider_id", "event_id"]):
         g = g.dropna(subset=["finish_delta"])
         if len(g) < 2:
             continue
@@ -627,6 +637,8 @@ with tabs[6]:
         agg_rows.append(
             {
                 "event_id": event_id,
+                "rider_id": rid,
+                "rider_short": first["rider_short"],
                 "event_dt": first["event_dt"],
                 "location": first["location"],
                 "n_runs": len(g),
@@ -643,10 +655,17 @@ with tabs[6]:
     if prog.empty:
         st.info("Zu wenig Events mit >=2 Runden.")
     else:
-        prog["event_label"] = prog["event_dt"].dt.strftime("%Y-%m-%d").fillna(prog["event_id"]) + " | " + prog["location"]
+        prog["event_label"] = (
+            prog["event_dt"].dt.strftime("%Y-%m-%d").fillna(prog["event_id"])
+            + " | "
+            + prog["location"]
+            + " | "
+            + prog["rider_short"]
+        )
         bar = alt.Chart(prog).mark_bar().encode(
             x=alt.X("event_label:N", sort=None, title="Event"),
             y=alt.Y("dropoff:Q", title="Dropoff Finish Delta (last - first)"),
+            color=alt.Color("rider_short:N", title="Rider"),
             tooltip=["event_label:N", "dropoff:Q", "n_runs:Q"],
         )
         st.altair_chart(bar.properties(height=300), use_container_width=True)
@@ -654,6 +673,7 @@ with tabs[6]:
         scat = alt.Chart(prog).mark_circle(size=80).encode(
             x=alt.X("n_runs:Q", title="Runs im Event"),
             y=alt.Y("dropoff:Q", title="Dropoff"),
+            color=alt.Color("rider_short:N", title="Rider"),
             tooltip=["event_label:N", "n_runs:Q", "dropoff:Q"],
         )
         st.altair_chart(scat.properties(height=220), use_container_width=True)
@@ -671,11 +691,11 @@ with tabs[6]:
 
 with tabs[7]:
     st.subheader("Results Trend")
-    rr = runs_rider.copy()
-    rr = rr.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
+    rr = runs_sel.copy()
+    rr = rr.sort_values(["rider_id", "event_dt", "event_id", "round_sort", "heat_id"])
 
     rows = []
-    for event_id, g in rr.groupby("event_id"):
+    for (rid, event_id), g in rr.groupby(["rider_id", "event_id"]):
         g = g.copy().sort_values(["round_sort", "heat_id"])
         reached_phase = "Early"
         if (g["phase"] == "Final").any():
@@ -704,6 +724,8 @@ with tabs[7]:
         rows.append(
             {
                 "event_id": event_id,
+                "rider_id": rid,
+                "rider_short": g["rider_short"].iloc[0],
                 "event_dt": g["event_dt"].iloc[0],
                 "location": g["location"].iloc[0],
                 "year": g["year"].iloc[0],
@@ -716,13 +738,20 @@ with tabs[7]:
 
     res = pd.DataFrame(rows).sort_values(["event_dt", "event_id"])
     if res.empty:
-        st.info("Keine Event-Ergebnisse fuer diesen Rider.")
+        st.info("Keine Event-Ergebnisse fuer die aktuelle Rider-Auswahl.")
     else:
-        res["event_label"] = res["event_dt"].dt.strftime("%Y-%m-%d").fillna(res["event_id"]) + " | " + res["location"]
+        res["event_label"] = (
+            res["event_dt"].dt.strftime("%Y-%m-%d").fillna(res["event_id"])
+            + " | "
+            + res["location"]
+            + " | "
+            + res["rider_short"]
+        )
         line = alt.Chart(res.dropna(subset=["final_rank"])).mark_line(point=True).encode(
             x=alt.X("event_dt:T", title="Event Date"),
             y=alt.Y("final_rank:Q", title="Final Rank", scale=alt.Scale(reverse=True)),
-            color=alt.Color("reached_phase:N"),
+            color=alt.Color("rider_short:N", title="Rider"),
+            strokeDash=alt.StrokeDash("reached_phase:N", title="Phase"),
             tooltip=["event_label:N", "final_rank:Q", "reached_phase:N", "n_runs:Q", "estimated:N"],
         )
         st.altair_chart(line.properties(height=320), use_container_width=True)
