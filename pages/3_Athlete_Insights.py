@@ -261,8 +261,10 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     # Additional requested metrics.
     out["delta_vs_winner"] = out["finish_delta_winner"]
-    out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
     out["delta_post_start"] = out["finish_delta"] - out["start_delta"]
+    out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
+    out["delta_post_t2"] = out["finish_delta"] - out["t2_delta"]
+    out["delta_post_t3"] = out["finish_delta"] - out["t3_delta"]
     return out
 
 
@@ -296,8 +298,10 @@ def apply_reference(df: pd.DataFrame, ref_key: str) -> pd.DataFrame:
             out[f"{seg}_delta"] = out[src]
 
     out["delta_vs_winner"] = out["finish_delta_winner"]
-    out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
     out["delta_post_start"] = out["finish_delta"] - out["start_delta"]
+    out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
+    out["delta_post_t2"] = out["finish_delta"] - out["t2_delta"]
+    out["delta_post_t3"] = out["finish_delta"] - out["t3_delta"]
     return out
 
 
@@ -451,16 +455,22 @@ with tabs[0]:
 
     st.markdown("**Segment Contribution**")
     contrib_src = runs_sel.copy()
-    contrib_long = pd.concat(
-        [
-            contrib_src[["rider_short"]].assign(metric="Start Delta", value=contrib_src["start_delta"]),
-            contrib_src[["rider_short"]].assign(metric="T1 Delta", value=contrib_src["t1_delta"]),
-            contrib_src[["rider_short"]].assign(metric="Post-Start Delta", value=contrib_src["delta_post_start"]),
-            contrib_src[["rider_short"]].assign(metric="Post-T1 Delta", value=contrib_src["delta_post_t1"]),
-            contrib_src[["rider_short"]].assign(metric="vs Winner", value=contrib_src["delta_vs_winner"]),
-        ],
-        ignore_index=True,
-    ).dropna(subset=["value"])
+    seg_candidates = [
+        ("StartDelta", "start_delta"),
+        ("PostStartDelta", "delta_post_start"),
+        ("PostT1Delta", "delta_post_t1"),
+        ("PostT2Delta", "delta_post_t2"),
+        ("PostT3Delta", "delta_post_t3"),
+    ]
+    seg_frames = []
+    for label, col in seg_candidates:
+        if col not in contrib_src.columns:
+            continue
+        vals = contrib_src[col]
+        if vals.notna().sum() == 0:
+            continue
+        seg_frames.append(contrib_src[["rider_short"]].assign(metric=label, value=vals))
+    contrib_long = pd.concat(seg_frames, ignore_index=True).dropna(subset=["value"]) if seg_frames else pd.DataFrame()
     if not contrib_long.empty:
         contrib_agg = contrib_long.groupby(["rider_short", "metric"], as_index=False).agg(mean_value=("value", "mean"))
         cbar = (
@@ -475,6 +485,7 @@ with tabs[0]:
             .properties(height=300)
         )
         st.altair_chart(cbar, use_container_width=True)
+        st.caption("Vorzeichen: positiv = langsamer als Referenz, negativ = schneller als Referenz.")
 
     st.markdown("**Start Delta vs Finish Delta**")
     scat = runs_sel.dropna(subset=["start_delta", "finish_delta"]).copy()
