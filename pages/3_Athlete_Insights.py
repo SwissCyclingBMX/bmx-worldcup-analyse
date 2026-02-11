@@ -390,12 +390,50 @@ def make_event_label(df: pd.DataFrame) -> pd.Series:
     )
 
 
-def apply_reference(df: pd.DataFrame, ref_key: str) -> pd.DataFrame:
+def apply_reference(
+    df: pd.DataFrame,
+    ref_key: str,
+    event_top_n: int = 4,
+    event_ko_final_only: bool = True,
+    reference_source: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
     out = df.copy()
+    if event_top_n < 1:
+        event_top_n = 4
+
+    # Event-level references (per event + category/group) from absolute segment times.
+    if ref_key in {"event_top4", "event_best"}:
+        src = reference_source.copy() if reference_source is not None else out.copy()
+        if event_ko_final_only and "phase" in src.columns:
+            src = src[src["phase"].isin(["KO", "Final"])].copy()
+        group_cols = ["event_id", "group_id"]
+        for seg in ["start", "t1", "t2", "t3", "finish"]:
+            if seg not in src.columns:
+                continue
+            ref_df = (
+                src.groupby(group_cols, dropna=False)
+                .apply(
+                    lambda g: pd.Series(
+                        {
+                            f"{seg}_event_topn_ref": g[seg].dropna().nsmallest(max(1, event_top_n)).median()
+                            if g[seg].notna().sum() > 0
+                            else np.nan,
+                            f"{seg}_event_best_ref": g[seg].dropna().min() if g[seg].notna().sum() > 0 else np.nan,
+                        }
+                    )
+                )
+                .reset_index()
+            )
+            out = out.merge(ref_df, on=group_cols, how="left")
+            out[f"{seg}_delta_event_top4"] = out[seg] - out.get(f"{seg}_event_topn_ref")
+            out[f"{seg}_delta_event_best"] = out[seg] - out.get(f"{seg}_event_best_ref")
+
     map_suffix = {
         "rank4": "rank4",
         "heat_median": "heat_median",
         "winner": "winner",
+        "event_top4": "event_top4",
+        "event_best": "event_best",
     }
     suffix = map_suffix.get(ref_key, "rank4")
     for seg in ["start", "t1", "t2", "t3", "finish"]:
@@ -582,21 +620,47 @@ if not selected_ids:
 
 ref_label = st.radio(
     "Referenz",
-    ["Rank 4 (Qualification Cut)", "Rank 1 (Winner)", "Heat Median"],
+    ["Heat Rank 4 (Qualification Cut)", "Heat Rank 1 (Winner)", "Event Top4"],
     horizontal=True,
     index=0,
 )
-ref_key = {
-    "Rank 4 (Qualification Cut)": "rank4",
-    "Rank 1 (Winner)": "winner",
-    "Heat Median": "heat_median",
-}[ref_label]
-st.caption(f"Aktive Delta-Referenz: {ref_label}")
+event_top_n = 4
+event_ko_final_only = True
+use_event_best = False
+if ref_label == "Event Top4":
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        event_top_n = st.selectbox("Event TopN", [4, 8], index=0, key="event_top_n")
+    with c2:
+        event_ko_final_only = st.toggle("Event-Referenz nur KO+Final", value=True, key="event_ref_ko_final")
+    with c3:
+        use_event_best = st.toggle("Event Best (Ceiling) statt Event TopN", value=False, key="event_ref_best")
+
+ref_key = "rank4"
+if ref_label == "Heat Rank 4 (Qualification Cut)":
+    ref_key = "rank4"
+elif ref_label == "Heat Rank 1 (Winner)":
+    ref_key = "winner"
+elif ref_label == "Event Top4":
+    ref_key = "event_best" if use_event_best else "event_top4"
+
+ref_caption = ref_label
+if ref_label == "Event Top4":
+    base_ref = "Event Best" if use_event_best else f"Event Top{event_top_n}"
+    scope_ref = "KO+Final" if event_ko_final_only else "alle Runden"
+    ref_caption = f"{base_ref} ({scope_ref})"
+st.caption(f"Aktive Delta-Referenz: {ref_caption}")
 
 base_rel = add_heat_relative_metrics(base_scope)
 runs_sel = base_rel[base_rel["rider_id"].isin(selected_ids)].copy()
 runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
-runs_sel = apply_reference(runs_sel, ref_key)
+runs_sel = apply_reference(
+    runs_sel,
+    ref_key,
+    event_top_n=event_top_n,
+    event_ko_final_only=event_ko_final_only,
+    reference_source=base_rel,
+)
 runs_sel = attach_final_rank_event(runs_sel, master_results)
 runs_sel["event_label"] = make_event_label(runs_sel)
 
@@ -632,7 +696,7 @@ with tabs[0]:
     plot["x_label_long"] = plot["event_label_full"] + " • " + plot["round_short"]
     plot["rank_num"] = pd.to_numeric(plot["rank"], errors="coerce")
     plot["rank_display"] = np.where(plot["rank_num"].fillna(0) > 0, plot["rank_num"].astype("Int64").astype(str), "unknown")
-    plot["reference_type"] = ref_label
+    plot["reference_type"] = ref_caption
     plot["event_date_display"] = plot["event_dt"].dt.strftime("%Y-%m-%d")
     for rc in [
         "rank_bottom",
@@ -1406,6 +1470,5 @@ with tabs[7]:
         st.dataframe(summary.round(3), use_container_width=True, hide_index=True)
 
 st.caption(
-    "Alle Deltas werden heat-relativ berechnet (Zeit des Riders minus Heat-Median), "
-    "um Track-/Tages-Effekte zu reduzieren."
+    f"Alle Deltas verwenden die aktive Referenz: {ref_caption}."
 )
