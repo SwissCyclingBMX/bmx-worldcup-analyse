@@ -411,43 +411,72 @@ with tabs[0]:
     plot["delta_t3_finish"] = plot["finish_delta"] - plot["t3_delta"]
 
     metric_defs = [
-        ("Finish", "finish_delta"),
-        ("Bottom", "start_delta"),
-        ("T1", "t1_delta"),
-        ("T2", "t2_delta"),
-        ("T3", "t3_delta"),
-        ("Bottom-T1", "delta_bottom_t1"),
-        ("T1-T2", "delta_t1_t2"),
-        ("T2-T3", "delta_t2_t3"),
-        ("T3-Finish", "delta_t3_finish"),
+        ("Finish Delta", "finish_delta"),
+        ("Bottom Delta", "start_delta"),
+        ("T1 Delta", "t1_delta"),
+        ("T2 Delta", "t2_delta"),
+        ("T3 Delta", "t3_delta"),
+        ("Bottom->T1 Delta", "delta_bottom_t1"),
+        ("T1->T2 Delta", "delta_t1_t2"),
+        ("T2->T3 Delta", "delta_t2_t3"),
+        ("T3->Finish Delta", "delta_t3_finish"),
     ]
-    metric_label = st.selectbox("Metrik auswaehlen", [m[0] for m in metric_defs], index=0, key="trend_metric")
-    metric_col = dict(metric_defs)[metric_label]
+    available_metrics = [m for m in metric_defs if m[1] in plot.columns and plot[m[1]].notna().any()]
+    available_labels = [m[0] for m in available_metrics]
 
-    plot_one = plot[
-        ["order", "year", "event_label", "event_id", "round_title", "heat_id", "heat_title", "rank", "rider_short", metric_col]
-    ].rename(columns={metric_col: "delta"})
-    plot_one = plot_one.dropna(subset=["delta"])
+    default_metrics = ["Finish Delta"] if "Finish Delta" in available_labels else (available_labels[:1] if available_labels else [])
+    selected_metric_labels = st.multiselect(
+        "Delta-Metriken auswaehlen",
+        options=available_labels,
+        default=default_metrics,
+        key="trend_metrics",
+    )
+    metric_map = dict(available_metrics)
 
-    if not plot_one.empty:
+    plot_frames = []
+    for metric_label in selected_metric_labels:
+        metric_col = metric_map.get(metric_label)
+        if not metric_col:
+            continue
+        frame = plot[
+            ["order", "year", "event_label", "event_id", "round_title", "heat_id", "heat_title", "rank", "rider_short", metric_col]
+        ].rename(columns={metric_col: "delta"})
+        frame["metric"] = metric_label
+        plot_frames.append(frame)
+
+    plot_long = pd.concat(plot_frames, ignore_index=True) if plot_frames else pd.DataFrame()
+    if not plot_long.empty:
+        plot_long = plot_long.dropna(subset=["delta"])
+        plot_long["series_label"] = plot_long["rider_short"] + " - " + plot_long["metric"]
+
+    if not plot_long.empty:
         trend_chart = (
-            alt.Chart(plot_one)
+            alt.Chart(plot_long)
             .mark_line(point=True)
             .encode(
                 x=alt.X("order:Q", title="Chronologische Runs"),
-                y=alt.Y("delta:Q", title=f"{metric_label} Delta (s)"),
-                color=alt.Color("rider_short:N", title="Rider"),
-                tooltip=["rider_short:N", "event_label:N", "event_id:N", "round_title:N", "heat_title:N", "rank:Q", "delta:Q"],
+                y=alt.Y("delta:Q", title="Delta (s)"),
+                color=alt.Color("series_label:N", title="Rider - Metrik"),
+                detail="series_label:N",
+                tooltip=["series_label:N", "event_label:N", "event_id:N", "round_title:N", "heat_title:N", "rank:Q", "delta:Q"],
             )
             .properties(height=360)
         )
         st.altair_chart(trend_chart, use_container_width=True)
     else:
-        st.info(f"Keine verwertbaren Daten fuer Metrik `{metric_label}` in der aktuellen Rider-Auswahl.")
+        st.info("Keine verwertbaren Daten fuer die gewaehlten Delta-Metriken in der aktuellen Rider-Auswahl.")
 
-    # Build summary on selected metric only.
+    # Summary: use Finish Delta by default; fallback to first selected metric.
+    summary_label = "Finish Delta" if "Finish Delta" in selected_metric_labels else (selected_metric_labels[0] if selected_metric_labels else None)
+    summary_col = metric_map.get(summary_label) if summary_label else None
+    summary_src = pd.DataFrame()
+    if summary_col and summary_col in plot.columns:
+        summary_src = plot[
+            ["year", "rider_short", "event_id", summary_col]
+        ].rename(columns={summary_col: "delta"}).dropna(subset=["delta"])
+
     summary = (
-        plot_one.groupby(["year", "rider_short"], as_index=False)
+        summary_src.groupby(["year", "rider_short"], as_index=False)
         .agg(
             n_runs=("event_id", "count"),
             mean_metric=("delta", "mean"),
@@ -455,15 +484,17 @@ with tabs[0]:
             best_metric=("delta", "min"),
         )
         .sort_values("year", ascending=False)
-    )
+    ) if not summary_src.empty else pd.DataFrame(columns=["year", "rider_short", "n_runs", "mean_metric", "std_metric", "best_metric"])
+
+    summary_name = summary_label if summary_label else "metric"
     summary = summary.rename(
         columns={
-            "mean_metric": f"mean_{metric_label}",
-            "std_metric": f"std_{metric_label}",
-            "best_metric": f"best_{metric_label}",
+            "mean_metric": f"mean_{summary_name}",
+            "std_metric": f"std_{summary_name}",
+            "best_metric": f"best_{summary_name}",
         }
     )
-    for c in [f"mean_{metric_label}", f"std_{metric_label}", f"best_{metric_label}"]:
+    for c in [f"mean_{summary_name}", f"std_{summary_name}", f"best_{summary_name}"]:
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
