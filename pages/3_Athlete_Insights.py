@@ -184,19 +184,49 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     for seg in ["start", "t1", "t2", "t3", "finish"]:
         med_col = f"{seg}_median"
-        delta_col = f"{seg}_delta"
         rank_col = f"pos_{seg}" if seg != "finish" else "pos_finish_est"
         pct_col = f"{seg}_pct"
 
         grp = out.groupby(heat_cols)[seg]
         out[med_col] = grp.transform("median")
-        out[delta_col] = out[seg] - out[med_col]
+        out[f"{seg}_winner"] = grp.transform("min")
         out[rank_col] = grp.rank(method="min", ascending=True)
         field = grp.transform("count")
         out[pct_col] = np.where(field > 1, (out[rank_col] - 1) / (field - 1), np.nan)
 
     # Prefer official rank for finish position if available.
     out["pos_finish"] = out["rank"].where(out["rank"].notna(), out["pos_finish_est"])
+
+    # Top4 median by finish position; fallback to regular heat median if <4 valid riders.
+    for seg in ["start", "t1", "t2", "t3", "finish"]:
+        top4 = (
+            out.groupby(heat_cols, dropna=False)
+            .apply(
+                lambda g: (
+                    g.loc[(g["pos_finish"] <= 4) & g[seg].notna(), seg].median()
+                    if g.loc[(g["pos_finish"] <= 4) & g[seg].notna(), seg].shape[0] >= 4
+                    else g[seg].median()
+                )
+            )
+            .reset_index(name=f"{seg}_top4_median")
+        )
+        out = out.merge(top4, on=heat_cols, how="left")
+
+        out[f"{seg}_delta_heat_median"] = out[seg] - out[f"{seg}_median"]
+        out[f"{seg}_delta_top4"] = out[seg] - out[f"{seg}_top4_median"]
+        out[f"{seg}_delta_winner"] = out[seg] - out[f"{seg}_winner"]
+
+    # Backward-compatible default reference.
+    out["start_delta"] = out["start_delta_heat_median"]
+    out["t1_delta"] = out["t1_delta_heat_median"]
+    out["t2_delta"] = out["t2_delta_heat_median"]
+    out["t3_delta"] = out["t3_delta_heat_median"]
+    out["finish_delta"] = out["finish_delta_heat_median"]
+
+    # Additional requested metrics.
+    out["delta_vs_winner"] = out["finish_delta_winner"]
+    out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
+    out["delta_post_start"] = out["finish_delta"] - out["start_delta"]
     return out
 
 
@@ -214,6 +244,25 @@ def make_event_label(df: pd.DataFrame) -> pd.Series:
         + " | "
         + df["location"].fillna("Unknown").astype(str)
     )
+
+
+def apply_reference(df: pd.DataFrame, ref_key: str) -> pd.DataFrame:
+    out = df.copy()
+    map_suffix = {
+        "heat_median": "heat_median",
+        "top4": "top4",
+        "winner": "winner",
+    }
+    suffix = map_suffix.get(ref_key, "heat_median")
+    for seg in ["start", "t1", "t2", "t3", "finish"]:
+        src = f"{seg}_delta_{suffix}"
+        if src in out.columns:
+            out[f"{seg}_delta"] = out[src]
+
+    out["delta_vs_winner"] = out["finish_delta_winner"]
+    out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
+    out["delta_post_start"] = out["finish_delta"] - out["start_delta"]
+    return out
 
 
 st.title("Athlete Insights")
@@ -282,9 +331,14 @@ if not selected_ids:
     st.warning("Keine Rider fuer die aktuelle Auswahl.")
     st.stop()
 
+ref_label = st.radio("Referenz", ["Heat Median", "Top4 Median", "Winner"], horizontal=True, index=1)
+ref_key = {"Heat Median": "heat_median", "Top4 Median": "top4", "Winner": "winner"}[ref_label]
+st.caption(f"Aktive Delta-Referenz: {ref_label}")
+
 base_rel = add_heat_relative_metrics(base_scope)
 runs_sel = base_rel[base_rel["rider_id"].isin(selected_ids)].copy()
 runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
+runs_sel = apply_reference(runs_sel, ref_key)
 runs_sel["event_label"] = make_event_label(runs_sel)
 
 tabs = st.tabs(
@@ -357,6 +411,53 @@ with tabs[0]:
     for c in ["mean_finish_delta", "std_finish_delta", "mean_start_delta", "mean_t1_delta", "best_finish_delta"]:
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    st.markdown("**Segment Contribution**")
+    contrib_src = runs_sel.copy()
+    contrib_long = pd.concat(
+        [
+            contrib_src[["rider_short"]].assign(metric="Start Delta", value=contrib_src["start_delta"]),
+            contrib_src[["rider_short"]].assign(metric="T1 Delta", value=contrib_src["t1_delta"]),
+            contrib_src[["rider_short"]].assign(metric="Post-Start Delta", value=contrib_src["delta_post_start"]),
+            contrib_src[["rider_short"]].assign(metric="Post-T1 Delta", value=contrib_src["delta_post_t1"]),
+            contrib_src[["rider_short"]].assign(metric="vs Winner", value=contrib_src["delta_vs_winner"]),
+        ],
+        ignore_index=True,
+    ).dropna(subset=["value"])
+    if not contrib_long.empty:
+        contrib_agg = contrib_long.groupby(["rider_short", "metric"], as_index=False).agg(mean_value=("value", "mean"))
+        cbar = (
+            alt.Chart(contrib_agg)
+            .mark_bar()
+            .encode(
+                x=alt.X("metric:N", title="Metrik"),
+                y=alt.Y("mean_value:Q", title="Mean Delta (s)"),
+                color=alt.Color("rider_short:N", title="Rider"),
+                tooltip=["rider_short:N", "metric:N", "mean_value:Q"],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(cbar, use_container_width=True)
+
+    st.markdown("**Start Delta vs Finish Delta**")
+    scat = runs_sel.dropna(subset=["start_delta", "finish_delta"]).copy()
+    if not scat.empty:
+        mn = float(min(scat["start_delta"].min(), scat["finish_delta"].min()))
+        mx = float(max(scat["start_delta"].max(), scat["finish_delta"].max()))
+        diag = pd.DataFrame({"x": [mn, mx], "y": [mn, mx]})
+        scatter = (
+            alt.Chart(scat)
+            .mark_circle(opacity=0.75)
+            .encode(
+                x=alt.X("start_delta:Q", title="Start Delta (s)"),
+                y=alt.Y("finish_delta:Q", title="Finish Delta (s)"),
+                color=alt.Color("rider_short:N", title="Rider"),
+                tooltip=["rider_short:N", "event_label:N", "round_title:N", "heat_title:N", "start_delta:Q", "finish_delta:Q"],
+            )
+            .properties(height=320)
+        )
+        diag_line = alt.Chart(diag).mark_line(strokeDash=[4, 4], color="gray").encode(x="x:Q", y="y:Q")
+        st.altair_chart(scatter + diag_line, use_container_width=True)
 
 with tabs[1]:
     st.subheader("Segment Strength Profile")
