@@ -123,6 +123,23 @@ def classify_phase(round_title: str, round_sort_value: int) -> str:
     return "KO"
 
 
+def round_short_label(round_title: str) -> str:
+    t = str(round_title or "").lower()
+    if "lcq" in t or "last chance" in t:
+        return "LCQ"
+    if "1/8" in t:
+        return "1/8"
+    if "1/4" in t:
+        return "1/4"
+    if "1/2" in t:
+        return "1/2"
+    if "final" in t:
+        return "F"
+    if "round 1" in t or "moto" in t or "seeding" in t:
+        return "R1"
+    return "R1"
+
+
 def bin_pos(pos: float) -> str:
     if pd.isna(pos):
         return "NA"
@@ -402,7 +419,14 @@ tabs = st.tabs(
 with tabs[0]:
     st.subheader("Athlete Trend")
     plot = runs_sel.copy()
-    plot["order"] = plot.groupby("rider_id").cumcount()
+    plot["round_short"] = plot["round_title"].apply(round_short_label)
+    round_order_map = {"R1": 1, "LCQ": 2, "1/8": 3, "1/4": 4, "1/2": 5, "F": 6}
+    plot["round_order"] = plot["round_short"].map(round_order_map).fillna(99)
+    plot["heat_sort"] = pd.to_numeric(plot["heat_id"], errors="coerce").fillna(99999)
+    plot["x_key"] = plot["event_label"] + " • " + plot["round_short"]
+    plot["rank_num"] = pd.to_numeric(plot["rank"], errors="coerce")
+    plot["rank_display"] = np.where(plot["rank_num"].fillna(0) > 0, plot["rank_num"].astype("Int64").astype(str), "unknown")
+    plot["reference_type"] = ref_label
 
     # Dynamic split deltas (consistent sign: positive = slower than reference).
     plot["delta_bottom_t1"] = plot["t1_delta"] - plot["start_delta"]
@@ -439,7 +463,24 @@ with tabs[0]:
         if not metric_col:
             continue
         frame = plot[
-            ["order", "year", "event_label", "event_id", "round_title", "heat_id", "heat_title", "rank", "rider_short", metric_col]
+            [
+                "year",
+                "event_dt",
+                "event_label",
+                "location",
+                "event_id",
+                "round_title",
+                "round_short",
+                "round_order",
+                "heat_id",
+                "heat_sort",
+                "heat_title",
+                "rank_display",
+                "rider_short",
+                "reference_type",
+                "x_key",
+                metric_col,
+            ]
         ].rename(columns={metric_col: "delta"})
         frame["metric"] = metric_label
         plot_frames.append(frame)
@@ -448,17 +489,37 @@ with tabs[0]:
     if not plot_long.empty:
         plot_long = plot_long.dropna(subset=["delta"])
         plot_long["series_label"] = plot_long["rider_short"] + " - " + plot_long["metric"]
+        x_order_df = (
+            plot_long[["x_key", "event_dt", "round_order", "heat_sort"]]
+            .drop_duplicates()
+            .sort_values(["event_dt", "round_order", "heat_sort", "x_key"], na_position="last")
+        )
+        x_order = x_order_df["x_key"].tolist()
+        x_rank_map = {k: i for i, k in enumerate(x_order)}
+        plot_long["x_order"] = plot_long["x_key"].map(x_rank_map)
+    else:
+        x_order = []
 
     if not plot_long.empty:
         trend_chart = (
             alt.Chart(plot_long)
             .mark_line(point=True)
             .encode(
-                x=alt.X("order:Q", title="Chronologische Runs"),
+                x=alt.X("x_key:N", title="Event • Runde", sort=x_order),
                 y=alt.Y("delta:Q", title="Delta (s)"),
                 color=alt.Color("series_label:N", title="Rider - Metrik"),
                 detail="series_label:N",
-                tooltip=["series_label:N", "event_label:N", "event_id:N", "round_title:N", "heat_title:N", "rank:Q", "delta:Q"],
+                order=alt.Order("x_order:Q", sort="ascending"),
+                tooltip=[
+                    "series_label:N",
+                    "event_label:N",
+                    "location:N",
+                    "round_short:N",
+                    "heat_title:N",
+                    alt.Tooltip("rank_display:N", title="rank"),
+                    alt.Tooltip("delta:Q", title="delta_value", format=".4f"),
+                    "reference_type:N",
+                ],
             )
             .properties(height=360)
         )
