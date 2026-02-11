@@ -245,6 +245,8 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
 
     for c in ["start", "t1", "t2", "t3", "time", "rank", "heat_id", "round_key"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ["start", "t1", "t2", "t3", "time"]:
+        df.loc[df[c] <= 0, c] = np.nan
 
     df["finish"] = df["time"]
     df["event_type"] = df["event_id"].apply(infer_event_type)
@@ -309,8 +311,9 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
     if out.empty:
         return out
     heat_cols = ["event_id", "group_id", "heat_id", "round_sort"]
+    base_segments = ["start", "t1", "t2", "t3", "finish"]
 
-    for seg in ["start", "t1", "t2", "t3", "finish"]:
+    for seg in base_segments:
         med_col = f"{seg}_median"
         rank_col = f"pos_{seg}" if seg != "finish" else "pos_finish_est"
         pct_col = f"{seg}_pct"
@@ -333,7 +336,7 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     # Rank-4 reference by segment time (4th fastest valid time in the heat).
     # DNFs are ignored by dropping non-numeric/NaN times.
-    for seg in ["start", "t1", "t2", "t3", "finish"]:
+    for seg in base_segments:
         rank4 = (
             out.groupby(heat_cols, dropna=False)
             .apply(lambda g: g[seg].dropna().nsmallest(4).iloc[-1] if g[seg].notna().sum() >= 4 else np.nan)
@@ -364,6 +367,21 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out["split_t1_t2"] = out["t2"] - out["t1"]
     out["split_t2_t3"] = out["t3"] - out["t2"]
     out["split_t3_finish"] = out["finish"] - out["t3"]
+    split_segments = ["split_bottom_t1", "split_t1_t2", "split_t2_t3", "split_t3_finish"]
+    for seg in split_segments:
+        grp = out.groupby(heat_cols)[seg]
+        out[f"{seg}_median"] = grp.transform("median")
+        out[f"{seg}_winner"] = grp.transform("min")
+        rank4 = (
+            out.groupby(heat_cols, dropna=False)
+            .apply(lambda g: g[seg].dropna().nsmallest(4).iloc[-1] if g[seg].notna().sum() >= 4 else np.nan)
+            .reset_index(name=f"{seg}_rank4_ref")
+        )
+        out = out.merge(rank4, on=heat_cols, how="left")
+        out[f"{seg}_delta_heat_median"] = out[seg] - out[f"{seg}_median"]
+        out[f"{seg}_delta_rank4"] = out[seg] - out[f"{seg}_rank4_ref"]
+        out[f"{seg}_delta_winner"] = out[seg] - out[f"{seg}_winner"]
+
     for split_col, rank_col in [
         ("split_bottom_t1", "rank_bottom_t1"),
         ("split_t1_t2", "rank_t1_t2"),
@@ -400,6 +418,7 @@ def apply_reference(
     out = df.copy()
     if event_top_n < 1:
         event_top_n = 4
+    all_segments = ["start", "t1", "t2", "t3", "finish", "split_bottom_t1", "split_t1_t2", "split_t2_t3", "split_t3_finish"]
 
     # Event-level references (per event + category/group) from absolute segment times.
     if ref_key in {"event_top4", "event_best"}:
@@ -407,7 +426,7 @@ def apply_reference(
         if event_ko_final_only and "phase" in src.columns:
             src = src[src["phase"].isin(["KO", "Final"])].copy()
         group_cols = ["event_id", "group_id"]
-        for seg in ["start", "t1", "t2", "t3", "finish"]:
+        for seg in all_segments:
             if seg not in src.columns:
                 continue
             ref_df = (
@@ -430,13 +449,12 @@ def apply_reference(
 
     map_suffix = {
         "rank4": "rank4",
-        "heat_median": "heat_median",
         "winner": "winner",
         "event_top4": "event_top4",
         "event_best": "event_best",
     }
     suffix = map_suffix.get(ref_key, "rank4")
-    for seg in ["start", "t1", "t2", "t3", "finish"]:
+    for seg in all_segments:
         src = f"{seg}_delta_{suffix}"
         if src in out.columns:
             out[f"{seg}_delta"] = out[src]
@@ -446,6 +464,14 @@ def apply_reference(
     out["delta_post_t1"] = out["finish_delta"] - out["t1_delta"]
     out["delta_post_t2"] = out["finish_delta"] - out["t2_delta"]
     out["delta_post_t3"] = out["finish_delta"] - out["t3_delta"]
+    if "split_bottom_t1_delta" in out.columns:
+        out["delta_bottom_t1"] = out["split_bottom_t1_delta"]
+    if "split_t1_t2_delta" in out.columns:
+        out["delta_t1_t2"] = out["split_t1_t2_delta"]
+    if "split_t2_t3_delta" in out.columns:
+        out["delta_t2_t3"] = out["split_t2_t3_delta"]
+    if "split_t3_finish_delta" in out.columns:
+        out["delta_t3_finish"] = out["split_t3_finish_delta"]
     return out
 
 
@@ -597,6 +623,31 @@ if sel_gender:
 if sel_locations:
     base_scope = base_scope[base_scope["location"].isin(sel_locations)]
 
+event_options_df = (
+    base_scope[["event_id", "event_dt", "event_id_dt", "location", "display_name"]]
+    .drop_duplicates(subset=["event_id"])
+    .copy()
+)
+event_options_df["sort_dt"] = event_options_df["event_dt"].where(event_options_df["event_dt"].notna(), event_options_df["event_id_dt"])
+event_options_df = event_options_df.sort_values(["sort_dt", "event_id"], ascending=[False, False], na_position="last")
+event_options_df["event_option"] = (
+    event_options_df["sort_dt"].dt.strftime("%Y-%m-%d").fillna(event_options_df["event_id"].astype(str).str[:8])
+    + " | "
+    + event_options_df["location"].fillna("Unknown").astype(str)
+    + " | "
+    + event_options_df["event_id"].astype(str)
+)
+default_event_opts = [event_options_df.iloc[0]["event_option"]] if not event_options_df.empty else []
+sel_event_options = st.multiselect(
+    "Event (leer = alle)",
+    options=event_options_df["event_option"].tolist(),
+    default=default_event_opts,
+    key="insight_events",
+)
+if sel_event_options:
+    selected_event_ids = event_options_df.loc[event_options_df["event_option"].isin(sel_event_options), "event_id"].astype(str).tolist()
+    base_scope = base_scope[base_scope["event_id"].astype(str).isin(selected_event_ids)]
+
 rider_pool = base_scope.copy()
 if sel_nations:
     rider_pool = rider_pool[rider_pool["nation"].isin(sel_nations)]
@@ -620,14 +671,14 @@ if not selected_ids:
 
 ref_label = st.radio(
     "Referenz",
-    ["Heat Rank 4 (Qualification Cut)", "Heat Rank 1 (Winner)", "Event Top4"],
+    ["Event Top4 (robust)", "Heat Rank 4 (Qualification Cut)", "Heat Rank 1 (Winner)"],
     horizontal=True,
     index=0,
 )
 event_top_n = 4
 event_ko_final_only = True
 use_event_best = False
-if ref_label == "Event Top4":
+if ref_label == "Event Top4 (robust)":
     c1, c2, c3 = st.columns(3)
     with c1:
         event_top_n = st.selectbox("Event TopN", [4, 8], index=0, key="event_top_n")
@@ -637,15 +688,15 @@ if ref_label == "Event Top4":
         use_event_best = st.toggle("Event Best (Ceiling) statt Event TopN", value=False, key="event_ref_best")
 
 ref_key = "rank4"
-if ref_label == "Heat Rank 4 (Qualification Cut)":
+if ref_label == "Event Top4 (robust)":
+    ref_key = "event_best" if use_event_best else "event_top4"
+elif ref_label == "Heat Rank 4 (Qualification Cut)":
     ref_key = "rank4"
 elif ref_label == "Heat Rank 1 (Winner)":
     ref_key = "winner"
-elif ref_label == "Event Top4":
-    ref_key = "event_best" if use_event_best else "event_top4"
 
 ref_caption = ref_label
-if ref_label == "Event Top4":
+if ref_label == "Event Top4 (robust)":
     base_ref = "Event Best" if use_event_best else f"Event Top{event_top_n}"
     scope_ref = "KO+Final" if event_ko_final_only else "alle Runden"
     ref_caption = f"{base_ref} ({scope_ref})"
@@ -717,10 +768,22 @@ with tabs[0]:
             )
 
     # Dynamic split deltas (consistent sign: positive = slower than reference).
-    plot["delta_bottom_t1"] = plot["t1_delta"] - plot["start_delta"]
-    plot["delta_t1_t2"] = plot["t2_delta"] - plot["t1_delta"]
-    plot["delta_t2_t3"] = plot["t3_delta"] - plot["t2_delta"]
-    plot["delta_t3_finish"] = plot["finish_delta"] - plot["t3_delta"]
+    if "split_bottom_t1_delta" in plot.columns and plot["split_bottom_t1_delta"].notna().any():
+        plot["delta_bottom_t1"] = plot["split_bottom_t1_delta"]
+    else:
+        plot["delta_bottom_t1"] = plot["t1_delta"] - plot["start_delta"]
+    if "split_t1_t2_delta" in plot.columns and plot["split_t1_t2_delta"].notna().any():
+        plot["delta_t1_t2"] = plot["split_t1_t2_delta"]
+    else:
+        plot["delta_t1_t2"] = plot["t2_delta"] - plot["t1_delta"]
+    if "split_t2_t3_delta" in plot.columns and plot["split_t2_t3_delta"].notna().any():
+        plot["delta_t2_t3"] = plot["split_t2_t3_delta"]
+    else:
+        plot["delta_t2_t3"] = plot["t3_delta"] - plot["t2_delta"]
+    if "split_t3_finish_delta" in plot.columns and plot["split_t3_finish_delta"].notna().any():
+        plot["delta_t3_finish"] = plot["split_t3_finish_delta"]
+    else:
+        plot["delta_t3_finish"] = plot["finish_delta"] - plot["t3_delta"]
 
     metric_defs = [
         ("Finish Delta", "finish_delta"),
