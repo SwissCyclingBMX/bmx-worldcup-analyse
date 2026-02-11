@@ -77,6 +77,29 @@ def parse_event_date(event_date: Optional[str], event_id: str) -> pd.Timestamp:
     s = clean_spaces(event_date or "")
     event_id_dt = pd.to_datetime(str(event_id)[:8], format="%Y%m%d", errors="coerce")
     if s:
+        # Handle date ranges like "10-11 FEB 2024" robustly.
+        m_range = re.match(r"^(\\d{1,2})\\s*-\\s*(\\d{1,2})\\s+([A-Z]{3})\\s+(\\d{4})$", s.upper())
+        if m_range:
+            d1 = int(m_range.group(1))
+            d2 = int(m_range.group(2))
+            mon = m_range.group(3)
+            y = int(m_range.group(4))
+            month_map = {
+                "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+                "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+            }
+            mm = month_map.get(mon)
+            candidates = []
+            if mm:
+                for dd in [d1, d2]:
+                    dt = pd.to_datetime(f"{y:04d}-{mm:02d}-{dd:02d}", errors="coerce")
+                    if pd.notna(dt):
+                        candidates.append(dt)
+            if candidates:
+                if pd.notna(event_id_dt):
+                    candidates = sorted(candidates, key=lambda d: abs((d - event_id_dt).days))
+                return candidates[0]
+
         # Robust handling for mixed numeric formats:
         # WC can be YYYY-MM-DD, while some sources may use YYYY-DD-MM.
         m = re.match(r"^(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})$", s)
@@ -99,6 +122,9 @@ def parse_event_date(event_date: Optional[str], event_id: str) -> pd.Timestamp:
                     candidates = sorted(candidates, key=lambda d: abs((d - event_id_dt).days))
                 return candidates[0]
         # Generic fallback for text dates (e.g., 21 SEP 2025).
+        dt = pd.to_datetime(s, errors="coerce")
+        if pd.notna(dt):
+            return dt
         dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
         if pd.notna(dt):
             return dt
