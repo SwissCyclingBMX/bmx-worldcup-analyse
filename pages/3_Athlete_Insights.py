@@ -507,6 +507,8 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
         cat = str(r["category"] or "")
         gen = "M" if str(r["gender"]) == "Men" else "W" if str(r["gender"]) == "Women" else ""
         event_dt = pd.to_datetime(r.get("event_dt"), errors="coerce")
+        event_id_dt = pd.to_datetime(str(event_id)[:8], format="%Y%m%d", errors="coerce")
+        event_day = event_dt.normalize() if pd.notna(event_dt) else event_id_dt
         uci = str(r.get("uci_norm") or "")
         nk = str(r.get("name_key") or "")
 
@@ -518,21 +520,27 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
             mr_base = mr_base[mr_base["klasse"].isin(["CDM"])]
             if pd.notna(year):
                 mr_base = mr_base[mr_base["year"] == int(year)]
-            if pd.notna(event_dt):
-                mr_by_day = mr_base[mr_base["master_dt"] == event_dt.normalize()]
+            # Use event day as primary key to avoid cross-event leakage.
+            # If that fails, fall back to location within year only.
+            if pd.notna(event_day):
+                mr_by_day = mr_base[mr_base["master_dt"] == event_day]
                 if not mr_by_day.empty:
                     mr_base = mr_by_day
-            # strict -> relaxed (to handle mixed source quality)
-            filter_specs = [
-                ("loc", "cat", "gen"),
-                ("loc", "cat"),
-                ("loc", "gen"),
-                ("loc",),
-                ("cat", "gen"),
-                ("cat",),
-                ("gen",),
-                (),
-            ]
+                    filter_specs = [("cat", "gen"), ("cat",), ("gen",), ()]
+                else:
+                    if not loc_norm:
+                        return np.nan
+                    mr_base = mr_base[mr_base["location_norm"] == loc_norm]
+                    if mr_base.empty:
+                        return np.nan
+                    filter_specs = [("cat", "gen"), ("cat",), ("gen",), ()]
+            else:
+                if not loc_norm:
+                    return np.nan
+                mr_base = mr_base[mr_base["location_norm"] == loc_norm]
+                if mr_base.empty:
+                    return np.nan
+                filter_specs = [("cat", "gen"), ("cat",), ("gen",), ()]
         elif event_type == "WM":
             mr_base = mr_base[mr_base["klasse"].isin(["CM"])]
             if pd.notna(year):
@@ -547,7 +555,7 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
             return np.nan
 
         for spec in filter_specs:
-            cache_key = (event_id, event_type, year, loc_norm, cat, gen, spec)
+            cache_key = (event_id, event_type, year, str(event_day), loc_norm, cat, gen, spec)
             if cache_key in map_cache:
                 uci_map, name_map = map_cache[cache_key]
             else:
@@ -1389,7 +1397,7 @@ with tabs[4]:
 with tabs[5]:
     st.subheader("Benchmark")
     mode = st.selectbox("Benchmark Mode", ["Gap to Winner", "Gap to Top3 mean", "Percentile in Heat"], index=0, key="bench_mode")
-    b = base_rel.copy()
+    b = runs_sel.copy()
     heat_cols = ["event_id", "group_id", "heat_id", "round_sort"]
     b["winner_finish"] = b.groupby(heat_cols)["finish"].transform("min")
     b["top3_mean"] = b.groupby(heat_cols)["finish"].transform(lambda s: s.nsmallest(3).mean() if s.notna().sum() >= 3 else np.nan)
