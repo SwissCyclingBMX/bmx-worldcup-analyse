@@ -18,10 +18,10 @@ DB_PATH_CLOUD = "/tmp/bmx.db"
 GROUP_MAP = {
     91: "Elite Men",
     92: "Elite Women",
-    93: "U23 Men",
-    94: "U23 Women",
-    95: "Junior Men",
-    96: "Junior Women",
+    93: "Junior Men",
+    94: "Junior Women",
+    95: "U23 Men",
+    96: "U23 Women",
 }
 
 # WM UCIEventID map (Copenhagen 2025)
