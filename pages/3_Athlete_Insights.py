@@ -484,20 +484,35 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
         return out
 
     out["location_norm"] = out["location"].apply(lambda x: norm_location(wc_location_clean(x)))
-    map_cache = {}
+    out["event_id_dt"] = pd.to_datetime(out["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce")
+    out["event_day"] = out["event_dt"].where(out["event_dt"].notna(), out["event_id_dt"]).dt.normalize()
 
-    def make_maps(mr_sub: pd.DataFrame):
-        if mr_sub.empty:
-            return {}, {}
-        uci_map = {}
-        name_map = {}
-        mru = mr_sub[mr_sub["uci_norm"] != ""]
-        if not mru.empty:
-            uci_map = mru.groupby("uci_norm")["rank"].min().to_dict()
-        mrn = mr_sub[mr_sub["name_key"] != ""]
-        if not mrn.empty:
-            name_map = mrn.groupby("name_key")["rank"].min().to_dict()
-        return uci_map, name_map
+    mr = master.copy()
+    mr["master_day"] = pd.to_datetime(mr["master_dt"], errors="coerce").dt.normalize()
+
+    def make_map(df_src: pd.DataFrame, key_cols: list[str], id_col: str):
+        d = df_src[df_src[id_col] != ""].copy()
+        if d.empty:
+            return {}
+        return d.groupby(key_cols + [id_col])["rank"].min().to_dict()
+
+    # EC/EM: exact event_id mapping
+    mr_ec = mr[mr["klasse"].isin(["EC", "EM"])].copy()
+    ec_uci_map = make_map(mr_ec, ["uci_event_id"], "uci_norm")
+    ec_name_map = make_map(mr_ec, ["uci_event_id"], "name_key")
+
+    # WC: exact day + location + category + gender mapping
+    mr_wc = mr[mr["klasse"] == "CDM"].copy()
+    wc_uci_map = make_map(mr_wc, ["master_day", "location_norm", "category", "gender"], "uci_norm")
+    wc_name_map = make_map(mr_wc, ["master_day", "location_norm", "category", "gender"], "name_key")
+    # controlled fallback for minor location mismatches: day + category + gender
+    wc_uci_fallback_map = make_map(mr_wc, ["master_day", "category", "gender"], "uci_norm")
+    wc_name_fallback_map = make_map(mr_wc, ["master_day", "category", "gender"], "name_key")
+
+    # WM: year + category + gender mapping
+    mr_wm = mr[mr["klasse"] == "CM"].copy()
+    wm_uci_map = make_map(mr_wm, ["year", "category", "gender"], "uci_norm")
+    wm_name_map = make_map(mr_wm, ["year", "category", "gender"], "name_key")
 
     def get_rank_for_row(r: dict):
         event_id = str(r["event_id"])
@@ -506,83 +521,62 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
         loc_norm = str(r["location_norm"] or "")
         cat = str(r["category"] or "")
         gen = "M" if str(r["gender"]) == "Men" else "W" if str(r["gender"]) == "Women" else ""
-        event_dt = pd.to_datetime(r.get("event_dt"), errors="coerce")
-        event_id_dt = pd.to_datetime(str(event_id)[:8], format="%Y%m%d", errors="coerce")
-        event_day = event_dt.normalize() if pd.notna(event_dt) else event_id_dt
+        day = pd.to_datetime(r.get("event_day"), errors="coerce")
         uci = str(r.get("uci_norm") or "")
         nk = str(r.get("name_key") or "")
 
-        mr_base = master.copy()
         if event_type in {"EC", "EM"}:
-            mr_base = mr_base[mr_base["uci_event_id"] == event_id]
-            filter_specs = [()]
-        elif event_type == "WC":
-            mr_base = mr_base[mr_base["klasse"].isin(["CDM"])]
-            if pd.notna(year):
-                mr_base = mr_base[mr_base["year"] == int(year)]
-            # Use event day as primary key to avoid cross-event leakage.
-            # If that fails, fall back to location within year only.
-            if pd.notna(event_day):
-                mr_by_day = mr_base[mr_base["master_dt"] == event_day]
-                if not mr_by_day.empty:
-                    mr_base = mr_by_day
-                    filter_specs = [("cat", "gen"), ("cat",), ("gen",), ()]
-                else:
-                    if not loc_norm:
-                        return np.nan
-                    mr_base = mr_base[mr_base["location_norm"] == loc_norm]
-                    if mr_base.empty:
-                        return np.nan
-                    filter_specs = [("cat", "gen"), ("cat",), ("gen",), ()]
-            else:
-                if not loc_norm:
-                    return np.nan
-                mr_base = mr_base[mr_base["location_norm"] == loc_norm]
-                if mr_base.empty:
-                    return np.nan
-                filter_specs = [("cat", "gen"), ("cat",), ("gen",), ()]
-        elif event_type == "WM":
-            mr_base = mr_base[mr_base["klasse"].isin(["CM"])]
-            if pd.notna(year):
-                mr_base = mr_base[mr_base["year"] == int(year)]
-            filter_specs = [
-                ("cat", "gen"),
-                ("cat",),
-                ("gen",),
-                (),
-            ]
-        else:
+            if uci:
+                val = ec_uci_map.get((event_id, uci), np.nan)
+                if pd.notna(val) and float(val) > 0:
+                    return val
+            if nk:
+                val = ec_name_map.get((event_id, nk), np.nan)
+                if pd.notna(val) and float(val) > 0:
+                    return val
             return np.nan
 
-        for spec in filter_specs:
-            cache_key = (event_id, event_type, year, str(event_day), loc_norm, cat, gen, spec)
-            if cache_key in map_cache:
-                uci_map, name_map = map_cache[cache_key]
-            else:
-                mr_sub = mr_base
-                if "loc" in spec and loc_norm:
-                    mr_sub = mr_sub[mr_sub["location_norm"] == loc_norm]
-                if "cat" in spec and cat:
-                    mr_sub = mr_sub[mr_sub["category"] == cat]
-                if "gen" in spec and gen:
-                    mr_sub = mr_sub[mr_sub["gender"] == gen]
-                uci_map, name_map = make_maps(mr_sub)
-                map_cache[cache_key] = (uci_map, name_map)
+        if event_type == "WC":
+            if pd.isna(day) or not cat or not gen:
+                return np.nan
+            if uci and loc_norm:
+                val = wc_uci_map.get((day, loc_norm, cat, gen, uci), np.nan)
+                if pd.notna(val) and float(val) > 0:
+                    return val
+            if nk and loc_norm:
+                val = wc_name_map.get((day, loc_norm, cat, gen, nk), np.nan)
+                if pd.notna(val) and float(val) > 0:
+                    return val
+            if uci:
+                val = wc_uci_fallback_map.get((day, cat, gen, uci), np.nan)
+                if pd.notna(val) and float(val) > 0:
+                    return val
+            if nk:
+                val = wc_name_fallback_map.get((day, cat, gen, nk), np.nan)
+                if pd.notna(val) and float(val) > 0:
+                    return val
+            return np.nan
 
-            if uci and uci in uci_map:
-                val = uci_map[uci]
+        if event_type == "WM":
+            if pd.isna(year) or not cat or not gen:
+                return np.nan
+            y = int(year)
+            if uci:
+                val = wm_uci_map.get((y, cat, gen, uci), np.nan)
                 if pd.notna(val) and float(val) > 0:
                     return val
-            if nk and nk in name_map:
-                val = name_map[nk]
+            if nk:
+                val = wm_name_map.get((y, cat, gen, nk), np.nan)
                 if pd.notna(val) and float(val) > 0:
                     return val
+            return np.nan
+
         return np.nan
 
     ranks = [
         get_rank_for_row(r)
         for r in out[
-            ["event_id", "event_type", "year", "event_dt", "location_norm", "category", "gender", "uci_norm", "name_key"]
+            ["event_id", "event_type", "year", "event_day", "location_norm", "category", "gender", "uci_norm", "name_key"]
         ].to_dict("records")
     ]
     out["final_rank_event"] = pd.to_numeric(pd.Series(ranks), errors="coerce")
