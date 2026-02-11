@@ -984,6 +984,34 @@ with tabs[0]:
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
+    st.markdown("**Final Rank pro Event (master_results)**")
+    final_rank_tbl = (
+        runs_sel[["event_id", "event_dt", "location", "rider_short", "final_rank_event"]]
+        .drop_duplicates(subset=["event_id", "rider_short"])
+        .copy()
+        .sort_values(["event_dt", "event_id", "rider_short"], ascending=[False, False, True], na_position="last")
+    )
+    if not final_rank_tbl.empty:
+        final_rank_tbl["event_date"] = final_rank_tbl["event_dt"].dt.strftime("%Y-%m-%d")
+        final_rank_tbl["final_rank_event"] = pd.to_numeric(final_rank_tbl["final_rank_event"], errors="coerce")
+        final_rank_tbl["final_rank_event"] = np.where(
+            final_rank_tbl["final_rank_event"].notna(),
+            final_rank_tbl["final_rank_event"].astype("Int64").astype(str),
+            "NA",
+        )
+        final_rank_tbl = final_rank_tbl.rename(
+            columns={
+                "event_date": "Date",
+                "event_id": "Event",
+                "location": "Location",
+                "rider_short": "Rider",
+                "final_rank_event": "Final Rank",
+            }
+        )
+        st.dataframe(final_rank_tbl[["Date", "Event", "Location", "Rider", "Final Rank"]], use_container_width=True, hide_index=True)
+    else:
+        st.caption("Keine Final-Ranks fuer die aktuelle Auswahl gefunden.")
+
     st.markdown("**Segment Contribution**")
     contrib_src = runs_sel.copy()
     seg_candidates = [
@@ -1341,15 +1369,16 @@ with tabs[5]:
             y=alt.Y(f"{metric_col}:Q", title=mode),
             color=alt.Color("rider_short:N", title="Rider"),
             strokeDash=alt.StrokeDash("phase:N", title="Phase"),
-            tooltip=["rider_short:N", "event_label:N", "round_title:N", "heat_title:N", "rank:Q", f"{metric_col}:Q"],
+            tooltip=["rider_short:N", "event_label:N", "round_title:N", "heat_title:N", "rank:Q", "final_rank_event_display:N", f"{metric_col}:Q"],
         )
         st.altair_chart(line.properties(height=320), use_container_width=True)
 
         hist = alt.Chart(mm).mark_bar().encode(x=alt.X(f"{metric_col}:Q", bin=True), y="count()")
         st.altair_chart(hist.properties(height=220), use_container_width=True)
 
-        tcols = ["event_id", "event_dt", "location", "round_title", "heat_title", "rank", metric_col]
+        tcols = ["event_id", "event_dt", "location", "round_title", "heat_title", "rank", "final_rank_event_display", metric_col]
         view = mm[tcols].copy()
+        view = view.rename(columns={"final_rank_event_display": "final_rank_event"})
         st.dataframe(view.round(4), use_container_width=True, hide_index=True)
 
 with tabs[6]:
@@ -1378,6 +1407,7 @@ with tabs[6]:
                 "last_start_delta": last["start_delta"],
                 "first_t1_delta": first["t1_delta"],
                 "last_t1_delta": last["t1_delta"],
+                "final_rank_event": first.get("final_rank_event", np.nan),
             }
         )
     prog = pd.DataFrame(agg_rows)
@@ -1395,7 +1425,7 @@ with tabs[6]:
             x=alt.X("event_label:N", sort=None, title="Event"),
             y=alt.Y("dropoff:Q", title="Dropoff Finish Delta (last - first)"),
             color=alt.Color("rider_short:N", title="Rider"),
-            tooltip=["event_label:N", "dropoff:Q", "n_runs:Q"],
+            tooltip=["event_label:N", "dropoff:Q", "n_runs:Q", "final_rank_event:Q"],
         )
         st.altair_chart(bar.properties(height=300), use_container_width=True)
 
