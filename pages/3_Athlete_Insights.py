@@ -517,14 +517,52 @@ def add_robust_outlier_flags_and_winsor(
         qstats = (
             ref.groupby(group_cols, dropna=False)[col]
             .agg(
+                n_valid=lambda s: s.notna().sum(),
                 q1=lambda s: s.quantile(0.25),
                 q3=lambda s: s.quantile(0.75),
+                median=lambda s: s.median(),
+                mad=lambda s: (s - s.median()).abs().median(),
             )
             .reset_index()
         )
         qstats["iqr"] = qstats["q3"] - qstats["q1"]
-        qstats[f"{col}_upper"] = qstats["q3"] + 2.0 * qstats["iqr"]
-        qstats = qstats[group_cols + [f"{col}_upper"]]
+        qstats[f"{col}_threshold_iqr"] = qstats["q3"] + 2.0 * qstats["iqr"]
+        qstats[f"{col}_threshold_mad"] = qstats["median"] + 6.0 * qstats["mad"]
+        qstats[f"{col}_upper"] = np.where(
+            qstats["n_valid"] < 20,
+            qstats[f"{col}_threshold_mad"],
+            qstats[f"{col}_threshold_iqr"],
+        )
+        # If fallback cannot be computed (e.g. MAD NaN), fall back to IQR threshold.
+        qstats[f"{col}_upper"] = np.where(
+            pd.to_numeric(qstats[f"{col}_upper"], errors="coerce").notna(),
+            qstats[f"{col}_upper"],
+            qstats[f"{col}_threshold_iqr"],
+        )
+        qstats = qstats.rename(
+            columns={
+                "q1": f"{col}_q1",
+                "q3": f"{col}_q3",
+                "iqr": f"{col}_iqr",
+                "median": f"{col}_median",
+                "mad": f"{col}_mad",
+                "n_valid": f"{col}_n_valid",
+            }
+        )
+        qstats = qstats[
+            group_cols
+            + [
+                f"{col}_q1",
+                f"{col}_q3",
+                f"{col}_iqr",
+                f"{col}_median",
+                f"{col}_mad",
+                f"{col}_n_valid",
+                f"{col}_threshold_iqr",
+                f"{col}_threshold_mad",
+                f"{col}_upper",
+            ]
+        ]
         out = out.merge(qstats, on=group_cols, how="left")
 
         raw = pd.to_numeric(out[col], errors="coerce")
@@ -533,7 +571,6 @@ def add_robust_outlier_flags_and_winsor(
 
         out[f"{col}_is_extreme"] = is_extreme
         out[f"{col}_w"] = np.where(is_extreme, upper, raw)
-        out.drop(columns=[f"{col}_upper"], inplace=True)
     return out
 
 
@@ -890,6 +927,14 @@ with tabs[0]:
     metric_map = dict(available_metrics)
     metric_plot_map = {label: (f"{col}_w" if f"{col}_w" in plot.columns else col) for label, col in available_metrics}
     metric_extreme_map = {label: (f"{col}_is_extreme" if f"{col}_is_extreme" in plot.columns else None) for label, col in available_metrics}
+    metric_q1_map = {label: (f"{col}_q1" if f"{col}_q1" in plot.columns else None) for label, col in available_metrics}
+    metric_q3_map = {label: (f"{col}_q3" if f"{col}_q3" in plot.columns else None) for label, col in available_metrics}
+    metric_iqr_map = {label: (f"{col}_iqr" if f"{col}_iqr" in plot.columns else None) for label, col in available_metrics}
+    metric_cap_map = {label: (f"{col}_upper" if f"{col}_upper" in plot.columns else None) for label, col in available_metrics}
+    metric_thr_map = {
+        label: (f"{col}_threshold_iqr" if f"{col}_threshold_iqr" in plot.columns else None)
+        for label, col in available_metrics
+    }
     x_axis_col = "x_label_short_best" if best_of_day_mode else "x_label_short"
 
     plot_frames = []
@@ -897,6 +942,11 @@ with tabs[0]:
         metric_col_raw = metric_map.get(metric_label)
         metric_col = metric_plot_map.get(metric_label)
         metric_extreme_col = metric_extreme_map.get(metric_label)
+        metric_q1_col = metric_q1_map.get(metric_label)
+        metric_q3_col = metric_q3_map.get(metric_label)
+        metric_iqr_col = metric_iqr_map.get(metric_label)
+        metric_cap_col = metric_cap_map.get(metric_label)
+        metric_thr_col = metric_thr_map.get(metric_label)
         if not metric_col_raw or not metric_col:
             continue
         frame_cols = [
@@ -936,6 +986,9 @@ with tabs[0]:
             ]
         if metric_col != metric_col_raw:
             frame_cols.append(metric_col)
+        for extra_col in [metric_q1_col, metric_q3_col, metric_iqr_col, metric_cap_col, metric_thr_col]:
+            if extra_col and extra_col in plot.columns:
+                frame_cols.append(extra_col)
         frame = plot[frame_cols].copy()
         if metric_col == metric_col_raw:
             frame = frame.rename(columns={metric_col_raw: "delta"})
@@ -946,6 +999,18 @@ with tabs[0]:
             frame["is_extreme"] = plot[metric_extreme_col].astype(bool)
         else:
             frame["is_extreme"] = False
+        frame["q1"] = pd.to_numeric(plot[metric_q1_col], errors="coerce") if metric_q1_col and metric_q1_col in plot.columns else np.nan
+        frame["q3"] = pd.to_numeric(plot[metric_q3_col], errors="coerce") if metric_q3_col and metric_q3_col in plot.columns else np.nan
+        frame["iqr"] = pd.to_numeric(plot[metric_iqr_col], errors="coerce") if metric_iqr_col and metric_iqr_col in plot.columns else np.nan
+        frame["upper_cap"] = pd.to_numeric(plot[metric_cap_col], errors="coerce") if metric_cap_col and metric_cap_col in plot.columns else np.nan
+        frame["extreme_threshold"] = pd.to_numeric(plot[metric_thr_col], errors="coerce") if metric_thr_col and metric_thr_col in plot.columns else np.nan
+        frame["group_key"] = (
+            plot["category"].fillna("Unknown").astype(str)
+            + " "
+            + plot["gender"].fillna("Unknown").astype(str)
+            + " × "
+            + metric_label
+        )
         frame["metric"] = metric_label
         if best_of_day_mode:
             # Keep one row per rider/event/metric: the best (smallest) delta.
@@ -994,6 +1059,12 @@ with tabs[0]:
             "delta",
             "delta_raw",
             "is_extreme",
+            "q1",
+            "q3",
+            "iqr",
+            "upper_cap",
+            "extreme_threshold",
+            "group_key",
             "event_label_full",
             "event_date_display",
             "location",
@@ -1045,8 +1116,14 @@ with tabs[0]:
                     "round_short:N",
                     "heat_title:N",
                     alt.Tooltip("rank_display:N", title="rank"),
-                    alt.Tooltip("delta:Q", title="delta_value", format=".4f"),
-                    alt.Tooltip("delta_raw:Q", title="delta_raw", format=".4f"),
+                    alt.Tooltip("delta_raw:Q", title="raw_delta", format=".4f"),
+                    alt.Tooltip("delta:Q", title="winsorized_delta", format=".4f"),
+                    alt.Tooltip("upper_cap:Q", title="upper_cap", format=".4f"),
+                    alt.Tooltip("q1:Q", title="Q1", format=".4f"),
+                    alt.Tooltip("q3:Q", title="Q3", format=".4f"),
+                    alt.Tooltip("iqr:Q", title="IQR", format=".4f"),
+                    alt.Tooltip("extreme_threshold:Q", title="extreme_threshold", format=".4f"),
+                    alt.Tooltip("group_key:N", title="group_key"),
                     alt.Tooltip("is_extreme:N", title="is_extreme"),
                     "reference_type:N",
                     alt.Tooltip("rank_bottom_display:N", title="rank_bottom"),
