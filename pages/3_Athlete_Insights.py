@@ -687,6 +687,11 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
             return np.nan
 
         if event_type == "WC":
+            # WC event_id encodes the exact race day reliably (YYYYMMDD).
+            # Prefer this over parsed event_date text to avoid range/date-format drift.
+            day_wc = pd.to_datetime(r.get("event_id_dt"), errors="coerce")
+            if pd.notna(day_wc):
+                day = day_wc.normalize()
             if pd.isna(day) or not cat or not gen:
                 return np.nan
             if uci and loc_norm:
