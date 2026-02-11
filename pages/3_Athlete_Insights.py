@@ -75,27 +75,34 @@ def short_name(name: str) -> str:
 
 def parse_event_date(event_date: Optional[str], event_id: str) -> pd.Timestamp:
     s = clean_spaces(event_date or "")
+    event_id_dt = pd.to_datetime(str(event_id)[:8], format="%Y%m%d", errors="coerce")
     if s:
         # Robust handling for mixed numeric formats:
         # WC can be YYYY-MM-DD, while some sources may use YYYY-DD-MM.
         m = re.match(r"^(\\d{4})[-/](\\d{1,2})[-/](\\d{1,2})$", s)
         if m:
             y, a, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            candidates = []
             # Prefer YYYY-MM-DD.
             if 1 <= a <= 12 and 1 <= b <= 31:
                 dt = pd.to_datetime(f"{y:04d}-{a:02d}-{b:02d}", errors="coerce")
                 if pd.notna(dt):
-                    return dt
+                    candidates.append(dt)
             # Fallback YYYY-DD-MM.
             if 1 <= b <= 12 and 1 <= a <= 31:
                 dt = pd.to_datetime(f"{y:04d}-{b:02d}-{a:02d}", errors="coerce")
                 if pd.notna(dt):
-                    return dt
+                    candidates.append(dt)
+            # Resolve ambiguity using event_id date when available.
+            if candidates:
+                if pd.notna(event_id_dt):
+                    candidates = sorted(candidates, key=lambda d: abs((d - event_id_dt).days))
+                return candidates[0]
         # Generic fallback for text dates (e.g., 21 SEP 2025).
         dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
         if pd.notna(dt):
             return dt
-    return pd.to_datetime(str(event_id)[:8], format="%Y%m%d", errors="coerce")
+    return event_id_dt
 
 
 def parse_round_code(display_name: str) -> str:
@@ -666,8 +673,7 @@ with tabs[0]:
         key="trend_metrics",
     )
     metric_map = dict(available_metrics)
-    long_labels_on_axis = st.toggle("Long labels on axis", value=False, key="trend_long_labels")
-    x_axis_col = "x_label_long" if long_labels_on_axis else "x_label_short"
+    x_axis_col = "x_label_short"
 
     plot_frames = []
     for metric_label in selected_metric_labels:
