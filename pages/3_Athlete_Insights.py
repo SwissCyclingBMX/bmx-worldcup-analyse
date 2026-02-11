@@ -743,6 +743,45 @@ with tabs[0]:
         x_order = x_order_df[x_axis_col].tolist()
         x_rank_map = {k: i for i, k in enumerate(x_order)}
         plot_long["x_order"] = plot_long[x_axis_col].map(x_rank_map)
+
+        # Build a complete x-grid per rider/metric series to force visual gaps
+        # when a competition/round is missing for that specific series.
+        series_keys = plot_long[["series_label", "rider_short", "metric", "reference_type"]].drop_duplicates()
+        x_keys = pd.DataFrame({x_axis_col: x_order, "x_order": list(range(len(x_order)))})
+        full_grid = series_keys.assign(_k=1).merge(x_keys.assign(_k=1), on="_k").drop(columns="_k")
+
+        meta_cols = [
+            "series_label",
+            "rider_short",
+            "metric",
+            "reference_type",
+            x_axis_col,
+            "x_order",
+            "delta",
+            "event_label_full",
+            "event_date_display",
+            "location",
+            "round_title",
+            "round_short",
+            "heat_title",
+            "rank_display",
+            "rank_bottom_display",
+            "rank_t1_display",
+            "rank_t2_display",
+            "rank_t3_display",
+            "rank_finish_display",
+            "rank_bottom_t1_display",
+            "rank_t1_t2_display",
+            "rank_t2_t3_display",
+            "rank_t3_finish_display",
+            "final_rank_event_display",
+        ]
+        meta_cols = [c for c in meta_cols if c in plot_long.columns]
+        plot_long = full_grid.merge(
+            plot_long[meta_cols],
+            on=[c for c in ["series_label", "rider_short", "metric", "reference_type", x_axis_col, "x_order"] if c in meta_cols],
+            how="left",
+        )
     else:
         x_order = []
 
