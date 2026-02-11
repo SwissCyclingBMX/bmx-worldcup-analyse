@@ -728,6 +728,20 @@ runs_sel = runs_sel.drop(columns=["final_rank_event", "final_rank_event_display"
 runs_sel = runs_sel.merge(final_rank_map, on=rank_merge_keys, how="left")
 if runs_sel["final_rank_event"].notna().sum() == 0:
     runs_sel = attach_final_rank_event(runs_sel, master_results)
+runs_sel["final_rank_event"] = pd.to_numeric(runs_sel["final_rank_event"], errors="coerce")
+
+# Stabilize final rank per event+rider: if at least one row has a value, use it
+# for all rows of that event+rider combination.
+event_rider_rank = (
+    runs_sel.groupby(["event_id", "rider_id"])["final_rank_event"]
+    .transform(lambda s: s.dropna().min() if s.notna().any() else np.nan)
+)
+runs_sel["final_rank_event"] = runs_sel["final_rank_event"].where(runs_sel["final_rank_event"].notna(), event_rider_rank)
+runs_sel["final_rank_event_display"] = np.where(
+    runs_sel["final_rank_event"].notna(),
+    runs_sel["final_rank_event"].astype("Int64").astype(str),
+    "NA",
+)
 runs_sel["event_label"] = make_event_label(runs_sel)
 
 tabs = st.tabs(
@@ -1006,8 +1020,8 @@ with tabs[0]:
 
     st.markdown("**Final Rank pro Event (master_results)**")
     final_rank_tbl = (
-        runs_sel[["event_id", "event_dt", "location", "rider_short", "final_rank_event"]]
-        .drop_duplicates(subset=["event_id", "rider_short"])
+        runs_sel[["event_id", "event_dt", "location", "rider_id", "rider_short", "final_rank_event"]]
+        .drop_duplicates(subset=["event_id", "rider_id"])
         .copy()
     )
     if not final_rank_tbl.empty:
