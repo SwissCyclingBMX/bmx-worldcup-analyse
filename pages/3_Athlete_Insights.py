@@ -284,6 +284,7 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     df["rider_short"] = short_src.apply(short_name)
 
     df["round_sort"] = [round_sort(rt, rk) for rt, rk in zip(df["round_title"], df["round_key"])]
+    df["round_short"] = df["round_title"].apply(round_short_label)
     df["phase"] = [classify_phase(rt, rs) for rt, rs in zip(df["round_title"], df["round_sort"])]
     return df
 
@@ -590,14 +591,13 @@ event_type_opts = sorted([x for x in all_runs["event_type"].dropna().unique().to
 year_opts = sorted([int(x) for x in all_runs["year"].dropna().unique().tolist()], reverse=True)
 cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(all_runs["category"].dropna().unique().tolist())]
 gender_opts = [x for x in ["Men", "Women"] if x in set(all_runs["gender"].dropna().unique().tolist())]
-loc_opts = sorted([x for x in all_runs["location"].dropna().unique().tolist() if x])
 nation_opts = sorted([x for x in all_runs["nation"].dropna().unique().tolist() if x])
 default_years = [y for y in [2025, 2024, 2023] if y in year_opts]
 if not default_years:
     default_years = year_opts
 default_nations = ["SUI"] if "SUI" in nation_opts else []
 
-f1, f2, f3, f4, f5, f6 = st.columns(6)
+f1, f2, f3, f4, f5 = st.columns(5)
 with f1:
     sel_years = st.multiselect("Jahr", year_opts, default=default_years)
 with f2:
@@ -608,8 +608,26 @@ with f4:
     sel_gender = st.multiselect("Geschlecht", gender_opts, default=gender_opts)
 with f5:
     sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=default_nations)
-with f6:
+
+loc_scope = all_runs.copy()
+if sel_years:
+    loc_scope = loc_scope[loc_scope["year"].isin(sel_years)]
+if sel_event_types:
+    loc_scope = loc_scope[loc_scope["event_type"].isin(sel_event_types)]
+if sel_categories:
+    loc_scope = loc_scope[loc_scope["category"].isin(sel_categories)]
+if sel_gender:
+    loc_scope = loc_scope[loc_scope["gender"].isin(sel_gender)]
+if sel_nations:
+    loc_scope = loc_scope[loc_scope["nation"].isin(sel_nations)]
+loc_opts = sorted([x for x in loc_scope["location"].dropna().unique().tolist() if x])
+
+g1, g2 = st.columns(2)
+with g1:
     sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
+with g2:
+    round_opts = [x for x in ["R1", "LCQ", "1/8", "1/4", "1/2", "F"] if x in set(loc_scope["round_short"].dropna().unique().tolist())]
+    sel_rounds = st.multiselect("Runde (optional)", round_opts, default=round_opts)
 
 base_scope = all_runs.copy()
 if sel_years:
@@ -622,31 +640,8 @@ if sel_gender:
     base_scope = base_scope[base_scope["gender"].isin(sel_gender)]
 if sel_locations:
     base_scope = base_scope[base_scope["location"].isin(sel_locations)]
-
-event_options_df = (
-    base_scope[["event_id", "event_dt", "event_id_dt", "location", "display_name"]]
-    .drop_duplicates(subset=["event_id"])
-    .copy()
-)
-event_options_df["sort_dt"] = event_options_df["event_dt"].where(event_options_df["event_dt"].notna(), event_options_df["event_id_dt"])
-event_options_df = event_options_df.sort_values(["sort_dt", "event_id"], ascending=[False, False], na_position="last")
-event_options_df["event_option"] = (
-    event_options_df["sort_dt"].dt.strftime("%Y-%m-%d").fillna(event_options_df["event_id"].astype(str).str[:8])
-    + " | "
-    + event_options_df["location"].fillna("Unknown").astype(str)
-    + " | "
-    + event_options_df["event_id"].astype(str)
-)
-default_event_opts = [event_options_df.iloc[0]["event_option"]] if not event_options_df.empty else []
-sel_event_options = st.multiselect(
-    "Event (leer = alle)",
-    options=event_options_df["event_option"].tolist(),
-    default=default_event_opts,
-    key="insight_events",
-)
-if sel_event_options:
-    selected_event_ids = event_options_df.loc[event_options_df["event_option"].isin(sel_event_options), "event_id"].astype(str).tolist()
-    base_scope = base_scope[base_scope["event_id"].astype(str).isin(selected_event_ids)]
+if sel_rounds:
+    base_scope = base_scope[base_scope["round_short"].isin(sel_rounds)]
 
 rider_pool = base_scope.copy()
 if sel_nations:
