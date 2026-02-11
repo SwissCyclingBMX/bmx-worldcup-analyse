@@ -401,59 +401,69 @@ tabs = st.tabs(
 
 with tabs[0]:
     st.subheader("Athlete Trend")
-    show_start = st.toggle("Start Delta anzeigen", value=True, key="trend_show_start")
-    show_t1 = st.toggle("T1 Delta anzeigen", value=True, key="trend_show_t1")
-
     plot = runs_sel.copy()
     plot["order"] = plot.groupby("rider_id").cumcount()
-    melt_cols = [("finish_delta", "Finish Delta")]
-    if show_start and plot["start_delta"].notna().any():
-        melt_cols.append(("start_delta", "Start Delta"))
-    if show_t1 and plot["t1_delta"].notna().any():
-        melt_cols.append(("t1_delta", "T1 Delta"))
 
-    plot_long = pd.concat(
-        [
-            plot[["order", "event_label", "event_id", "round_title", "heat_id", "heat_title", "rank", "rider_short"]].assign(
-                metric=label,
-                delta=plot[col],
-            )
-            for col, label in melt_cols
-        ],
-        ignore_index=True,
-    )
-    plot_long = plot_long.dropna(subset=["delta"])
+    # Dynamic split deltas (consistent sign: positive = slower than reference).
+    plot["delta_bottom_t1"] = plot["t1_delta"] - plot["start_delta"]
+    plot["delta_t1_t2"] = plot["t2_delta"] - plot["t1_delta"]
+    plot["delta_t2_t3"] = plot["t3_delta"] - plot["t2_delta"]
+    plot["delta_t3_finish"] = plot["finish_delta"] - plot["t3_delta"]
 
-    if not plot_long.empty:
+    metric_defs = [
+        ("Finish", "finish_delta"),
+        ("Bottom", "start_delta"),
+        ("T1", "t1_delta"),
+        ("T2", "t2_delta"),
+        ("T3", "t3_delta"),
+        ("Bottom-T1", "delta_bottom_t1"),
+        ("T1-T2", "delta_t1_t2"),
+        ("T2-T3", "delta_t2_t3"),
+        ("T3-Finish", "delta_t3_finish"),
+    ]
+    metric_label = st.selectbox("Metrik auswaehlen", [m[0] for m in metric_defs], index=0, key="trend_metric")
+    metric_col = dict(metric_defs)[metric_label]
+
+    plot_one = plot[
+        ["order", "year", "event_label", "event_id", "round_title", "heat_id", "heat_title", "rank", "rider_short", metric_col]
+    ].rename(columns={metric_col: "delta"})
+    plot_one = plot_one.dropna(subset=["delta"])
+
+    if not plot_one.empty:
         trend_chart = (
-            alt.Chart(plot_long)
+            alt.Chart(plot_one)
             .mark_line(point=True)
             .encode(
                 x=alt.X("order:Q", title="Chronologische Runs"),
-                y=alt.Y("delta:Q", title="Delta vs Heat-Median (s)"),
+                y=alt.Y("delta:Q", title=f"{metric_label} Delta (s)"),
                 color=alt.Color("rider_short:N", title="Rider"),
-                strokeDash=alt.StrokeDash("metric:N", title="Metrik"),
-                tooltip=["rider_short:N", "event_label:N", "event_id:N", "round_title:N", "heat_title:N", "rank:Q", "metric:N", "delta:Q"],
+                tooltip=["rider_short:N", "event_label:N", "event_id:N", "round_title:N", "heat_title:N", "rank:Q", "delta:Q"],
             )
             .properties(height=360)
         )
         st.altair_chart(trend_chart, use_container_width=True)
     else:
-        st.info("Keine verwertbaren Delta-Daten fuer die aktuelle Rider-Auswahl.")
+        st.info(f"Keine verwertbaren Daten fuer Metrik `{metric_label}` in der aktuellen Rider-Auswahl.")
 
+    # Build summary on selected metric only.
     summary = (
-        runs_sel.groupby(["year", "rider_short"], as_index=False)
+        plot_one.groupby(["year", "rider_short"], as_index=False)
         .agg(
             n_runs=("event_id", "count"),
-            mean_finish_delta=("finish_delta", "mean"),
-            std_finish_delta=("finish_delta", "std"),
-            mean_start_delta=("start_delta", "mean"),
-            mean_t1_delta=("t1_delta", "mean"),
-            best_finish_delta=("finish_delta", "min"),
+            mean_metric=("delta", "mean"),
+            std_metric=("delta", "std"),
+            best_metric=("delta", "min"),
         )
         .sort_values("year", ascending=False)
     )
-    for c in ["mean_finish_delta", "std_finish_delta", "mean_start_delta", "mean_t1_delta", "best_finish_delta"]:
+    summary = summary.rename(
+        columns={
+            "mean_metric": f"mean_{metric_label}",
+            "std_metric": f"std_{metric_label}",
+            "best_metric": f"best_{metric_label}",
+        }
+    )
+    for c in [f"mean_{metric_label}", f"std_{metric_label}", f"best_{metric_label}"]:
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
