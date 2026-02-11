@@ -1,6 +1,7 @@
 import sqlite3
 import unicodedata
 from typing import Optional
+import re
 
 import altair as alt
 import numpy as np
@@ -79,6 +80,23 @@ def parse_event_date(event_date: Optional[str], event_id: str) -> pd.Timestamp:
         if pd.notna(dt):
             return dt
     return pd.to_datetime(str(event_id)[:8], format="%Y%m%d", errors="coerce")
+
+
+def norm_location(s: str) -> str:
+    s = clean_spaces(s)
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = re.sub(r"[^A-Za-z0-9 ]+", " ", s)
+    s = " ".join(s.upper().split())
+    return s
+
+
+def wc_location_clean(location: str) -> str:
+    loc = clean_spaces(location)
+    loc = re.sub(r"^ROUND\\s*\\d+\\s*-\\s*", "", loc, flags=re.IGNORECASE)
+    return loc
 
 
 def round_sort(round_title: str, round_key) -> int:
@@ -174,6 +192,24 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     df["round_sort"] = [round_sort(rt, rk) for rt, rk in zip(df["round_title"], df["round_key"])]
     df["phase"] = [classify_phase(rt, rs) for rt, rs in zip(df["round_title"], df["round_sort"])]
     return df
+
+
+@st.cache_data(show_spinner=False)
+def load_master_results(db_path: str = DB_PATH) -> pd.DataFrame:
+    conn = sqlite3.connect(db_path)
+    mr = pd.read_sql_query("SELECT * FROM master_results", conn)
+    conn.close()
+    if mr.empty:
+        return mr
+    mr["rank"] = pd.to_numeric(mr["rank"], errors="coerce")
+    mr["year"] = pd.to_numeric(mr["year"], errors="coerce").astype("Int64")
+    mr["uci_norm"] = mr["uci_id"].apply(norm_uci_id)
+    mr["name_key"] = (mr["first_name"].fillna("").astype(str) + " " + mr["last_name"].fillna("").astype(str)).apply(norm_name_key)
+    mr["gender"] = mr["gender"].fillna("").astype(str).str.upper().str.strip()
+    mr["category"] = mr["category"].fillna("").astype(str).str.strip()
+    mr["location_norm"] = mr["location"].fillna("").astype(str).apply(norm_location)
+    mr["uci_event_id"] = mr["uci_event_id"].fillna("").astype(str).str.strip()
+    return mr
 
 
 def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
@@ -272,6 +308,7 @@ all_runs = load_runs()
 if all_runs.empty:
     st.warning("Keine Daten gefunden.")
     st.stop()
+master_results = load_master_results()
 
 event_type_opts = sorted([x for x in all_runs["event_type"].dropna().unique().tolist() if x])
 year_opts = sorted([int(x) for x in all_runs["year"].dropna().unique().tolist()], reverse=True)
@@ -801,92 +838,112 @@ with tabs[6]:
 
 with tabs[7]:
     st.subheader("Results Trend")
-    rr = runs_sel.copy()
-    rr = rr.sort_values(["rider_id", "event_dt", "event_id", "round_sort", "heat_id"])
+    rr = runs_sel.copy().sort_values(["rider_id", "event_dt", "event_id", "round_sort", "heat_id"])
 
-    rows = []
-    for (rid, event_id), g in rr.groupby(["rider_id", "event_id"]):
-        g = g.copy().sort_values(["round_sort", "heat_id"])
-        reached_phase = "Early"
-        if (g["phase"] == "Final").any():
-            reached_phase = "Final"
-        elif (g["phase"] == "KO").any():
-            reached_phase = "KO"
-
-        est = False
-        rank_val = np.nan
-        finals = g[g["phase"] == "Final"]
-        if not finals.empty and finals["rank"].notna().any():
-            rank_val = finals["rank"].min()
-        elif g["rank"].notna().any():
-            # Best rank in latest reached round.
-            max_rs = g["round_sort"].max()
-            gg = g[g["round_sort"] == max_rs]
-            if gg["rank"].notna().any():
-                rank_val = gg["rank"].min()
-            else:
-                rank_val = g["rank"].min()
-        elif g["finish"].notna().any():
-            # Fallback estimate from finish position.
-            rank_val = g["finish"].rank(method="min", ascending=True).min()
-            est = True
-
-        rows.append(
-            {
-                "event_id": event_id,
-                "rider_id": rid,
-                "rider_short": g["rider_short"].iloc[0],
-                "event_dt": g["event_dt"].iloc[0],
-                "location": g["location"].iloc[0],
-                "year": g["year"].iloc[0],
-                "final_rank": rank_val,
-                "reached_phase": reached_phase,
-                "n_runs": len(g),
-                "estimated": est,
-            }
+    # One row per rider+event to map overall/final classification.
+    rider_event = (
+        rr.groupby(["rider_id", "event_id"], as_index=False)
+        .agg(
+            rider_short=("rider_short", "first"),
+            rider_label=("rider_label", "first"),
+            uci_norm=("uci_norm", "first"),
+            name_key=("name_key", "first"),
+            category=("category", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+            gender=("gender", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+            event_dt=("event_dt", "first"),
+            location=("location", "first"),
+            year=("year", "first"),
         )
+    )
 
-    res = pd.DataFrame(rows).sort_values(["event_dt", "event_id"])
-    if res.empty:
+    def resolve_final_rank(row: pd.Series) -> float:
+        if master_results.empty:
+            return np.nan
+        event_id = str(row["event_id"])
+        event_type = infer_event_type(event_id)
+        year = int(row["year"]) if pd.notna(row["year"]) else None
+        cat = str(row["category"] or "")
+        gen = "M" if str(row["gender"]) == "Men" else "W" if str(row["gender"]) == "Women" else ""
+
+        mr = master_results.copy()
+        if event_type in {"EC", "EM"}:
+            mr = mr[mr["uci_event_id"] == event_id]
+        elif event_type == "WC":
+            mr = mr[mr["klasse"].isin(["CDM"])]
+            if year is not None:
+                mr = mr[mr["year"] == year]
+            loc_norm = norm_location(wc_location_clean(str(row["location"])))
+            if loc_norm:
+                mr = mr[mr["location_norm"] == loc_norm]
+            if cat:
+                mr = mr[mr["category"] == cat]
+            if gen:
+                mr = mr[mr["gender"] == gen]
+        elif event_type == "WM":
+            mr = mr[mr["klasse"].isin(["CM"])]
+            if year is not None:
+                mr = mr[mr["year"] == year]
+            if cat:
+                mr = mr[mr["category"] == cat]
+            if gen:
+                mr = mr[mr["gender"] == gen]
+        else:
+            return np.nan
+
+        if mr.empty:
+            return np.nan
+
+        uci = str(row.get("uci_norm") or "")
+        if uci:
+            m = mr[mr["uci_norm"] == uci]
+            if not m.empty:
+                return pd.to_numeric(m["rank"], errors="coerce").min()
+
+        nk = str(row.get("name_key") or "")
+        if nk:
+            m = mr[mr["name_key"] == nk]
+            if not m.empty:
+                return pd.to_numeric(m["rank"], errors="coerce").min()
+        return np.nan
+
+    rider_event["final_rank"] = rider_event.apply(resolve_final_rank, axis=1)
+    rider_event = rider_event.sort_values(["event_dt", "event_id", "rider_short"])
+
+    if rider_event.empty:
         st.info("Keine Event-Ergebnisse fuer die aktuelle Rider-Auswahl.")
     else:
-        res["event_label"] = (
-            res["event_dt"].dt.strftime("%Y-%m-%d").fillna(res["event_id"])
-            + " | "
-            + res["location"]
-            + " | "
-            + res["rider_short"]
-        )
-        line = alt.Chart(res.dropna(subset=["final_rank"])).mark_line(point=True).encode(
-            x=alt.X("event_dt:T", title="Event Date"),
-            y=alt.Y("final_rank:Q", title="Final Rank", scale=alt.Scale(reverse=True)),
-            color=alt.Color("rider_short:N", title="Rider"),
-            strokeDash=alt.StrokeDash("reached_phase:N", title="Phase"),
-            tooltip=["event_label:N", "final_rank:Q", "reached_phase:N", "n_runs:Q", "estimated:N"],
-        )
-        st.altair_chart(line.properties(height=320), use_container_width=True)
-
-        phase_counts = res.groupby(["year", "reached_phase"], as_index=False).size().rename(columns={"size": "count"})
-        bars = alt.Chart(phase_counts).mark_bar().encode(
-            x=alt.X("year:O"),
-            y=alt.Y("count:Q"),
-            color=alt.Color("reached_phase:N"),
-            tooltip=["year:O", "reached_phase:N", "count:Q"],
-        )
-        st.altair_chart(bars.properties(height=260), use_container_width=True)
-
-        yearly = (
-            res.groupby("year", as_index=False)
-            .agg(
-                n_events=("event_id", "count"),
-                avg_final_rank=("final_rank", "mean"),
-                finals_count=("reached_phase", lambda s: int((s == "Final").sum())),
-                top8_count=("final_rank", lambda s: int((s <= 8).sum())),
-                dnq_count=("reached_phase", lambda s: int((s == "Early").sum())),
+        plot_df = rider_event.dropna(subset=["final_rank"]).copy()
+        if plot_df.empty:
+            st.info("Keine Final Classification in master_results fuer die aktuelle Auswahl gefunden.")
+        else:
+            plot_df["event_label"] = (
+                plot_df["event_dt"].dt.strftime("%Y-%m-%d").fillna(plot_df["event_id"])
+                + " | "
+                + plot_df["location"]
+                + " | "
+                + plot_df["rider_short"]
             )
-            .sort_values("year", ascending=False)
+            line = alt.Chart(plot_df).mark_line(point=True).encode(
+                x=alt.X("event_dt:T", title="Event Date"),
+                y=alt.Y("final_rank:Q", title="Final Rank", scale=alt.Scale(reverse=True)),
+                color=alt.Color("rider_short:N", title="Rider"),
+                tooltip=["event_label:N", "final_rank:Q", "category:N", "gender:N"],
+            )
+            st.altair_chart(line.properties(height=320), use_container_width=True)
+
+        # Requested summary metrics.
+        summary = (
+            rider_event.groupby("rider_short", as_index=False)
+            .agg(
+                n_events=("event_id", "nunique"),
+                avg_final_rank=("final_rank", "mean"),
+                finals_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 8).sum())),
+                top4_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 4).sum())),
+                dnq_count=("final_rank", lambda s: int(pd.to_numeric(s, errors="coerce").isna().sum())),
+            )
+            .sort_values("avg_final_rank", ascending=True, na_position="last")
         )
-        st.dataframe(yearly.round(3), use_container_width=True, hide_index=True)
+        st.dataframe(summary.round(3), use_container_width=True, hide_index=True)
 
 st.caption(
     "Alle Deltas werden heat-relativ berechnet (Zeit des Riders minus Heat-Median), "
