@@ -477,6 +477,66 @@ def apply_reference(
     return out
 
 
+def add_robust_outlier_flags_and_winsor(
+    df: pd.DataFrame,
+    reference_df: pd.DataFrame,
+    group_cols: Optional[list[str]] = None,
+) -> pd.DataFrame:
+    """Winsorize upper-tail extremes per (category, gender, segment) using Q3 + 2*IQR.
+    Keeps all rows; adds *_w and *_is_extreme columns for delta metrics.
+    """
+    out = df.copy()
+    if out.empty:
+        return out
+    if group_cols is None:
+        group_cols = ["category", "gender"]
+
+    delta_cols = [
+        "finish_delta",
+        "start_delta",
+        "t1_delta",
+        "t2_delta",
+        "t3_delta",
+        "delta_bottom_t1",
+        "delta_t1_t2",
+        "delta_t2_t3",
+        "delta_t3_finish",
+        "delta_vs_winner",
+        "delta_post_start",
+        "delta_post_t1",
+        "delta_post_t2",
+        "delta_post_t3",
+    ]
+    present_cols = [c for c in delta_cols if c in out.columns and c in reference_df.columns]
+    if not present_cols:
+        return out
+
+    ref = reference_df.copy()
+    for col in present_cols:
+        ref[col] = pd.to_numeric(ref[col], errors="coerce")
+        qstats = (
+            ref.groupby(group_cols, dropna=False)[col]
+            .agg(
+                q1=lambda s: s.quantile(0.25),
+                q3=lambda s: s.quantile(0.75),
+            )
+            .reset_index()
+        )
+        qstats["iqr"] = qstats["q3"] - qstats["q1"]
+        qstats[f"{col}_upper"] = qstats["q3"] + 2.0 * qstats["iqr"]
+        qstats = qstats[group_cols + [f"{col}_upper"]]
+        out = out.merge(qstats, on=group_cols, how="left")
+
+        raw = pd.to_numeric(out[col], errors="coerce")
+        upper = pd.to_numeric(out[f"{col}_upper"], errors="coerce")
+        is_extreme = raw.notna() & upper.notna() & (raw > upper)
+
+        out[f"{col}_is_extreme"] = is_extreme
+        out[f"{col}_w"] = np.where(is_extreme, upper, raw)
+        out.drop(columns=[f"{col}_upper"], inplace=True)
+    return out
+
+
 def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["final_rank_event"] = np.nan
@@ -706,14 +766,19 @@ if ref_label == "Event Top4 (robust)":
 st.caption(f"Aktive Delta-Referenz: {ref_caption}")
 
 base_rel = add_heat_relative_metrics(base_scope)
-runs_sel = base_rel[base_rel["rider_id"].isin(selected_ids)].copy()
-runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
-runs_sel = apply_reference(
-    runs_sel,
+base_rel_ref = apply_reference(
+    base_rel,
     ref_key,
     event_top_n=event_top_n,
     event_ko_final_only=event_ko_final_only,
     reference_source=base_rel,
+)
+runs_sel = base_rel_ref[base_rel_ref["rider_id"].isin(selected_ids)].copy()
+runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
+runs_sel = add_robust_outlier_flags_and_winsor(
+    runs_sel,
+    reference_df=base_rel_ref,
+    group_cols=["category", "gender"],
 )
 runs_sel = attach_final_rank_event(runs_sel, master_results)
 runs_sel["event_label"] = make_event_label(runs_sel)
@@ -823,15 +888,18 @@ with tabs[0]:
         help="Pro Rider und Event wird nur der beste Delta-Wert des Tages angezeigt.",
     )
     metric_map = dict(available_metrics)
+    metric_plot_map = {label: (f"{col}_w" if f"{col}_w" in plot.columns else col) for label, col in available_metrics}
+    metric_extreme_map = {label: (f"{col}_is_extreme" if f"{col}_is_extreme" in plot.columns else None) for label, col in available_metrics}
     x_axis_col = "x_label_short_best" if best_of_day_mode else "x_label_short"
 
     plot_frames = []
     for metric_label in selected_metric_labels:
-        metric_col = metric_map.get(metric_label)
-        if not metric_col:
+        metric_col_raw = metric_map.get(metric_label)
+        metric_col = metric_plot_map.get(metric_label)
+        metric_extreme_col = metric_extreme_map.get(metric_label)
+        if not metric_col_raw or not metric_col:
             continue
-        frame = plot[
-            [
+        frame_cols = [
                 "year",
                 "event_dt",
                 "event_id_dt",
@@ -864,9 +932,20 @@ with tabs[0]:
                 "rank_t2_t3_display",
                 "rank_t3_finish_display",
                 "final_rank_event_display",
-                metric_col,
+                metric_col_raw,
             ]
-        ].rename(columns={metric_col: "delta"})
+        if metric_col != metric_col_raw:
+            frame_cols.append(metric_col)
+        frame = plot[frame_cols].copy()
+        if metric_col == metric_col_raw:
+            frame = frame.rename(columns={metric_col_raw: "delta"})
+            frame["delta_raw"] = frame["delta"]
+        else:
+            frame = frame.rename(columns={metric_col_raw: "delta_raw", metric_col: "delta"})
+        if metric_extreme_col and metric_extreme_col in plot.columns:
+            frame["is_extreme"] = plot[metric_extreme_col].astype(bool)
+        else:
+            frame["is_extreme"] = False
         frame["metric"] = metric_label
         if best_of_day_mode:
             # Keep one row per rider/event/metric: the best (smallest) delta.
@@ -913,6 +992,8 @@ with tabs[0]:
             x_axis_col,
             "x_order",
             "delta",
+            "delta_raw",
+            "is_extreme",
             "event_label_full",
             "event_date_display",
             "location",
@@ -965,6 +1046,8 @@ with tabs[0]:
                     "heat_title:N",
                     alt.Tooltip("rank_display:N", title="rank"),
                     alt.Tooltip("delta:Q", title="delta_value", format=".4f"),
+                    alt.Tooltip("delta_raw:Q", title="delta_raw", format=".4f"),
+                    alt.Tooltip("is_extreme:N", title="is_extreme"),
                     "reference_type:N",
                     alt.Tooltip("rank_bottom_display:N", title="rank_bottom"),
                     alt.Tooltip("rank_t1_display:N", title="rank_t1"),
@@ -987,7 +1070,7 @@ with tabs[0]:
 
     # Summary: use Finish Delta by default; fallback to first selected metric.
     summary_label = "Finish Delta" if "Finish Delta" in selected_metric_labels else (selected_metric_labels[0] if selected_metric_labels else None)
-    summary_col = metric_map.get(summary_label) if summary_label else None
+    summary_col = metric_plot_map.get(summary_label) if summary_label else None
     summary_src = pd.DataFrame()
     if summary_col and summary_col in plot.columns:
         summary_src = plot[
@@ -999,21 +1082,23 @@ with tabs[0]:
         .agg(
             n_runs=("event_id", "count"),
             mean_metric=("delta", "mean"),
-            std_metric=("delta", "std"),
+            median_metric=("delta", "median"),
+            mad_metric=("delta", lambda s: (s - s.median()).abs().median()),
             best_metric=("delta", "min"),
         )
         .sort_values("year", ascending=False)
-    ) if not summary_src.empty else pd.DataFrame(columns=["year", "rider_short", "n_runs", "mean_metric", "std_metric", "best_metric"])
+    ) if not summary_src.empty else pd.DataFrame(columns=["year", "rider_short", "n_runs", "mean_metric", "median_metric", "mad_metric", "best_metric"])
 
     summary_name = summary_label if summary_label else "metric"
     summary = summary.rename(
         columns={
             "mean_metric": f"mean_{summary_name}",
-            "std_metric": f"std_{summary_name}",
+            "median_metric": f"median_{summary_name}",
+            "mad_metric": f"mad_{summary_name}",
             "best_metric": f"best_{summary_name}",
         }
     )
-    for c in [f"mean_{summary_name}", f"std_{summary_name}", f"best_{summary_name}"]:
+    for c in [f"mean_{summary_name}", f"median_{summary_name}", f"mad_{summary_name}", f"best_{summary_name}"]:
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
@@ -1041,9 +1126,10 @@ with tabs[0]:
     for label, col in seg_candidates:
         if label not in selected_seg_labels:
             continue
-        if col not in contrib_src.columns:
+        value_col = f"{col}_w" if f"{col}_w" in contrib_src.columns else col
+        if value_col not in contrib_src.columns:
             continue
-        vals = contrib_src[col]
+        vals = pd.to_numeric(contrib_src[value_col], errors="coerce")
         if vals.notna().sum() == 0:
             continue
         seg_frames.append(contrib_src[["rider_short"]].assign(metric=label, value=vals))
