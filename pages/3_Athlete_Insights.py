@@ -995,9 +995,14 @@ with tabs[0]:
         runs_sel[["event_id", "event_dt", "location", "rider_short", "final_rank_event"]]
         .drop_duplicates(subset=["event_id", "rider_short"])
         .copy()
-        .sort_values(["event_dt", "event_id", "rider_short"], ascending=[False, False, True], na_position="last")
     )
     if not final_rank_tbl.empty:
+        final_rank_tbl["event_id_dt"] = pd.to_datetime(final_rank_tbl["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce")
+        final_rank_tbl = final_rank_tbl.sort_values(
+            ["event_id_dt", "event_dt", "event_id", "rider_short"],
+            ascending=[True, True, True, True],
+            na_position="last",
+        )
         final_rank_tbl["event_date"] = final_rank_tbl["event_dt"].dt.strftime("%Y-%m-%d")
         final_rank_tbl["final_rank_event"] = pd.to_numeric(final_rank_tbl["final_rank_event"], errors="coerce")
         final_rank_tbl["final_rank_event"] = np.where(
@@ -1026,6 +1031,10 @@ with tabs[0]:
         ("PostT1Delta", "delta_post_t1"),
         ("PostT2Delta", "delta_post_t2"),
         ("PostT3Delta", "delta_post_t3"),
+        ("Split Bottom->T1 Delta", "delta_bottom_t1"),
+        ("Split T1->T2 Delta", "delta_t1_t2"),
+        ("Split T2->T3 Delta", "delta_t2_t3"),
+        ("Split T3->Finish Delta", "delta_t3_finish"),
     ]
     available_seg_labels = [label for label, col in seg_candidates if col in contrib_src.columns and contrib_src[col].notna().any()]
     selected_seg_labels = st.multiselect(
