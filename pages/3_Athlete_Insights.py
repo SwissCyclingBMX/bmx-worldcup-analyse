@@ -169,6 +169,30 @@ def wc_location_clean(location: str) -> str:
     return loc
 
 
+def derive_location(display_name: str, location: str, event_type: str) -> str:
+    loc = clean_spaces(location)
+    if loc and loc.lower() != "unknown":
+        return loc
+
+    dn = clean_spaces(display_name)
+    m = re.search(r"ROUND\\s*(\\d+)\\s*-\\s*([^,]+)", dn, flags=re.IGNORECASE)
+    if m:
+        rnd = int(m.group(1))
+        place = clean_spaces(m.group(2))
+        if event_type == "WC":
+            return f"ROUND {rnd} - {place}"
+        return place
+
+    up = dn.upper()
+    if "WORLD CHAMPIONSHIP" in up:
+        return "World Championships"
+
+    parts = [clean_spaces(p) for p in dn.split("-") if clean_spaces(p)]
+    if parts:
+        return parts[-1].split(",")[0].strip()
+    return "Unknown"
+
+
 def round_sort(round_title: str, round_key) -> int:
     if pd.notna(round_key):
         try:
@@ -253,7 +277,10 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     df["event_dt"] = [parse_event_date(ed, eid) for ed, eid in zip(df["event_date"], df["event_id"])]
     df["event_id_dt"] = pd.to_datetime(df["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce")
     df["year"] = pd.to_numeric(df["event_id"].astype(str).str[:4], errors="coerce").astype("Int64")
-    df["location"] = df["location"].fillna("Unknown").astype(str).apply(clean_spaces).replace("", "Unknown")
+    df["location"] = [
+        derive_location(dn, loc, et)
+        for dn, loc, et in zip(df["display_name"], df["location"], df["event_type"])
+    ]
     df["event_short"] = [
         build_event_short(dn, loc, et)
         for dn, loc, et in zip(df["display_name"], df["location"], df["event_type"])
