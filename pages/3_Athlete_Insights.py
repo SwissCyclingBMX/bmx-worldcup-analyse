@@ -684,11 +684,11 @@ use_event_best = False
 if ref_label == "Event Top4 (robust)":
     c1, c2, c3 = st.columns(3)
     with c1:
-        event_top_n = st.selectbox("Event TopN", [4, 8], index=0, key="event_top_n")
+        event_top_n = st.selectbox("Event Top N", [4, 8], index=0, key="event_top_n")
     with c2:
         event_ko_final_only = st.toggle("Event-Referenz nur KO+Final", value=True, key="event_ref_ko_final")
     with c3:
-        use_event_best = st.toggle("Event Best (Ceiling) statt Event TopN", value=False, key="event_ref_best")
+        use_event_best = st.toggle("Event Best (Ceiling) statt Event Top N", value=False, key="event_ref_best")
 
 ref_key = "rank4"
 if ref_label == "Event Top4 (robust)":
@@ -746,6 +746,13 @@ with tabs[0]:
         dup_short,
         plot["x_base_short"] + " (" + plot["event_id"].astype(str).str[:8] + ")",
         plot["x_base_short"],
+    )
+    plot["x_base_short_best"] = plot["event_short"].fillna("Unknown")
+    dup_short_best = plot.groupby("x_base_short_best")["event_id"].transform("nunique") > 1
+    plot["x_label_short_best"] = np.where(
+        dup_short_best,
+        plot["x_base_short_best"] + " (" + plot["event_id"].astype(str).str[:8] + ")",
+        plot["x_base_short_best"],
     )
     plot["x_label_long"] = plot["event_label_full"] + " • " + plot["round_short"]
     plot["rank_num"] = pd.to_numeric(plot["rank"], errors="coerce")
@@ -809,8 +816,14 @@ with tabs[0]:
         default=default_metrics,
         key="trend_metrics",
     )
+    best_of_day_mode = st.toggle(
+        "Tagesbestwert pro Event (je Rider) anzeigen",
+        value=False,
+        key="trend_best_of_day",
+        help="Pro Rider und Event wird nur der beste Delta-Wert des Tages angezeigt.",
+    )
     metric_map = dict(available_metrics)
-    x_axis_col = "x_label_short"
+    x_axis_col = "x_label_short_best" if best_of_day_mode else "x_label_short"
 
     plot_frames = []
     for metric_label in selected_metric_labels:
@@ -827,6 +840,7 @@ with tabs[0]:
                 "location",
                 "event_date_display",
                 "event_id",
+                "rider_id",
                 "round_title",
                 "round_short",
                 "round_order",
@@ -838,6 +852,7 @@ with tabs[0]:
                 "reference_type",
                 "x_key",
                 "x_label_short",
+                "x_label_short_best",
                 "x_label_long",
                 "rank_bottom_display",
                 "rank_t1_display",
@@ -853,6 +868,16 @@ with tabs[0]:
             ]
         ].rename(columns={metric_col: "delta"})
         frame["metric"] = metric_label
+        if best_of_day_mode:
+            # Keep one row per rider/event/metric: the best (smallest) delta.
+            frame = frame.sort_values(["delta", "round_order", "heat_sort"], na_position="last")
+            frame = frame.dropna(subset=["delta"])
+            if not frame.empty:
+                idx = frame.groupby(["rider_id", "event_id", "metric"], dropna=False)["delta"].idxmin()
+                frame = frame.loc[idx].copy()
+                frame["round_short"] = "BEST"
+                frame["round_title"] = "Best of day"
+                frame["heat_title"] = "Best run in event"
         plot_frames.append(frame)
 
     plot_long = pd.concat(plot_frames, ignore_index=True) if plot_frames else pd.DataFrame()
@@ -922,7 +947,7 @@ with tabs[0]:
             .encode(
                 x=alt.X(
                     f"{x_axis_col}:N",
-                    title="Event • Runde",
+                    title="Event" if best_of_day_mode else "Event • Runde",
                     sort=x_order,
                     axis=alt.Axis(labelAngle=-55, labelLimit=280, labelOverlap=False),
                 ),
