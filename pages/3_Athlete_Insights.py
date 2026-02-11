@@ -1692,8 +1692,10 @@ with tabs[7]:
             rider_short=("rider_short", "first"),
             rider_label=("rider_label", "first"),
             event_short=("event_short", "first"),
+            event_label_full=("display_name", "first"),
             category=("category", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
             gender=("gender", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+            reached_phase=("phase", lambda s: "Final" if (s == "Final").any() else ("KO" if (s == "KO").any() else "Early")),
             event_dt=("event_dt", "first"),
             location=("location", "first"),
             year=("year", "first"),
@@ -1733,46 +1735,92 @@ with tabs[7]:
             x_order = x_order_df["x_label_short"].drop_duplicates().tolist()
             x_rank_map = {k: i for i, k in enumerate(x_order)}
             plot_df["x_order"] = plot_df["x_label_short"].map(x_rank_map)
-            plot_df["final_rank_plot"] = pd.to_numeric(plot_df["final_rank"], errors="coerce").clip(lower=1, upper=32)
+            plot_df["final_rank_num"] = pd.to_numeric(plot_df["final_rank"], errors="coerce")
+            plot_df["final_rank_plot"] = plot_df["final_rank_num"]
+            plot_df["is_overflow"] = plot_df["final_rank_num"] > 32
             plot_df["final_rank_over32_label"] = np.where(
-                pd.to_numeric(plot_df["final_rank"], errors="coerce") > 32,
-                pd.to_numeric(plot_df["final_rank"], errors="coerce").astype("Int64").astype(str),
+                plot_df["is_overflow"],
+                plot_df["final_rank_num"].astype("Int64").astype(str),
                 "",
             )
             plot_df["event_label"] = (
+                plot_df["event_label_full"].fillna(plot_df["event_short"]).fillna(plot_df["event_id"])
+            )
+            plot_df["event_date_display"] = (
                 plot_df["event_dt"].dt.strftime("%Y-%m-%d").fillna(plot_df["event_id"])
                 + " | "
                 + plot_df["location"]
                 + " | "
                 + plot_df["rider_short"]
             )
-            base = alt.Chart(plot_df).encode(
+            y_axis = alt.Y(
+                "final_rank_plot:Q",
+                title="Final Rank",
+                scale=alt.Scale(domain=[1, 32], domainMin=1, domainMax=32, reverse=True, nice=False),
+                axis=alt.Axis(values=[1, 3, 4, 8, 9, 16, 17, 32]),
+            )
+            bands = pd.DataFrame(
+                [
+                    {"zone": "1-3", "y0": 1, "y1": 3, "zone_color": "#2ca02c"},
+                    {"zone": "4-8", "y0": 4, "y1": 8, "zone_color": "#f1c40f"},
+                    {"zone": "9-16", "y0": 9, "y1": 16, "zone_color": "#e67e22"},
+                    {"zone": "17-32", "y0": 17, "y1": 32, "zone_color": "#e74c3c"},
+                ]
+            )
+            zone_layer = alt.Chart(bands).mark_rect(opacity=0.12).encode(
+                y=alt.Y("y0:Q", scale=alt.Scale(domain=[1, 32], reverse=True, nice=False), title=None),
+                y2="y1:Q",
+                color=alt.Color("zone:N", scale=alt.Scale(domain=bands["zone"].tolist(), range=bands["zone_color"].tolist()), legend=None),
+            )
+            line_df = plot_df[(plot_df["final_rank_num"] >= 1) & (plot_df["final_rank_num"] <= 32)].copy()
+            overflow_df = plot_df[plot_df["is_overflow"]].copy()
+            overflow_df["final_rank_plot"] = 32
+
+            base_line = alt.Chart(line_df).encode(
                 x=alt.X(
                     "x_label_short:N",
                     title="Event",
                     sort=x_order,
                     axis=alt.Axis(labelAngle=-55, labelLimit=280, labelOverlap=False),
                 ),
-                y=alt.Y(
-                    "final_rank_plot:Q",
-                    title="Final Rank",
-                    scale=alt.Scale(domain=[1, 32], domainMin=1, domainMax=32, reverse=True, nice=False),
-                    axis=alt.Axis(values=[1, 2, 3, 8, 16, 24, 32]),
-                ),
+                y=y_axis,
                 color=alt.Color("rider_short:N", title="Rider"),
                 detail="rider_short:N",
                 order=alt.Order("x_order:Q", sort="ascending"),
-                tooltip=["event_label:N", "final_rank:Q", "category:N", "gender:N", "event_id:N"],
+                tooltip=[
+                    alt.Tooltip("event_label:N", title="Event label"),
+                    alt.Tooltip("event_date_display:N", title="Date"),
+                    alt.Tooltip("location:N", title="Location"),
+                    alt.Tooltip("rider_short:N", title="Rider"),
+                    alt.Tooltip("reached_phase:N", title="Phase"),
+                    alt.Tooltip("final_rank_num:Q", title="Final Rank"),
+                ],
             )
-            line = base.mark_line()
-            points = base.mark_point()
+
+            line = base_line.mark_line()
+            points = base_line.mark_point()
+
+            overflow_base = alt.Chart(overflow_df).encode(
+                x=alt.X("x_label_short:N", sort=x_order),
+                y=y_axis,
+                color=alt.Color("rider_short:N", title="Rider"),
+                detail="rider_short:N",
+                tooltip=[
+                    alt.Tooltip("event_label:N", title="Event label"),
+                    alt.Tooltip("event_date_display:N", title="Date"),
+                    alt.Tooltip("location:N", title="Location"),
+                    alt.Tooltip("rider_short:N", title="Rider"),
+                    alt.Tooltip("reached_phase:N", title="Phase"),
+                    alt.Tooltip("final_rank_num:Q", title="Final Rank"),
+                ],
+            )
+            overflow_points = overflow_base.mark_point(shape="triangle-up", size=90, opacity=0.95)
             over32_text = (
-                base.transform_filter(alt.datum.final_rank > 32)
-                .mark_text(dy=-8, fontSize=10)
+                overflow_base.mark_text(dy=-8, fontSize=10)
                 .encode(text="final_rank_over32_label:N")
             )
             st.altair_chart(
-                (line + points + over32_text).properties(
+                (zone_layer + line + points + overflow_points + over32_text).properties(
                     height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
                 ),
                 use_container_width=True,
@@ -1783,27 +1831,29 @@ with tabs[7]:
         final_rank_tbl["event_id_dt"] = pd.to_datetime(
             final_rank_tbl["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce"
         )
+        final_rank_tbl["event_dt_sort"] = pd.to_datetime(final_rank_tbl["event_dt"], errors="coerce")
+        final_rank_tbl["event_sort"] = final_rank_tbl["event_dt_sort"].where(final_rank_tbl["event_dt_sort"].notna(), final_rank_tbl["event_id_dt"])
         final_rank_tbl = final_rank_tbl.sort_values(
-            ["event_id_dt", "event_dt", "event_id", "rider_short"],
-            ascending=[True, True, True, True],
+            ["event_sort", "rider_short"],
+            ascending=[True, True],
             na_position="last",
         )
-        final_rank_tbl["Date"] = final_rank_tbl["event_dt"].dt.strftime("%Y-%m-%d")
+        final_rank_tbl["Date"] = final_rank_tbl["event_sort"].dt.strftime("%Y-%m-%d")
         final_rank_tbl["Final Rank"] = pd.to_numeric(final_rank_tbl["final_rank"], errors="coerce")
         final_rank_tbl["Final Rank"] = np.where(
             final_rank_tbl["Final Rank"].notna(),
             final_rank_tbl["Final Rank"].astype("Int64").astype(str),
             "NA",
         )
+        final_rank_tbl["Event Label"] = final_rank_tbl["event_label_full"].fillna(final_rank_tbl["event_short"]).fillna("Unknown")
         final_rank_tbl = final_rank_tbl.rename(
             columns={
-                "event_id": "Event",
                 "location": "Location",
                 "rider_short": "Rider",
             }
         )
         st.dataframe(
-            final_rank_tbl[["Date", "Event", "Location", "Rider", "Final Rank"]],
+            final_rank_tbl[["Date", "Event Label", "Location", "Rider", "Final Rank"]],
             use_container_width=True,
             hide_index=True,
         )
@@ -1814,11 +1864,16 @@ with tabs[7]:
             .agg(
                 n_events=("event_id", "nunique"),
                 avg_final_rank=("final_rank", "mean"),
-                finals_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 8).sum())),
+                median_final_rank=("final_rank", "median"),
+                best_final_rank=("final_rank", "min"),
+                worst_final_rank=("final_rank", "max"),
+                finals_count=("reached_phase", lambda s: int((s == "Final").sum())),
+                top8_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 8).sum())),
                 top4_count=("final_rank", lambda s: int((pd.to_numeric(s, errors="coerce") <= 4).sum())),
                 dnq_count=("final_rank", lambda s: int(pd.to_numeric(s, errors="coerce").isna().sum())),
+                variability_final_rank=("final_rank", lambda s: (pd.to_numeric(s, errors="coerce") - pd.to_numeric(s, errors="coerce").median()).abs().median()),
             )
-            .sort_values("avg_final_rank", ascending=True, na_position="last")
+            .sort_values("rider_short", ascending=True, na_position="last")
         )
         st.dataframe(summary.round(3), use_container_width=True, hide_index=True)
 
