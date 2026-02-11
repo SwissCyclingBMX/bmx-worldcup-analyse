@@ -501,7 +501,7 @@ with tabs[0]:
     st.markdown("**Segment Contribution**")
     contrib_src = runs_sel.copy()
     seg_candidates = [
-        ("StartDelta", "start_delta"),
+        ("BottomDelta", "start_delta"),
         ("PostStartDelta", "delta_post_start"),
         ("PostT1Delta", "delta_post_t1"),
         ("PostT2Delta", "delta_post_t2"),
@@ -518,18 +518,49 @@ with tabs[0]:
     contrib_long = pd.concat(seg_frames, ignore_index=True).dropna(subset=["value"]) if seg_frames else pd.DataFrame()
     if not contrib_long.empty:
         contrib_agg = contrib_long.groupby(["rider_short", "metric"], as_index=False).agg(mean_value=("value", "mean"))
-        cbar = (
-            alt.Chart(contrib_agg)
-            .mark_bar()
-            .encode(
-                x=alt.X("metric:N", title="Metrik"),
-                y=alt.Y("mean_value:Q", title="Mean Delta (s)"),
-                color=alt.Color("rider_short:N", title="Rider"),
-                tooltip=["rider_short:N", "metric:N", "mean_value:Q"],
+        # Share of total loss (informative): positive deltas only.
+        contrib_agg["loss_pos"] = contrib_agg["mean_value"].clip(lower=0)
+        denom = contrib_agg.groupby("rider_short")["loss_pos"].transform("sum")
+        contrib_agg["loss_share_pct"] = np.where(denom > 0, (contrib_agg["loss_pos"] / denom) * 100.0, np.nan)
+
+        bottom_df = contrib_agg[contrib_agg["metric"] == "BottomDelta"].copy()
+        other_df = contrib_agg[contrib_agg["metric"] != "BottomDelta"].copy()
+
+        if not bottom_df.empty:
+            st.markdown("Bottom Delta")
+            cbar_bottom = (
+                alt.Chart(bottom_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("metric:N", title="Metrik"),
+                    y=alt.Y("mean_value:Q", title="Mean Delta (s)"),
+                    color=alt.Color("rider_short:N", title="Rider"),
+                    tooltip=["rider_short:N", "metric:N", "mean_value:Q", alt.Tooltip("loss_share_pct:Q", title="Loss Share %", format=".1f")],
+                )
+                .properties(height=180)
             )
-            .properties(height=300)
-        )
-        st.altair_chart(cbar, use_container_width=True)
+            st.altair_chart(cbar_bottom, use_container_width=True)
+
+        if not other_df.empty:
+            st.markdown("Andere Segmente")
+            cbar_other = (
+                alt.Chart(other_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("metric:N", title="Metrik"),
+                    y=alt.Y("mean_value:Q", title="Mean Delta (s)"),
+                    color=alt.Color("rider_short:N", title="Rider"),
+                    tooltip=["rider_short:N", "metric:N", "mean_value:Q", alt.Tooltip("loss_share_pct:Q", title="Loss Share %", format=".1f")],
+                )
+                .properties(height=280)
+            )
+            st.altair_chart(cbar_other, use_container_width=True)
+
+        table = contrib_agg[["rider_short", "metric", "mean_value", "loss_share_pct"]].copy()
+        table = table.rename(columns={"rider_short": "Rider", "metric": "Segment", "mean_value": "Delta (s)", "loss_share_pct": "Loss Share %"})
+        table["Delta (s)"] = pd.to_numeric(table["Delta (s)"], errors="coerce").round(4)
+        table["Loss Share %"] = pd.to_numeric(table["Loss Share %"], errors="coerce").round(1)
+        st.dataframe(table, use_container_width=True, hide_index=True)
         st.caption("Vorzeichen: positiv = langsamer als Referenz, negativ = schneller als Referenz.")
 
     st.markdown("**Start Delta vs Finish Delta**")
