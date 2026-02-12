@@ -1994,7 +1994,7 @@ with tabs[0]:
                         polar=dict(
                             domain=dict(x=[0.08, 0.92], y=[0.06, 0.98]),
                             radialaxis=dict(
-                                autorange="reversed",
+                                autorange=False,
                                 range=[fixed_radar_max_rank, 1],
                                 tickmode="array",
                                 tickvals=ring_vals,
