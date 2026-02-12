@@ -1661,13 +1661,20 @@ with tabs[0]:
                 st.info("Kein BottomDelta fuer aktuelle Filter.")
         with c_right:
             if not other_peak.empty:
+                other_peak_plot = other_peak.copy()
+                # Show rider bars side-by-side (not stacked). If both profiles are shown,
+                # include profile in the offset key to avoid overlap.
+                if show_overall_median:
+                    other_peak_plot["offset_key"] = other_peak_plot["Rider"] + " | " + other_peak_plot["Profile"]
+                else:
+                    other_peak_plot["offset_key"] = other_peak_plot["Rider"]
                 c_other = (
-                    alt.Chart(other_peak)
+                    alt.Chart(other_peak_plot)
                     .mark_bar()
                     .encode(
                         x=alt.X("Segment:N", sort=[x for x in selected_seg_labels if x != "BottomDelta"]),
-                        xOffset=alt.XOffset("Profile:N"),
-                        y=alt.Y("Delta (s):Q", title="Delta (s)"),
+                        xOffset=alt.XOffset("offset_key:N", title=None),
+                        y=alt.Y("Delta (s):Q", title="Delta (s)", stack=None),
                         color=rider_color,
                         tooltip=tt,
                     )
