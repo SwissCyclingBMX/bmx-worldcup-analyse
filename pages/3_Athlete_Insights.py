@@ -8,6 +8,7 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 
 DB_PATH = "bmx.db"
@@ -1645,9 +1646,6 @@ with tabs[0]:
         radar_df = radar_df.dropna(subset=["Segment Rank", "Field Size"])
         if not radar_df.empty:
             seg_order = [x for x in selected_seg_labels if x in radar_df["Segment"].unique().tolist()]
-            seg_idx_map = {s: i for i, s in enumerate(seg_order)}
-            radar_df["seg_idx"] = radar_df["Segment"].map(seg_idx_map)
-            radar_df = radar_df.dropna(subset=["seg_idx"])
             seg_counts = radar_df.groupby("Rider")["Segment"].nunique()
             riders_ok = seg_counts[seg_counts >= 2].index.tolist()
             hidden = sorted(set(radar_df["Rider"]) - set(riders_ok))
@@ -1656,53 +1654,70 @@ with tabs[0]:
             radar_df = radar_df[radar_df["Rider"].isin(riders_ok)].copy()
             max_rank = int(pd.to_numeric(radar_df["Field Size"], errors="coerce").max()) if not radar_df.empty else 0
             if not radar_df.empty and max_rank > 0 and len(seg_order) >= 2:
-                radar_lines = []
+                fig = go.Figure()
                 for rider, g in radar_df.groupby("Rider", dropna=False):
-                    gs = g.sort_values("seg_idx").copy()
-                    if gs.empty:
-                        continue
-                    first = gs.iloc[[0]].copy()
-                    first["seg_idx"] = float(len(seg_order))
-                    radar_lines.append(pd.concat([gs, first], ignore_index=True))
-                radar_line_df = pd.concat(radar_lines, ignore_index=True) if radar_lines else pd.DataFrame()
-                theta_scale = alt.Scale(domain=[0, max(1, len(seg_order))], range=[0, 2 * np.pi], nice=False)
-                line = (
-                    alt.Chart(radar_line_df)
-                    .mark_line(opacity=0.85)
-                    .encode(
-                        theta=alt.Theta("seg_idx:Q", scale=theta_scale, stack=False),
-                        radius=alt.Radius(
-                            "Segment Rank:Q",
-                            scale=alt.Scale(domain=[0.5, max_rank + 0.5], nice=False),
-                        ),
-                        color=alt.Color("Rider:N", title="Rider"),
-                        detail="Rider:N",
+                    gm = g.set_index("Segment")
+                    r_vals = []
+                    custom = []
+                    for seg in seg_order:
+                        if seg in gm.index:
+                            row = gm.loc[seg]
+                            if isinstance(row, pd.DataFrame):
+                                row = row.iloc[0]
+                            r_vals.append(float(row["Segment Rank"]))
+                            custom.append(
+                                [
+                                    row.get("Segment Rank", np.nan),
+                                    row.get("Field Size", np.nan),
+                                    row.get("Delta (s)", np.nan),
+                                    row.get("Delta (% ref)", np.nan),
+                                    row.get("Runs Used (n)", np.nan),
+                                    row.get("Reference Mode", ""),
+                                ]
+                            )
+                        else:
+                            r_vals.append(np.nan)
+                            custom.append([np.nan, np.nan, np.nan, np.nan, np.nan, ""])
+                    theta_vals = seg_order.copy()
+                    r_plot = r_vals + [r_vals[0]]
+                    theta_plot = theta_vals + [theta_vals[0]]
+                    custom_plot = custom + [custom[0]]
+                    fig.add_trace(
+                        go.Scatterpolar(
+                            r=r_plot,
+                            theta=theta_plot,
+                            mode="lines+markers",
+                            name=str(rider),
+                            customdata=custom_plot,
+                            hovertemplate=(
+                                "Rider: %{fullData.name}<br>"
+                                "Segment: %{theta}<br>"
+                                "Segment Rank: %{customdata[0]:.0f}<br>"
+                                "Field Size: %{customdata[1]:.0f}<br>"
+                                "Delta (s): %{customdata[2]:.4f}<br>"
+                                "Delta (% ref): %{customdata[3]:.2f}<br>"
+                                "Runs Used (n): %{customdata[4]:.0f}<br>"
+                                "Reference Mode: %{customdata[5]}<extra></extra>"
+                            ),
+                        )
                     )
-                )
-                points = (
-                    alt.Chart(radar_df)
-                    .mark_point(size=55)
-                    .encode(
-                        theta=alt.Theta("seg_idx:Q", scale=theta_scale, stack=False),
-                        radius=alt.Radius(
-                            "Segment Rank:Q",
-                            scale=alt.Scale(domain=[0.5, max_rank + 0.5], nice=False),
+                ring_vals = [v for v in [1, 4, 8, 16, 32] if v <= max_rank]
+                fig.update_layout(
+                    height=420,
+                    showlegend=True,
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    polar=dict(
+                        radialaxis=dict(
+                            autorange="reversed",
+                            range=[max_rank + 0.5, 0.5],
+                            tickmode="array" if ring_vals else "auto",
+                            tickvals=ring_vals if ring_vals else None,
+                            title="Segment Rank (1=best)",
                         ),
-                        color=alt.Color("Rider:N", title="Rider"),
-                        detail="Rider:N",
-                        tooltip=[
-                            alt.Tooltip("Rider:N"),
-                            alt.Tooltip("Segment:N"),
-                            alt.Tooltip("Segment Rank:Q", format=".0f"),
-                            alt.Tooltip("Field Size:Q", format=".0f"),
-                            alt.Tooltip("Delta (s):Q", format=".4f"),
-                            alt.Tooltip("Delta (% ref):Q", format=".2f"),
-                            alt.Tooltip("Runs Used (n):Q", format=".0f"),
-                            alt.Tooltip("Reference Mode:N"),
-                        ],
-                    )
+                        angularaxis=dict(categoryorder="array", categoryarray=seg_order),
+                    ),
                 )
-                st.altair_chart((line + points).properties(height=360), use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
                 ring_vals = [str(v) for v in [4, 8, 16, 32] if v <= max_rank]
                 st.caption(
                     "Radar: Segment Rank (1=best, weiter aussen = hoeherer Rank). "
