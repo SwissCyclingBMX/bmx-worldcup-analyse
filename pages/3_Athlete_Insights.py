@@ -1299,6 +1299,12 @@ with tabs[0]:
         key="peak_seg_per_location",
         help="Wenn aktiv: pro Location wird zuerst nur der beste Run genommen, dann der Peak daraus berechnet.",
     )
+    show_delta_vs_rank2 = st.toggle(
+        "Delta vs Rank 2 anzeigen",
+        value=(ref_key in {"winner", "event_best"}),
+        key="peak_seg_rank2_delta",
+        help="Zeigt Delta zur zweitschnellsten Zeit (statt zur aktiven Referenz), damit Spitzenleistungen als negative Werte sichtbar werden.",
+    )
     show_overall_median = st.toggle(
         "Show Overall Median (Reality Check)",
         value=False,
@@ -1336,6 +1342,7 @@ with tabs[0]:
             "round_title",
             "event_dt",
             "event_id",
+            "group_id",
             dcol,
             dcol_raw,
             tcol,
@@ -1361,8 +1368,30 @@ with tabs[0]:
         seg_df["delta_raw"] = pd.to_numeric(seg_df["delta_raw"], errors="coerce")
         seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
         seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
+        seg_df["rank2_ref_heat"] = seg_df.groupby(
+            ["event_id", "group_id", "heat_id", "round_sort"], dropna=False
+        )["segment_time"].transform(
+            lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
+        )
+        seg_df["rank2_ref_event"] = seg_df.groupby(
+            ["event_id", "group_id"], dropna=False
+        )["segment_time"].transform(
+            lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
+        )
+        if show_delta_vs_rank2:
+            if ref_key in {"winner", "rank4"}:
+                seg_df["ref_time_display"] = seg_df["rank2_ref_heat"]
+                seg_df["ref_display_type"] = "Rank 2 (Heat)"
+            else:
+                seg_df["ref_time_display"] = seg_df["rank2_ref_event"]
+                seg_df["ref_display_type"] = "Rank 2 (Event)"
+            seg_df["delta_display"] = seg_df["segment_time"] - seg_df["ref_time_display"]
+        else:
+            seg_df["ref_time_display"] = seg_df["reference_time"]
+            seg_df["ref_display_type"] = "Aktive Referenz"
+            seg_df["delta_display"] = seg_df["delta_value"]
         seg_df["is_valid_peak_row"] = (
-            seg_df["delta_value"].notna() & seg_df["segment_time"].notna() & seg_df["reference_time"].notna()
+            seg_df["delta_display"].notna() & seg_df["segment_time"].notna() & seg_df["ref_time_display"].notna()
         )
         cov = (
             seg_df.groupby("rider_short", as_index=False)
@@ -1373,7 +1402,7 @@ with tabs[0]:
         seg_df = seg_df[seg_df["is_valid_peak_row"]].copy()
         if seg_df.empty:
             continue
-        seg_df = seg_df.sort_values(["delta_value", "event_dt", "event_id", "round_sort", "heat_id"], na_position="last")
+        seg_df = seg_df.sort_values(["delta_display", "event_dt", "event_id", "round_sort", "heat_id"], na_position="last")
 
         for rider, g in seg_df.groupby("rider_short", dropna=False):
             g_all = g.copy()
@@ -1381,13 +1410,13 @@ with tabs[0]:
             if g_peak_base.empty:
                 continue
             k = _take_n(len(g_peak_base), peak_mode)
-            peak_sel = g_peak_base.nsmallest(k, "delta_value")
+            peak_sel = g_peak_base.nsmallest(k, "delta_display")
             if peak_sel.empty:
                 continue
 
-            peak_delta = float(peak_sel["delta_value"].median())
+            peak_delta = float(peak_sel["delta_display"].median())
             peak_time = float(peak_sel["segment_time"].median())
-            peak_ref = float(peak_sel["reference_time"].median())
+            peak_ref = float(peak_sel["ref_time_display"].median())
             peak_pct = (peak_delta / peak_ref * 100.0) if pd.notna(peak_ref) and peak_ref != 0 else np.nan
             peak_runs_text = " | ".join(
                 [
@@ -1410,15 +1439,16 @@ with tabs[0]:
                     "Delta (% ref)": peak_pct,
                     "Rider Segment Time (s)": peak_time,
                     "Reference Segment Time (s)": peak_ref,
+                    "Reference Mode": peak_sel["ref_display_type"].iloc[0],
                     "Runs Used (n)": int(len(peak_sel)),
                     "Peak Runs": peak_runs_text,
                 }
             )
 
             if show_overall_median:
-                ov_delta = float(g_all["delta_value"].median())
+                ov_delta = float(g_all["delta_display"].median())
                 ov_time = float(g_all["segment_time"].median())
-                ov_ref = float(g_all["reference_time"].median())
+                ov_ref = float(g_all["ref_time_display"].median())
                 ov_pct = (ov_delta / ov_ref * 100.0) if pd.notna(ov_ref) and ov_ref != 0 else np.nan
                 peak_rows.append(
                     {
@@ -1429,6 +1459,7 @@ with tabs[0]:
                         "Delta (% ref)": ov_pct,
                         "Rider Segment Time (s)": ov_time,
                         "Reference Segment Time (s)": ov_ref,
+                        "Reference Mode": g_all["ref_display_type"].iloc[0],
                         "Runs Used (n)": int(len(g_all)),
                         "Peak Runs": "",
                     }
@@ -1444,6 +1475,7 @@ with tabs[0]:
             alt.Tooltip("Delta (% ref):Q", format=".2f"),
             alt.Tooltip("Rider Segment Time (s):Q", format=".4f"),
             alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
+            alt.Tooltip("Reference Mode:N"),
             alt.Tooltip("Runs Used (n):Q"),
             alt.Tooltip("Peak Runs:N"),
         ]
@@ -1453,13 +1485,17 @@ with tabs[0]:
         c_left, c_right = st.columns([1, 4])
         with c_left:
             if not bottom_peak.empty:
+                bmin = float(pd.to_numeric(bottom_peak["Delta (s)"], errors="coerce").min())
+                bmax = float(pd.to_numeric(bottom_peak["Delta (s)"], errors="coerce").max())
+                by_min = min(-0.05, bmin - 0.01)
+                by_max = max(0.2, bmax + 0.01)
                 c_bottom = (
                     alt.Chart(bottom_peak)
                     .mark_bar()
                     .encode(
                         x=alt.X("Rider:N", title="Rider"),
                         xOffset=alt.XOffset("Profile:N"),
-                        y=alt.Y("Delta (s):Q", title="Bottom Delta (s)", scale=alt.Scale(domain=[0, 0.2], nice=False)),
+                        y=alt.Y("Delta (s):Q", title="Bottom Delta (s)", scale=alt.Scale(domain=[by_min, by_max], nice=False)),
                         color=alt.Color("Rider:N", title="Rider"),
                         tooltip=tt,
                     )
