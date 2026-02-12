@@ -1565,7 +1565,6 @@ with tabs[0]:
                 st.caption("Radar blendet Rider mit <2 verfuegbaren Segmenten aus: " + ", ".join(hidden))
             radar_df = radar_df[radar_df["Rider"].isin(riders_ok)].copy()
             max_rank = int(pd.to_numeric(radar_df["Field Size"], errors="coerce").max()) if not radar_df.empty else 0
-            ring_vals = [v for v in [1, 4, 8, 16, 32] if v <= max_rank]
             if not radar_df.empty and max_rank > 0:
                 radar = (
                     alt.Chart(radar_df)
@@ -1575,7 +1574,6 @@ with tabs[0]:
                         radius=alt.Radius(
                             "Segment Rank:Q",
                             scale=alt.Scale(domain=[0.5, max_rank + 0.5], nice=False),
-                            axis=alt.Axis(title="Segment Rank (1=best)", values=ring_vals if ring_vals else None),
                         ),
                         color=alt.Color("Rider:N", title="Rider"),
                         detail="Rider:N",
@@ -1593,6 +1591,7 @@ with tabs[0]:
                     .properties(height=360)
                 )
                 st.altair_chart(radar, use_container_width=True)
+                st.caption("Radar: Segment Rank (1=best, weiter aussen = hoeherer Rank).")
             else:
                 st.info("Nicht genug Daten fuer Peak Segment Radar.")
         else:
