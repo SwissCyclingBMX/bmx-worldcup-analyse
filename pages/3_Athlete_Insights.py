@@ -2350,21 +2350,21 @@ with tabs[0]:
                                 tbl = tbl.rename(
                                     columns={
                                         "Segment Short": "Segment",
-                                        "Segment Rank": "Segment\nRank",
-                                        "Field Size": "Field\nSize",
-                                        "Rank %": "Rank\n%",
+                                        "Segment Rank": "Rank",
+                                        "Field Size": "Field",
+                                        "Rank %": "Rank %",
                                         "Delta (s)": "Delta\n(s)",
                                         "Delta (% ref)": "Delta\n(% ref)",
-                                        "Rider Segment Time (s)": "Rider Segment\nTime (s)",
-                                        "Runs Used (n)": "Runs Used\n(n)",
+                                        "Rider Segment Time (s)": "Rider Time\n(s)",
+                                        "Runs Used (n)": "Runs",
                                         "Rounds": "Round(s)",
                                     }
                                 )
                                 tbl = base_segments.merge(tbl, on="Segment", how="left")
-                                tbl["Segment\nRank"] = tbl["Segment\nRank"].apply(format_rank_value)
-                                for c in ["Field\nSize", "Runs Used\n(n)"]:
+                                tbl["Rank"] = tbl["Rank"].apply(format_rank_value)
+                                for c in ["Field", "Runs"]:
                                     tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
-                                for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nTime (s)"]:
+                                for c in ["Rank %", "Delta\n(s)", "Delta\n(% ref)", "Rider Time\n(s)"]:
                                     tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(
                                     cellText=tbl.values,
@@ -2390,10 +2390,15 @@ with tabs[0]:
                                 ]
                                 for c in num_cols:
                                     ov_all[c] = pd.to_numeric(ov_all[c], errors="coerce")
-                                grp_cols = ["Rider", "Segment", "Segment Short", "Reference Mode"]
+                                grp_cols = ["Rider", "Segment", "Segment Short"]
                                 ov = ov_all.groupby(grp_cols, dropna=False)[
                                     ["Segment Rank", "Field Size", "Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)"]
                                 ].mean(numeric_only=True).reset_index()
+                                ov_ref_mode = (
+                                    ov_all.groupby(grp_cols, dropna=False)["Reference Mode"]
+                                    .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else clean_spaces(str(s.iloc[0])) if len(s) else "")
+                                    .reset_index(name="Reference Mode")
+                                )
                                 ov_runs = (
                                     ov_all.groupby(grp_cols, dropna=False)["Runs Used (n)"]
                                     .sum(min_count=1)
@@ -2415,7 +2420,8 @@ with tabs[0]:
                                     .reset_index(name="Locations Used (n)")
                                 )
                                 ov = (
-                                    ov.merge(ov_runs, on=grp_cols, how="left")
+                                    ov.merge(ov_ref_mode, on=grp_cols, how="left")
+                                    .merge(ov_runs, on=grp_cols, how="left")
                                     .merge(ov_var, on=grp_cols, how="left")
                                     .merge(ev_used, on=grp_cols, how="left")
                                     .merge(loc_used, on=grp_cols, how="left")
@@ -2451,21 +2457,21 @@ with tabs[0]:
                                 ov_tbl["Segment"] = ov_tbl["Segment"].apply(segment_short_label)
                                 ov_tbl = ov_tbl.rename(
                                     columns={
-                                        "Segment Rank": "Segment\nRank",
-                                        "Field Size": "Field\nSize",
-                                        "Rank %": "Rank\n%",
+                                        "Segment Rank": "Rank",
+                                        "Field Size": "Field",
+                                        "Rank %": "Rank %",
                                         "Delta (s)": "Delta\n(s)",
                                         "Delta (% ref)": "Delta\n(% ref)",
-                                        "Rider Segment Variation (±s)": "Rider Segment\nVariation (±s)",
-                                        "Runs Used (n)": "Runs Used\n(n)",
-                                        "Locations Used (n)": "Locations Used\n(n)",
-                                        "Events Used (n)": "Events Used\n(n)",
+                                        "Rider Segment Variation (±s)": "Rider Var\n(±s)",
+                                        "Runs Used (n)": "Runs",
+                                        "Locations Used (n)": "Locs",
+                                        "Events Used (n)": "Events",
                                     }
                                 )
-                                ov_tbl["Segment\nRank"] = ov_tbl["Segment\nRank"].apply(format_rank_value)
-                                for c in ["Field\nSize", "Runs Used\n(n)", "Locations Used\n(n)", "Events Used\n(n)"]:
+                                ov_tbl["Rank"] = ov_tbl["Rank"].apply(format_rank_value)
+                                for c in ["Field", "Runs", "Locs", "Events"]:
                                     ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
-                                for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nVariation (±s)"]:
+                                for c in ["Rank %", "Delta\n(s)", "Delta\n(% ref)", "Rider Var\n(±s)"]:
                                     ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(cellText=ov_tbl.values, colLabels=ov_tbl.columns, loc="center")
                                 style_pdf_table(table, len(ov_tbl.columns))
