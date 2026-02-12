@@ -3,6 +3,8 @@ import unicodedata
 from typing import Optional
 import re
 import json
+from io import BytesIO
+from datetime import datetime
 
 import altair as alt
 import numpy as np
@@ -12,6 +14,12 @@ try:
     import plotly.graph_objects as go
 except ImportError:
     go = None
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+except ImportError:
+    plt = None
+    PdfPages = None
 
 
 DB_PATH = "bmx.db"
@@ -263,6 +271,26 @@ def round_short_label(round_title: str) -> str:
     if "round 1" in t or "moto" in t or "seeding" in t:
         return "R1"
     return "R1"
+
+
+def segment_short_label(segment: str) -> str:
+    m = {
+        "BottomDelta": "Bottom",
+        "T1Delta": "T1",
+        "T2Delta": "T2",
+        "T3Delta": "T3",
+        "Bottom->T1Delta": "B->T1",
+        "T1->T2Delta": "T1->T2",
+        "T2->T3Delta": "T2->T3",
+        "T3->FinishDelta": "T3->F",
+        "FinishDelta": "Finish",
+    }
+    return m.get(str(segment), str(segment))
+
+
+def safe_float(v):
+    x = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+    return float(x) if pd.notna(x) else np.nan
 
 
 def bin_pos(pos: float) -> str:
@@ -1332,14 +1360,11 @@ with tabs[0]:
 
     def _pick_peak_rows(g_in: pd.DataFrame) -> pd.DataFrame:
         g_base = g_in.copy()
-        # "Best Run" is defined as best segment per event, then median across events.
-        if peak_mode == "Best Run":
-            return (
-                g_base.sort_values(["delta_display", "round_sort", "heat_id"], na_position="last")
-                .drop_duplicates(subset=["event_id"], keep="first")
-                .copy()
-            )
         g_peak_base = g_base.drop_duplicates(subset=["location"], keep="first") if peak_per_location else g_base
+        if peak_mode == "Best Run":
+            if peak_per_location:
+                return g_peak_base.copy()
+            return g_peak_base.nsmallest(1, "delta_display").copy()
         if g_peak_base.empty:
             return g_peak_base
         k = _take_n(len(g_peak_base), peak_mode)
@@ -1658,17 +1683,8 @@ with tabs[0]:
         radar_df["Field Size"] = pd.to_numeric(radar_df["Field Size"], errors="coerce")
         radar_df = radar_df.dropna(subset=["Segment Rank", "Field Size"])
         if not radar_df.empty:
-            seg_label_short = {
-                "BottomDelta": "Bottom",
-                "T1Delta": "T1",
-                "Bottom->T1Delta": "B->T1",
-                "T1->T2Delta": "T1->T2",
-                "T2->T3Delta": "T2->T3",
-                "T3->FinishDelta": "T3->F",
-                "FinishDelta": "Finish",
-            }
             seg_order = [x for x in selected_seg_labels if x in radar_df["Segment"].unique().tolist()]
-            radar_df["Segment Short"] = radar_df["Segment"].map(seg_label_short).fillna(radar_df["Segment"])
+            radar_df["Segment Short"] = radar_df["Segment"].apply(segment_short_label)
             seg_counts = radar_df.groupby("Rider")["Segment"].nunique()
             riders_ok = seg_counts[seg_counts >= 2].index.tolist()
             hidden = sorted(set(radar_df["Rider"]) - set(riders_ok))
@@ -1686,10 +1702,10 @@ with tabs[0]:
                 radar_df = radar_df[radar_df["Rider"].isin(keep_riders)].copy()
             max_rank = int(pd.to_numeric(radar_df["Field Size"], errors="coerce").max()) if not radar_df.empty else 0
             if not radar_df.empty and max_rank > 0 and len(seg_order) >= 2:
-                seg_order_short = [seg_label_short.get(x, x) for x in seg_order]
+                seg_order_short = [segment_short_label(x) for x in seg_order]
                 radar_df["Rank Top %"] = np.where(
                     radar_df["Field Size"] > 0,
-                    (1.0 - ((radar_df["Segment Rank"] - 1.0) / radar_df["Field Size"])) * 100.0,
+                    (radar_df["Segment Rank"] / radar_df["Field Size"]) * 100.0,
                     np.nan,
                 )
                 if go is None:
@@ -1702,7 +1718,7 @@ with tabs[0]:
                             y=alt.Y(
                                 "Segment Rank:Q",
                                 title="Segment Rank (1=best)",
-                                scale=alt.Scale(domain=[1, max_rank], reverse=True),
+                                scale=alt.Scale(domain=[1, max_rank], reverse=False),
                             ),
                             color=alt.Color("Rider:N", title="Rider"),
                             detail="Rider:N",
@@ -1710,8 +1726,8 @@ with tabs[0]:
                                 alt.Tooltip("Rider:N"),
                                 alt.Tooltip("Segment Short:N", title="Segment"),
                                 alt.Tooltip("Segment Rank:Q", title="Segment Rank", format=".0f"),
-                                alt.Tooltip("Field Size:Q", format=".0f"),
-                                alt.Tooltip("Rank Top %:Q", format=".1f"),
+                                alt.Tooltip("Field Size:Q", title="Field Size", format=".0f"),
+                                alt.Tooltip("Rank Top %:Q", title="Rank %", format=".1f"),
                                 alt.Tooltip("Delta (s):Q", format=".4f"),
                                 alt.Tooltip("Runs Used (n):Q", format=".0f"),
                                 alt.Tooltip("Reference Mode:N"),
@@ -1762,40 +1778,287 @@ with tabs[0]:
                                     "Rider: %{fullData.name}<br>"
                                     "Segment: %{theta}<br>"
                                     "Segment Rank: %{customdata[0]:.0f} / %{customdata[1]:.0f}<br>"
-                                    "Rank %% (Top): %{customdata[2]:.1f}%<br>"
+                                    "Rank %%: %{customdata[2]:.1f}%<br>"
                                     "Delta (s): %{customdata[3]:.4f}<br>"
                                     "Runs Used (n): %{customdata[4]:.0f}<br>"
                                     "Reference Mode: %{customdata[5]}<extra></extra>"
                                 ),
                             )
                         )
-                    ring_vals = [v for v in [1, 4, 8, 16, 32] if v <= max_rank]
+                    ring_vals = [v for v in [1, 8, 16] if v <= max_rank]
                     fig.update_layout(
-                        height=560,
+                        height=620,
                         showlegend=True,
-                        margin=dict(l=10, r=10, t=10, b=10),
-                        legend=dict(orientation="h", y=-0.12, x=0.5, xanchor="center", yanchor="top"),
+                        margin=dict(l=20, r=20, t=10, b=40),
+                        legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center", yanchor="top"),
                         polar=dict(
-                            domain=dict(x=[0.08, 0.92], y=[0.06, 0.98]),
+                            domain=dict(x=[0.02, 0.98], y=[0.06, 0.98]),
                             radialaxis=dict(
-                                autorange="reversed",
-                                range=[max_rank + 0.5, 0.5],
+                                autorange=False,
+                                range=[1, max_rank + 0.5],
                                 tickmode="array" if ring_vals else "auto",
                                 tickvals=ring_vals if ring_vals else None,
+                                ticktext=[str(v) for v in ring_vals] if ring_vals else None,
                             ),
                             angularaxis=dict(categoryorder="array", categoryarray=seg_order_short),
                         ),
                     )
                     st.plotly_chart(fig, use_container_width=True)
-                    ring_vals = [str(v) for v in [4, 8, 16, 32] if v <= max_rank]
+                    ring_vals = [str(v) for v in [1, 8, 16] if v <= max_rank]
                     st.caption(
-                        "Segment Rank (1=best). Further out = stronger segment. "
+                        "Segment Rank (1=best). Innen = besser, aussen = schlechter. "
                         + ("Referenzringe: " + ", ".join(ring_vals) if ring_vals else "")
                     )
             else:
                 st.info("Nicht genug Daten fuer Peak Segment Radar.")
         else:
             st.info("Keine Peak-Ranks verfuegbar fuer Radar.")
+
+        # PDF export for Peak Segment Radar report (per-event + overall).
+        if plt is None or PdfPages is None:
+            st.caption("PDF-Export verfuegbar nach Installation von `matplotlib`.")
+        else:
+            def _compute_event_peak_df(event_slice: pd.DataFrame, rank_pool_slice: pd.DataFrame) -> pd.DataFrame:
+                rows = []
+                for sd in available_defs:
+                    if sd["label"] not in selected_seg_labels:
+                        continue
+                    dcol = sd["delta_use_col"]
+                    dcol_raw = sd["delta_col"]
+                    tcol = sd["time_col"]
+                    rcol = sd["ref_col"]
+                    # Selected riders view
+                    cols = [
+                        "rider_short", "category", "gender", "location", "display_name",
+                        "round_short", "round_title", "heat_title", "event_id", "event_dt",
+                        "group_id", "round_sort", "heat_id", dcol, dcol_raw, tcol, rcol,
+                    ]
+                    cols = list(dict.fromkeys(cols))
+                    s = event_slice[cols].copy()
+                    rnm = {tcol: "segment_time", rcol: "reference_time"}
+                    if dcol == dcol_raw:
+                        rnm[dcol] = "delta_value"
+                        s = s.rename(columns=rnm)
+                        s["delta_raw"] = s["delta_value"]
+                    else:
+                        rnm[dcol] = "delta_value"
+                        rnm[dcol_raw] = "delta_raw"
+                        s = s.rename(columns=rnm)
+                    s["delta_value"] = pd.to_numeric(s["delta_value"], errors="coerce")
+                    s["segment_time"] = pd.to_numeric(s["segment_time"], errors="coerce")
+                    s["reference_time"] = pd.to_numeric(s["reference_time"], errors="coerce")
+                    s = s.dropna(subset=["delta_value", "segment_time", "reference_time"])
+                    if s.empty:
+                        continue
+                    s = s.sort_values(["delta_value", "round_sort", "heat_id"], na_position="last")
+
+                    # Full field rank pool for this event/segment.
+                    rp = rank_pool_slice[cols].copy()
+                    rp = rp.rename(columns=rnm)
+                    rp["delta_value"] = pd.to_numeric(rp["delta_value"], errors="coerce")
+                    rp["segment_time"] = pd.to_numeric(rp["segment_time"], errors="coerce")
+                    rp["reference_time"] = pd.to_numeric(rp["reference_time"], errors="coerce")
+                    rp = rp.dropna(subset=["delta_value", "segment_time", "reference_time"])
+                    if rp.empty:
+                        continue
+                    rp = rp.sort_values(["delta_value", "round_sort", "heat_id"], na_position="last")
+
+                    # Peak per rider in selected view.
+                    for rider, g in s.groupby("rider_short", dropna=False):
+                        gsel = _pick_peak_rows(g)
+                        if gsel.empty:
+                            continue
+                        peak_delta = float(gsel["delta_value"].median())
+                        peak_time = float(gsel["segment_time"].median())
+                        peak_ref = float(gsel["reference_time"].median())
+                        pct = (peak_delta / peak_ref * 100.0) if pd.notna(peak_ref) and peak_ref != 0 else np.nan
+                        peak_runs = " | ".join(
+                            [
+                                f"{clean_spaces(ev)} | {clean_spaces(rsh)} | {clean_spaces(hh)} | {stm:.3f}s"
+                                for ev, rsh, hh, stm in zip(
+                                    gsel["display_name"].fillna(gsel["event_id"]).astype(str),
+                                    gsel["round_short"].fillna(gsel["round_title"]).astype(str),
+                                    gsel["heat_title"].fillna("").astype(str),
+                                    gsel["segment_time"],
+                                )
+                            ]
+                        )
+
+                        # Segment rank in full field.
+                        rr = []
+                        for rid2, g2 in rp.groupby("rider_short", dropna=False):
+                            g2sel = _pick_peak_rows(g2)
+                            if g2sel.empty:
+                                continue
+                            rr.append({"Rider": rid2, "rank_base": float(g2sel["delta_value"].median())})
+                        rrdf = pd.DataFrame(rr)
+                        seg_rank = np.nan
+                        field_size = np.nan
+                        rank_pct = np.nan
+                        if not rrdf.empty:
+                            rrdf["seg_rank"] = rrdf["rank_base"].rank(method="min", ascending=True)
+                            field_size = int(rrdf["Rider"].nunique())
+                            m = rrdf[rrdf["Rider"] == rider]
+                            if not m.empty:
+                                seg_rank = float(m["seg_rank"].iloc[0])
+                                rank_pct = (seg_rank / field_size) * 100.0 if field_size > 0 else np.nan
+
+                        rows.append(
+                            {
+                                "Rider": rider,
+                                "Segment": sd["label"],
+                                "Segment Short": segment_short_label(sd["label"]),
+                                "Delta (s)": peak_delta,
+                                "Delta (% ref)": pct,
+                                "Rider Segment Time (s)": peak_time,
+                                "Reference Segment Time (s)": peak_ref,
+                                "Reference Mode": ref_caption,
+                                "Runs Used (n)": int(len(gsel)),
+                                "Peak Runs": peak_runs,
+                                "Segment Rank": seg_rank,
+                                "Field Size": field_size,
+                                "Rank %": rank_pct,
+                            }
+                        )
+                return pd.DataFrame(rows)
+
+            def _draw_radar(ax, one_rider_df: pd.DataFrame, title: str):
+                if one_rider_df.empty:
+                    return
+                d = one_rider_df.copy()
+                d["Segment Rank"] = pd.to_numeric(d["Segment Rank"], errors="coerce")
+                d = d.dropna(subset=["Segment Rank"])
+                if d.empty:
+                    return
+                d = d.sort_values("Segment", key=lambda s: s.map({k: i for i, k in enumerate(selected_seg_labels)}).fillna(999))
+                theta = np.linspace(0, 2 * np.pi, len(d), endpoint=False)
+                r = d["Segment Rank"].to_numpy(dtype=float)
+                theta = np.concatenate([theta, [theta[0]]])
+                r = np.concatenate([r, [r[0]]])
+                labels = d["Segment Short"].tolist()
+                field_max = int(pd.to_numeric(d["Field Size"], errors="coerce").max()) if d["Field Size"].notna().any() else max(16, int(np.nanmax(r)))
+                ax.plot(theta, r, linewidth=2)
+                ax.scatter(theta[:-1], r[:-1], s=20)
+                ax.set_title(title, fontsize=10, pad=18)
+                ax.set_xticks(theta[:-1])
+                ax.set_xticklabels(labels, fontsize=8)
+                ax.set_ylim(1, max(field_max, 16))
+                ax.set_yticks([x for x in [1, 8, 16] if x <= max(field_max, 16)])
+                ax.set_yticklabels([str(x) for x in [1, 8, 16] if x <= max(field_max, 16)], fontsize=7)
+                ax.set_theta_offset(np.pi / 2)
+                ax.set_theta_direction(-1)
+
+            export_disabled = radar_df.empty if "radar_df" in locals() else True
+            if st.button("Export Peak Radar PDF", disabled=export_disabled, key="export_peak_radar_pdf"):
+                if export_disabled:
+                    st.warning("Keine Radar-Daten fuer Export.")
+                else:
+                    pdf_buffer = BytesIO()
+                    rider_list = sorted(radar_df["Rider"].dropna().unique().tolist())
+                    # Event order by normalized date.
+                    event_order = (
+                        runs_sel[["event_id", "event_dt", "display_name", "location"]]
+                        .drop_duplicates("event_id")
+                        .sort_values(["event_dt", "event_id"], na_position="last")
+                    )
+                    with PdfPages(pdf_buffer) as pdf:
+                        for rider in rider_list:
+                            # Header page
+                            fig = plt.figure(figsize=(8.27, 11.69))
+                            fig.text(0.08, 0.94, f"Peak Segment Radar Report - {rider}", fontsize=14, weight="bold")
+                            fig.text(0.08, 0.90, f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", fontsize=9)
+                            fig.text(0.08, 0.87, f"Reference: {ref_caption}", fontsize=9)
+                            fig.text(0.08, 0.84, f"Peak Selection: {peak_mode} | Peak per Location: {'ON' if peak_per_location else 'OFF'}", fontsize=9)
+                            fig.text(0.08, 0.81, "Further details per event on following pages.", fontsize=9)
+                            plt.axis("off")
+                            pdf.savefig(fig, bbox_inches="tight")
+                            plt.close(fig)
+
+                            # Event pages
+                            for _, erow in event_order.iterrows():
+                                eid = erow["event_id"]
+                                eview = runs_sel[runs_sel["event_id"] == eid].copy()
+                                erank = rank_pool_src[rank_pool_src["event_id"] == eid].copy()
+                                evt_peak = _compute_event_peak_df(eview, erank)
+                                evt_peak = evt_peak[evt_peak["Rider"] == rider].copy()
+                                if evt_peak.empty:
+                                    continue
+                                fig = plt.figure(figsize=(8.27, 11.69))
+                                ax = plt.subplot(211, projection="polar")
+                                _draw_radar(ax, evt_peak, f"{clean_spaces(str(erow['display_name']))} | {clean_spaces(str(erow['location']))}")
+                                fig.text(0.08, 0.48, "Innen = besser (Rank 1).", fontsize=8)
+                                t_ax = plt.subplot(212)
+                                t_ax.axis("off")
+                                tbl = evt_peak[[
+                                    "Segment Short",
+                                    "Segment Rank",
+                                    "Field Size",
+                                    "Rank %",
+                                    "Delta (s)",
+                                    "Delta (% ref)",
+                                    "Rider Segment Time (s)",
+                                    "Reference Segment Time (s)",
+                                    "Runs Used (n)",
+                                ]].copy()
+                                for c in ["Segment Rank", "Field Size", "Runs Used (n)"]:
+                                    tbl[c] = pd.to_numeric(tbl[c], errors="coerce").astype("Int64").astype(str)
+                                for c in ["Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
+                                    tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(4)
+                                table = t_ax.table(
+                                    cellText=tbl.values,
+                                    colLabels=tbl.columns,
+                                    loc="center",
+                                )
+                                table.auto_set_font_size(False)
+                                table.set_fontsize(7)
+                                table.scale(1, 1.2)
+                                pdf.savefig(fig, bbox_inches="tight")
+                                plt.close(fig)
+
+                            # Overall page for rider
+                            ov = peak_df[(peak_df["Profile"] == "Peak") & (peak_df["Rider"] == rider)].copy()
+                            if not ov.empty:
+                                fig = plt.figure(figsize=(8.27, 11.69))
+                                ax = plt.subplot(211, projection="polar")
+                                _draw_radar(ax, ov.rename(columns={"Segment": "Segment", "Segment Rank": "Segment Rank"}), "Overall Peak Segment Radar")
+                                fig.text(0.08, 0.48, "Innen = besser (Rank 1).", fontsize=8)
+                                t_ax = plt.subplot(212)
+                                t_ax.axis("off")
+                                ov_tbl = ov[[
+                                    "Segment",
+                                    "Segment Rank",
+                                    "Field Size",
+                                    "Rank %",
+                                    "Delta (s)",
+                                    "Delta (% ref)",
+                                    "Rider Segment Time (s)",
+                                    "Reference Segment Time (s)",
+                                    "Runs Used (n)",
+                                    "Locations Used (n)",
+                                ]].copy()
+                                ov_tbl["Segment"] = ov_tbl["Segment"].apply(segment_short_label)
+                                for c in ["Segment Rank", "Field Size", "Runs Used (n)", "Locations Used (n)"]:
+                                    ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").astype("Int64").astype(str)
+                                for c in ["Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
+                                    ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(4)
+                                table = t_ax.table(cellText=ov_tbl.values, colLabels=ov_tbl.columns, loc="center")
+                                table.auto_set_font_size(False)
+                                table.set_fontsize(7)
+                                table.scale(1, 1.2)
+                                pdf.savefig(fig, bbox_inches="tight")
+                                plt.close(fig)
+                    pdf_bytes = pdf_buffer.getvalue()
+                    y_lbl = "-".join(str(y) for y in sorted(sel_years)) if sel_years else "all"
+                    c_lbl = "_".join(x.lower() for x in sel_categories) if sel_categories else "all"
+                    g_lbl = "_".join(x.lower() for x in sel_gender) if sel_gender else "all"
+                    out_name = f"PeakRadar_{c_lbl}_{g_lbl}_{y_lbl}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                    st.download_button(
+                        label="Download Peak Segment Radar PDF",
+                        data=pdf_bytes,
+                        file_name=out_name,
+                        mime="application/pdf",
+                        key="dl_peak_radar_pdf",
+                    )
 
         peak_table = peak_df.copy()
         for col in ["Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)", "Rank %"]:
@@ -2371,7 +2634,6 @@ with tabs[7]:
         )
         final_rank_tbl["Date"] = final_rank_tbl["event_sort"].dt.strftime("%Y-%m-%d")
         final_rank_tbl["Final Rank"] = pd.to_numeric(final_rank_tbl["final_rank"], errors="coerce")
-        final_rank_tbl["DNQ"] = final_rank_tbl["Final Rank"] > 32
         final_rank_tbl["Final Rank"] = np.where(
             final_rank_tbl["Final Rank"].notna(),
             final_rank_tbl["Final Rank"].astype("Int64").astype(str),
@@ -2385,7 +2647,7 @@ with tabs[7]:
             }
         )
         st.dataframe(
-            final_rank_tbl[["Date", "Event Label", "Location", "Rider", "Final Rank", "DNQ"]],
+            final_rank_tbl[["Date", "Event Label", "Location", "Rider", "Final Rank"]],
             use_container_width=True,
             hide_index=True,
         )
