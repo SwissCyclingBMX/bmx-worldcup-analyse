@@ -913,6 +913,26 @@ pool_rel = add_robust_outlier_flags_and_winsor(
 runs_sel = pool_rel[pool_rel["rider_id"].isin(selected_ids)].copy()
 runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
 runs_sel = attach_final_rank_event(runs_sel, master_results)
+ranks_pool_all = attach_final_rank_event(pool_rel.copy(), master_results)
+if not ranks_pool_all.empty:
+    rank_fb = (
+        ranks_pool_all[["rider_id", "event_id", "final_rank_event"]]
+        .dropna(subset=["final_rank_event"])
+        .drop_duplicates(subset=["rider_id", "event_id"], keep="first")
+        .rename(columns={"final_rank_event": "final_rank_event_fb"})
+    )
+    runs_sel = runs_sel.merge(rank_fb, on=["rider_id", "event_id"], how="left")
+    runs_sel["final_rank_event"] = pd.to_numeric(runs_sel["final_rank_event"], errors="coerce")
+    runs_sel["final_rank_event_fb"] = pd.to_numeric(runs_sel["final_rank_event_fb"], errors="coerce")
+    runs_sel["final_rank_event"] = runs_sel["final_rank_event"].where(
+        runs_sel["final_rank_event"].notna(), runs_sel["final_rank_event_fb"]
+    )
+    runs_sel = runs_sel.drop(columns=["final_rank_event_fb"], errors="ignore")
+runs_sel["final_rank_event_display"] = np.where(
+    pd.to_numeric(runs_sel["final_rank_event"], errors="coerce").notna(),
+    pd.to_numeric(runs_sel["final_rank_event"], errors="coerce").astype("Int64").astype(str),
+    "NA",
+)
 runs_sel["event_label"] = make_event_label(runs_sel)
 
 tabs = st.tabs(
@@ -1720,6 +1740,27 @@ with tabs[0]:
                 "Final Rank (median) display",
             ]
             peak_df = pd.concat([peak_df, fr_rows[add_cols]], ignore_index=True)
+
+        # Ensure every peak row carries the same rider-level final-rank value
+        # that is used for the synthetic "Final Rank" segment.
+        fr_row_map = (
+            peak_df[peak_df["Segment"] == "Final Rank"][["Rider", "Final Rank (median)"]]
+            .dropna(subset=["Final Rank (median)"])
+            .drop_duplicates(subset=["Rider"], keep="first")
+            .set_index("Rider")["Final Rank (median)"]
+            .to_dict()
+        )
+        if fr_row_map:
+            peak_df["Final Rank (median)"] = np.where(
+                pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").notna(),
+                pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce"),
+                peak_df["Rider"].map(fr_row_map),
+            )
+            peak_df["Final Rank (median) display"] = np.where(
+                pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").notna(),
+                pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").round(1).astype(str),
+                "NA",
+            )
 
         tt = [
             alt.Tooltip("Rider:N"),
