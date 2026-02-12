@@ -1299,8 +1299,8 @@ with tabs[0]:
         key="peak_seg_per_location",
         help="Wenn aktiv: pro Location wird zuerst nur der beste Run genommen, dann der Peak daraus berechnet.",
     )
-    # Automatic behavior: when Event Best is selected as reference, show deltas vs Rank 2
-    # so the reference rider can appear with negative delta.
+    # Automatic behavior: when Event Best is selected as reference, only the
+    # reference rider (event-best row) is shown vs Rank 2. All others remain vs Event Best.
     show_delta_vs_rank2 = ref_key == "event_best"
     show_overall_median = st.toggle(
         "Show Overall Median (Reality Check)",
@@ -1308,7 +1308,7 @@ with tabs[0]:
         key="peak_seg_show_overall",
     )
     if show_delta_vs_rank2:
-        st.caption("Bei Event Best wird Peak Delta automatisch gegen Rank 2 berechnet.")
+        st.caption("Bei Event Best wird nur fuer den Referenz-Rider Delta gegen Rank 2 berechnet.")
 
     def _take_n(n_rows: int, mode: str) -> int:
         if n_rows <= 0:
@@ -1377,18 +1377,21 @@ with tabs[0]:
         )["segment_time"].transform(
             lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
         )
+        seg_df["ref_time_display"] = seg_df["reference_time"]
+        seg_df["ref_display_type"] = "Aktive Referenz"
+        seg_df["delta_display"] = seg_df["delta_value"]
         if show_delta_vs_rank2:
-            if ref_key in {"winner", "rank4"}:
-                seg_df["ref_time_display"] = seg_df["rank2_ref_heat"]
-                seg_df["ref_display_type"] = "Rank 2 (Heat)"
-            else:
-                seg_df["ref_time_display"] = seg_df["rank2_ref_event"]
-                seg_df["ref_display_type"] = "Rank 2 (Event)"
-            seg_df["delta_display"] = seg_df["segment_time"] - seg_df["ref_time_display"]
-        else:
-            seg_df["ref_time_display"] = seg_df["reference_time"]
-            seg_df["ref_display_type"] = "Aktive Referenz"
-            seg_df["delta_display"] = seg_df["delta_value"]
+            is_best_row = (
+                seg_df["segment_time"].notna()
+                & seg_df["reference_time"].notna()
+                & np.isclose(seg_df["segment_time"], seg_df["reference_time"], atol=1e-6)
+            )
+            use_rank2 = is_best_row & seg_df["rank2_ref_event"].notna()
+            seg_df.loc[use_rank2, "ref_time_display"] = seg_df.loc[use_rank2, "rank2_ref_event"]
+            seg_df.loc[use_rank2, "ref_display_type"] = "Rank 2 (Event, nur Referenz-Rider)"
+            seg_df.loc[use_rank2, "delta_display"] = (
+                seg_df.loc[use_rank2, "segment_time"] - seg_df.loc[use_rank2, "rank2_ref_event"]
+            )
         seg_df["is_valid_peak_row"] = (
             seg_df["delta_display"].notna() & seg_df["segment_time"].notna() & seg_df["ref_time_display"].notna()
         )
