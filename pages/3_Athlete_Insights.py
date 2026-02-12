@@ -1330,6 +1330,21 @@ with tabs[0]:
             return max(1, int(np.ceil(n_rows * 0.10)))
         return max(1, int(np.ceil(n_rows * 0.20)))
 
+    def _pick_peak_rows(g_in: pd.DataFrame) -> pd.DataFrame:
+        g_base = g_in.copy()
+        # "Best Run" is defined as best segment per event, then median across events.
+        if peak_mode == "Best Run":
+            return (
+                g_base.sort_values(["delta_display", "round_sort", "heat_id"], na_position="last")
+                .drop_duplicates(subset=["event_id"], keep="first")
+                .copy()
+            )
+        g_peak_base = g_base.drop_duplicates(subset=["location"], keep="first") if peak_per_location else g_base
+        if g_peak_base.empty:
+            return g_peak_base
+        k = _take_n(len(g_peak_base), peak_mode)
+        return g_peak_base.nsmallest(k, "delta_display").copy()
+
     peak_rows = []
     coverage_rows = []
     for sd in available_defs:
@@ -1417,11 +1432,7 @@ with tabs[0]:
 
         for rider, g in seg_df.groupby("rider_short", dropna=False):
             g_all = g.copy()
-            g_peak_base = g_all.drop_duplicates(subset=["location"], keep="first") if peak_per_location else g_all
-            if g_peak_base.empty:
-                continue
-            k = _take_n(len(g_peak_base), peak_mode)
-            peak_sel = g_peak_base.nsmallest(k, "delta_display")
+            peak_sel = _pick_peak_rows(g_all)
             if peak_sel.empty:
                 continue
 
@@ -1547,11 +1558,7 @@ with tabs[0]:
             rseg = rseg.sort_values(["delta_display", "event_dt", "event_id", "round_sort", "heat_id"], na_position="last")
 
             for rider, g in rseg.groupby("rider_short", dropna=False):
-                g_peak_base = g.drop_duplicates(subset=["location"], keep="first") if peak_per_location else g
-                if g_peak_base.empty:
-                    continue
-                k = _take_n(len(g_peak_base), peak_mode)
-                peak_sel = g_peak_base.nsmallest(k, "delta_display")
+                peak_sel = _pick_peak_rows(g)
                 if peak_sel.empty:
                     continue
                 rank_rows.append(
