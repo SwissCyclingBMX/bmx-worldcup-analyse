@@ -1648,22 +1648,47 @@ with tabs[0]:
         radar_df["Field Size"] = pd.to_numeric(radar_df["Field Size"], errors="coerce")
         radar_df = radar_df.dropna(subset=["Segment Rank", "Field Size"])
         if not radar_df.empty:
+            seg_label_short = {
+                "BottomDelta": "Bottom",
+                "T1Delta": "T1",
+                "Bottom->T1Delta": "B->T1",
+                "T1->T2Delta": "T1->T2",
+                "T2->T3Delta": "T2->T3",
+                "T3->FinishDelta": "T3->F",
+                "FinishDelta": "Finish",
+            }
             seg_order = [x for x in selected_seg_labels if x in radar_df["Segment"].unique().tolist()]
+            radar_df["Segment Short"] = radar_df["Segment"].map(seg_label_short).fillna(radar_df["Segment"])
             seg_counts = radar_df.groupby("Rider")["Segment"].nunique()
             riders_ok = seg_counts[seg_counts >= 2].index.tolist()
             hidden = sorted(set(radar_df["Rider"]) - set(riders_ok))
             if hidden:
                 st.caption("Radar blendet Rider mit <2 verfuegbaren Segmenten aus: " + ", ".join(hidden))
             radar_df = radar_df[radar_df["Rider"].isin(riders_ok)].copy()
+            if radar_df["Rider"].nunique() > 4:
+                rider_top = (
+                    radar_df.groupby("Rider", as_index=False)["Segment Rank"]
+                    .mean()
+                    .sort_values(["Segment Rank", "Rider"], ascending=[True, True])
+                )
+                keep_riders = rider_top["Rider"].head(4).tolist()
+                st.warning("Mehr als 4 Rider im Radar. Es werden automatisch die Top 4 (bester mittlerer Segment Rank) angezeigt.")
+                radar_df = radar_df[radar_df["Rider"].isin(keep_riders)].copy()
             max_rank = int(pd.to_numeric(radar_df["Field Size"], errors="coerce").max()) if not radar_df.empty else 0
             if not radar_df.empty and max_rank > 0 and len(seg_order) >= 2:
+                seg_order_short = [seg_label_short.get(x, x) for x in seg_order]
+                radar_df["Rank Top %"] = np.where(
+                    radar_df["Field Size"] > 0,
+                    (1.0 - ((radar_df["Segment Rank"] - 1.0) / radar_df["Field Size"])) * 100.0,
+                    np.nan,
+                )
                 if go is None:
                     st.warning("Radar benoetigt `plotly`. Fallback-Ansicht wird angezeigt.")
                     fallback = (
                         alt.Chart(radar_df)
                         .mark_line(point=True)
                         .encode(
-                            x=alt.X("Segment:N", sort=seg_order),
+                            x=alt.X("Segment Short:N", sort=seg_order_short),
                             y=alt.Y(
                                 "Segment Rank:Q",
                                 title="Segment Rank (1=best)",
@@ -1673,25 +1698,25 @@ with tabs[0]:
                             detail="Rider:N",
                             tooltip=[
                                 alt.Tooltip("Rider:N"),
-                                alt.Tooltip("Segment:N"),
-                                alt.Tooltip("Segment Rank:Q", format=".0f"),
+                                alt.Tooltip("Segment Short:N", title="Segment"),
+                                alt.Tooltip("Segment Rank:Q", title="Segment Rank", format=".0f"),
                                 alt.Tooltip("Field Size:Q", format=".0f"),
+                                alt.Tooltip("Rank Top %:Q", format=".1f"),
                                 alt.Tooltip("Delta (s):Q", format=".4f"),
-                                alt.Tooltip("Delta (% ref):Q", format=".2f"),
                                 alt.Tooltip("Runs Used (n):Q", format=".0f"),
                                 alt.Tooltip("Reference Mode:N"),
                             ],
                         )
-                        .properties(height=300)
+                        .properties(height=420)
                     )
                     st.altair_chart(fallback, use_container_width=True)
                 else:
                     fig = go.Figure()
                     for rider, g in radar_df.groupby("Rider", dropna=False):
-                        gm = g.set_index("Segment")
+                        gm = g.set_index("Segment Short")
                         r_vals = []
                         custom = []
-                        for seg in seg_order:
+                        for seg in seg_order_short:
                             if seg in gm.index:
                                 row = gm.loc[seg]
                                 if isinstance(row, pd.DataFrame):
@@ -1701,16 +1726,17 @@ with tabs[0]:
                                     [
                                         row.get("Segment Rank", np.nan),
                                         row.get("Field Size", np.nan),
+                                        row.get("Rank Top %", np.nan),
                                         row.get("Delta (s)", np.nan),
-                                        row.get("Delta (% ref)", np.nan),
                                         row.get("Runs Used (n)", np.nan),
                                         row.get("Reference Mode", ""),
                                     ]
                                 )
                             else:
-                                r_vals.append(np.nan)
-                                custom.append([np.nan, np.nan, np.nan, np.nan, np.nan, ""])
-                        theta_vals = seg_order.copy()
+                                continue
+                        if len(r_vals) < 2:
+                            continue
+                        theta_vals = [s for s in seg_order_short if s in gm.index]
                         r_plot = r_vals + [r_vals[0]]
                         theta_plot = theta_vals + [theta_vals[0]]
                         custom_plot = custom + [custom[0]]
@@ -1720,14 +1746,14 @@ with tabs[0]:
                                 theta=theta_plot,
                                 mode="lines+markers",
                                 name=str(rider),
+                                fill="none",
                                 customdata=custom_plot,
                                 hovertemplate=(
                                     "Rider: %{fullData.name}<br>"
                                     "Segment: %{theta}<br>"
-                                    "Segment Rank: %{customdata[0]:.0f}<br>"
-                                    "Field Size: %{customdata[1]:.0f}<br>"
-                                    "Delta (s): %{customdata[2]:.4f}<br>"
-                                    "Delta (% ref): %{customdata[3]:.2f}<br>"
+                                    "Segment Rank: %{customdata[0]:.0f} / %{customdata[1]:.0f}<br>"
+                                    "Rank %% (Top): %{customdata[2]:.1f}%<br>"
+                                    "Delta (s): %{customdata[3]:.4f}<br>"
                                     "Runs Used (n): %{customdata[4]:.0f}<br>"
                                     "Reference Mode: %{customdata[5]}<extra></extra>"
                                 ),
@@ -1735,10 +1761,12 @@ with tabs[0]:
                         )
                     ring_vals = [v for v in [1, 4, 8, 16, 32] if v <= max_rank]
                     fig.update_layout(
-                        height=420,
+                        height=560,
                         showlegend=True,
-                        margin=dict(l=20, r=20, t=20, b=20),
+                        margin=dict(l=10, r=10, t=10, b=10),
+                        legend=dict(orientation="h", y=-0.12, x=0.5, xanchor="center", yanchor="top"),
                         polar=dict(
+                            domain=dict(x=[0.08, 0.92], y=[0.06, 0.98]),
                             radialaxis=dict(
                                 autorange="reversed",
                                 range=[max_rank + 0.5, 0.5],
@@ -1746,13 +1774,13 @@ with tabs[0]:
                                 tickvals=ring_vals if ring_vals else None,
                                 title="Segment Rank (1=best)",
                             ),
-                            angularaxis=dict(categoryorder="array", categoryarray=seg_order),
+                            angularaxis=dict(categoryorder="array", categoryarray=seg_order_short),
                         ),
                     )
                     st.plotly_chart(fig, use_container_width=True)
                     ring_vals = [str(v) for v in [4, 8, 16, 32] if v <= max_rank]
                     st.caption(
-                        "Radar: Segment Rank (1=best, weiter aussen = hoeherer Rank). "
+                        "Further out = stronger segment (Rank 1 is best). "
                         + ("Referenzringe: " + ", ".join(ring_vals) if ring_vals else "")
                     )
             else:
