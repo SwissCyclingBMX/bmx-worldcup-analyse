@@ -1241,84 +1241,218 @@ with tabs[0]:
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    st.markdown("**Segment Contribution**")
+    st.markdown("**Peak Segment Profile**")
     contrib_src = runs_sel.copy()
-    seg_candidates = [
-        ("BottomDelta", "start_delta"),
-        ("PostStartDelta", "delta_post_start"),
-        ("PostT1Delta", "delta_post_t1"),
-        ("PostT2Delta", "delta_post_t2"),
-        ("PostT3Delta", "delta_post_t3"),
-        ("Split Bottom->T1 Delta", "delta_bottom_t1"),
-        ("Split T1->T2 Delta", "delta_t1_t2"),
-        ("Split T2->T3 Delta", "delta_t2_t3"),
-        ("Split T3->Finish Delta", "delta_t3_finish"),
+    ref_suffix_map = {
+        "rank4": "rank4_ref",
+        "winner": "winner",
+        "event_top4": "event_topn_ref",
+        "event_best": "event_best_ref",
+    }
+    ref_suffix = ref_suffix_map.get(ref_key, "rank4_ref")
+    seg_defs = [
+        {"label": "BottomDelta", "delta_col": "start_delta", "time_col": "start", "seg_base": "start"},
+        {"label": "T1Delta", "delta_col": "t1_delta", "time_col": "t1", "seg_base": "t1"},
+        {"label": "T2Delta", "delta_col": "t2_delta", "time_col": "t2", "seg_base": "t2"},
+        {"label": "T3Delta", "delta_col": "t3_delta", "time_col": "t3", "seg_base": "t3"},
+        {"label": "FinishDelta", "delta_col": "finish_delta", "time_col": "finish", "seg_base": "finish"},
+        {"label": "Bottom->T1Delta", "delta_col": "split_bottom_t1_delta", "time_col": "split_bottom_t1", "seg_base": "split_bottom_t1"},
+        {"label": "T1->T2Delta", "delta_col": "split_t1_t2_delta", "time_col": "split_t1_t2", "seg_base": "split_t1_t2"},
+        {"label": "T2->T3Delta", "delta_col": "split_t2_t3_delta", "time_col": "split_t2_t3", "seg_base": "split_t2_t3"},
+        {"label": "T3->FinishDelta", "delta_col": "split_t3_finish_delta", "time_col": "split_t3_finish", "seg_base": "split_t3_finish"},
     ]
-    available_seg_labels = [label for label, col in seg_candidates if col in contrib_src.columns and contrib_src[col].notna().any()]
+    available_defs = []
+    for sd in seg_defs:
+        delta_col = sd["delta_col"]
+        time_col = sd["time_col"]
+        ref_col = f"{sd['seg_base']}_{ref_suffix}"
+        delta_use_col = f"{delta_col}_w" if f"{delta_col}_w" in contrib_src.columns else delta_col
+        if delta_use_col not in contrib_src.columns:
+            continue
+        if time_col not in contrib_src.columns:
+            continue
+        if ref_col not in contrib_src.columns:
+            continue
+        if pd.to_numeric(contrib_src[delta_use_col], errors="coerce").notna().sum() == 0:
+            continue
+        sd2 = sd.copy()
+        sd2["delta_use_col"] = delta_use_col
+        sd2["ref_col"] = ref_col
+        available_defs.append(sd2)
+
+    available_seg_labels = [sd["label"] for sd in available_defs]
     selected_seg_labels = st.multiselect(
         "Segmente anzeigen",
         options=available_seg_labels,
         default=available_seg_labels,
-        key="trend_contrib_segments",
+        key="peak_seg_segments",
     )
-    seg_frames = []
-    for label, col in seg_candidates:
-        if label not in selected_seg_labels:
-            continue
-        value_col = f"{col}_w" if f"{col}_w" in contrib_src.columns else col
-        if value_col not in contrib_src.columns:
-            continue
-        vals = pd.to_numeric(contrib_src[value_col], errors="coerce")
-        if vals.notna().sum() == 0:
-            continue
-        seg_frames.append(contrib_src[["rider_short"]].assign(metric=label, value=vals))
-    contrib_long = pd.concat(seg_frames, ignore_index=True).dropna(subset=["value"]) if seg_frames else pd.DataFrame()
-    if not contrib_long.empty:
-        contrib_agg = contrib_long.groupby(["rider_short", "metric"], as_index=False).agg(mean_value=("value", "mean"))
-        # Share of total loss (informative): positive deltas only.
-        contrib_agg["loss_pos"] = contrib_agg["mean_value"].clip(lower=0)
-        denom = contrib_agg.groupby("rider_short")["loss_pos"].transform("sum")
-        contrib_agg["loss_share_pct"] = np.where(denom > 0, (contrib_agg["loss_pos"] / denom) * 100.0, np.nan)
+    peak_mode = st.selectbox(
+        "Peak Selection",
+        ["Best Run", "Best 3 Runs", "Best 5 Runs", "Best 10%", "Best 20%"],
+        index=4,
+        key="peak_seg_mode",
+    )
+    peak_per_location = st.checkbox(
+        "Peak per Location",
+        value=True,
+        key="peak_seg_per_location",
+        help="Wenn aktiv: pro Location wird zuerst nur der beste Run genommen, dann der Peak daraus berechnet.",
+    )
+    show_overall_median = st.toggle(
+        "Show Overall Median (Reality Check)",
+        value=False,
+        key="peak_seg_show_overall",
+    )
 
-        bottom_df = contrib_agg[contrib_agg["metric"] == "BottomDelta"].copy()
-        other_df = contrib_agg[contrib_agg["metric"] != "BottomDelta"].copy()
+    def _take_n(n_rows: int, mode: str) -> int:
+        if n_rows <= 0:
+            return 0
+        if mode == "Best Run":
+            return 1
+        if mode == "Best 3 Runs":
+            return min(3, n_rows)
+        if mode == "Best 5 Runs":
+            return min(5, n_rows)
+        if mode == "Best 10%":
+            return max(1, int(np.ceil(n_rows * 0.10)))
+        return max(1, int(np.ceil(n_rows * 0.20)))
 
-        if not bottom_df.empty:
-            st.markdown("Bottom Delta")
-            cbar_bottom = (
-                alt.Chart(bottom_df)
-                .mark_bar()
-                .encode(
-                    x=alt.X("metric:N", title="Metrik"),
-                    y=alt.Y("mean_value:Q", title="Mean Delta (s)"),
-                    color=alt.Color("rider_short:N", title="Rider"),
-                    tooltip=["rider_short:N", "metric:N", "mean_value:Q", alt.Tooltip("loss_share_pct:Q", title="Loss Share %", format=".1f")],
-                )
-                .properties(height=180)
+    peak_rows = []
+    for sd in available_defs:
+        if sd["label"] not in selected_seg_labels:
+            continue
+        dcol = sd["delta_use_col"]
+        dcol_raw = sd["delta_col"]
+        tcol = sd["time_col"]
+        rcol = sd["ref_col"]
+
+        seg_df = contrib_src[
+            [
+                "rider_short",
+                "display_name",
+                "location",
+                "round_short",
+                "round_title",
+                "event_dt",
+                "event_id",
+                dcol,
+                dcol_raw,
+                tcol,
+                rcol,
+                "round_sort",
+                "heat_id",
+            ]
+        ].copy()
+        seg_df = seg_df.rename(
+            columns={
+                dcol: "delta_value",
+                dcol_raw: "delta_raw",
+                tcol: "segment_time",
+                rcol: "reference_time",
+            }
+        )
+        seg_df["delta_value"] = pd.to_numeric(seg_df["delta_value"], errors="coerce")
+        seg_df["delta_raw"] = pd.to_numeric(seg_df["delta_raw"], errors="coerce")
+        seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
+        seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
+        seg_df = seg_df.dropna(subset=["delta_value", "segment_time", "reference_time"])
+        if seg_df.empty:
+            continue
+        seg_df = seg_df.sort_values(["delta_value", "event_dt", "event_id", "round_sort", "heat_id"], na_position="last")
+
+        for rider, g in seg_df.groupby("rider_short", dropna=False):
+            g_all = g.copy()
+            g_peak_base = g_all.drop_duplicates(subset=["location"], keep="first") if peak_per_location else g_all
+            if g_peak_base.empty:
+                continue
+            k = _take_n(len(g_peak_base), peak_mode)
+            peak_sel = g_peak_base.nsmallest(k, "delta_value")
+            if peak_sel.empty:
+                continue
+
+            peak_delta = float(peak_sel["delta_value"].median())
+            peak_time = float(peak_sel["segment_time"].median())
+            peak_ref = float(peak_sel["reference_time"].median())
+            peak_pct = (peak_delta / peak_ref * 100.0) if pd.notna(peak_ref) and peak_ref != 0 else np.nan
+            peak_runs_text = " | ".join(
+                [
+                    f"{clean_spaces(ev)} | {clean_spaces(loc)} | {clean_spaces(rsh)} | {stm:.3f}s"
+                    for ev, loc, rsh, stm in zip(
+                        peak_sel["display_name"].fillna(peak_sel["event_id"]).astype(str),
+                        peak_sel["location"].fillna("Unknown").astype(str),
+                        peak_sel["round_short"].fillna(peak_sel["round_title"]).astype(str),
+                        peak_sel["segment_time"],
+                    )
+                ]
             )
-            st.altair_chart(cbar_bottom, use_container_width=True)
 
-        if not other_df.empty:
-            st.markdown("Andere Segmente")
-            cbar_other = (
-                alt.Chart(other_df)
-                .mark_bar()
-                .encode(
-                    x=alt.X("metric:N", title="Metrik"),
-                    y=alt.Y("mean_value:Q", title="Mean Delta (s)"),
-                    color=alt.Color("rider_short:N", title="Rider"),
-                    tooltip=["rider_short:N", "metric:N", "mean_value:Q", alt.Tooltip("loss_share_pct:Q", title="Loss Share %", format=".1f")],
-                )
-                .properties(height=280)
+            peak_rows.append(
+                {
+                    "Rider": rider,
+                    "Segment": sd["label"],
+                    "Profile": "Peak",
+                    "Delta (s)": peak_delta,
+                    "Delta (% ref)": peak_pct,
+                    "Rider Segment Time (s)": peak_time,
+                    "Reference Segment Time (s)": peak_ref,
+                    "Runs Used (n)": int(len(peak_sel)),
+                    "Peak Runs": peak_runs_text,
+                }
             )
-            st.altair_chart(cbar_other, use_container_width=True)
 
-        table = contrib_agg[["rider_short", "metric", "mean_value", "loss_share_pct"]].copy()
-        table = table.rename(columns={"rider_short": "Rider", "metric": "Segment", "mean_value": "Delta (s)", "loss_share_pct": "Loss Share %"})
-        table["Delta (s)"] = pd.to_numeric(table["Delta (s)"], errors="coerce").round(4)
-        table["Loss Share %"] = pd.to_numeric(table["Loss Share %"], errors="coerce").round(1)
-        st.dataframe(table, use_container_width=True, hide_index=True)
-        st.caption("Vorzeichen: positiv = langsamer als Referenz, negativ = schneller als Referenz.")
+            if show_overall_median:
+                ov_delta = float(g_all["delta_value"].median())
+                ov_time = float(g_all["segment_time"].median())
+                ov_ref = float(g_all["reference_time"].median())
+                ov_pct = (ov_delta / ov_ref * 100.0) if pd.notna(ov_ref) and ov_ref != 0 else np.nan
+                peak_rows.append(
+                    {
+                        "Rider": rider,
+                        "Segment": sd["label"],
+                        "Profile": "Overall Median",
+                        "Delta (s)": ov_delta,
+                        "Delta (% ref)": ov_pct,
+                        "Rider Segment Time (s)": ov_time,
+                        "Reference Segment Time (s)": ov_ref,
+                        "Runs Used (n)": int(len(g_all)),
+                        "Peak Runs": "",
+                    }
+                )
+
+    peak_df = pd.DataFrame(peak_rows)
+    if not peak_df.empty:
+        c = (
+            alt.Chart(peak_df)
+            .mark_bar()
+            .encode(
+                x=alt.X("Segment:N", sort=selected_seg_labels if selected_seg_labels else None),
+                xOffset=alt.XOffset("Profile:N"),
+                y=alt.Y("Delta (s):Q", title="Delta (s)"),
+                color=alt.Color("Rider:N", title="Rider"),
+                tooltip=[
+                    alt.Tooltip("Rider:N"),
+                    alt.Tooltip("Segment:N"),
+                    alt.Tooltip("Profile:N"),
+                    alt.Tooltip("Delta (s):Q", format=".4f"),
+                    alt.Tooltip("Delta (% ref):Q", format=".2f"),
+                    alt.Tooltip("Rider Segment Time (s):Q", format=".4f"),
+                    alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
+                    alt.Tooltip("Runs Used (n):Q"),
+                    alt.Tooltip("Peak Runs:N"),
+                ],
+            )
+            .properties(height=320)
+        )
+        st.altair_chart(c, use_container_width=True)
+
+        peak_table = peak_df.copy()
+        for col in ["Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
+            peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").round(4)
+        st.dataframe(peak_table, use_container_width=True, hide_index=True)
+        st.caption("Peak wird pro Rider × Segment unabhaengig berechnet (Top-Auswahl je Segment, danach Median).")
+    else:
+        st.info("Keine Daten fuer Peak Segment Profile in der aktuellen Auswahl.")
 
     st.markdown("**Start Delta vs Finish Delta**")
     scat = runs_sel.dropna(subset=["start_delta", "finish_delta"]).copy()
