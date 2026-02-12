@@ -2021,10 +2021,24 @@ with tabs[0]:
                     s["delta_value"] = pd.to_numeric(s["delta_value"], errors="coerce")
                     s["segment_time"] = pd.to_numeric(s["segment_time"], errors="coerce")
                     s["reference_time"] = pd.to_numeric(s["reference_time"], errors="coerce")
-                    s = s.dropna(subset=["delta_value", "segment_time", "reference_time"])
+                    s["rank2_ref_event"] = s.groupby(["event_id", "group_id"], dropna=False)["segment_time"].transform(
+                        lambda q: q.dropna().nsmallest(2).iloc[-1] if q.notna().sum() >= 2 else np.nan
+                    )
+                    s["delta_display"] = s["delta_value"]
+                    if show_delta_vs_rank2:
+                        is_best_row = (
+                            s["segment_time"].notna()
+                            & s["reference_time"].notna()
+                            & np.isclose(s["segment_time"], s["reference_time"], atol=1e-6)
+                        )
+                        use_rank2 = is_best_row & s["rank2_ref_event"].notna()
+                        s.loc[use_rank2, "delta_display"] = (
+                            s.loc[use_rank2, "segment_time"] - s.loc[use_rank2, "rank2_ref_event"]
+                        )
+                    s = s.dropna(subset=["delta_display", "segment_time", "reference_time"])
                     if s.empty:
                         continue
-                    s = s.sort_values(["delta_value", "round_sort", "heat_id"], na_position="last")
+                    s = s.sort_values(["delta_display", "round_sort", "heat_id"], na_position="last")
 
                     # Full field rank pool for this event/segment.
                     rp = rank_pool_slice[cols].copy()
@@ -2032,17 +2046,31 @@ with tabs[0]:
                     rp["delta_value"] = pd.to_numeric(rp["delta_value"], errors="coerce")
                     rp["segment_time"] = pd.to_numeric(rp["segment_time"], errors="coerce")
                     rp["reference_time"] = pd.to_numeric(rp["reference_time"], errors="coerce")
-                    rp = rp.dropna(subset=["delta_value", "segment_time", "reference_time"])
+                    rp["rank2_ref_event"] = rp.groupby(["event_id", "group_id"], dropna=False)["segment_time"].transform(
+                        lambda q: q.dropna().nsmallest(2).iloc[-1] if q.notna().sum() >= 2 else np.nan
+                    )
+                    rp["delta_display"] = rp["delta_value"]
+                    if show_delta_vs_rank2:
+                        is_best_row = (
+                            rp["segment_time"].notna()
+                            & rp["reference_time"].notna()
+                            & np.isclose(rp["segment_time"], rp["reference_time"], atol=1e-6)
+                        )
+                        use_rank2 = is_best_row & rp["rank2_ref_event"].notna()
+                        rp.loc[use_rank2, "delta_display"] = (
+                            rp.loc[use_rank2, "segment_time"] - rp.loc[use_rank2, "rank2_ref_event"]
+                        )
+                    rp = rp.dropna(subset=["delta_display", "segment_time", "reference_time"])
                     if rp.empty:
                         continue
-                    rp = rp.sort_values(["delta_value", "round_sort", "heat_id"], na_position="last")
+                    rp = rp.sort_values(["delta_display", "round_sort", "heat_id"], na_position="last")
 
                     # Peak per rider in selected view.
                     for rider, g in s.groupby("rider_short", dropna=False):
                         gsel = _pick_peak_rows(g)
                         if gsel.empty:
                             continue
-                        peak_delta = float(gsel["delta_value"].median())
+                        peak_delta = float(gsel["delta_display"].median())
                         peak_time = float(gsel["segment_time"].median())
                         peak_ref = float(gsel["reference_time"].median())
                         pct = (peak_delta / peak_ref * 100.0) if pd.notna(peak_ref) and peak_ref != 0 else np.nan
@@ -2064,7 +2092,7 @@ with tabs[0]:
                             g2sel = _pick_peak_rows(g2)
                             if g2sel.empty:
                                 continue
-                            rr.append({"Rider": rid2, "rank_base": float(g2sel["delta_value"].median())})
+                            rr.append({"Rider": rid2, "rank_base": float(g2sel["delta_display"].median())})
                         rrdf = pd.DataFrame(rr)
                         seg_rank = np.nan
                         field_size = np.nan
