@@ -1344,14 +1344,18 @@ with tabs[0]:
                 "heat_id",
             ]
         ].copy()
-        seg_df = seg_df.rename(
-            columns={
-                dcol: "delta_value",
-                dcol_raw: "delta_raw",
-                tcol: "segment_time",
-                rcol: "reference_time",
-            }
-        )
+        rename_map = {
+            tcol: "segment_time",
+            rcol: "reference_time",
+        }
+        if dcol == dcol_raw:
+            rename_map[dcol] = "delta_value"
+            seg_df = seg_df.rename(columns=rename_map)
+            seg_df["delta_raw"] = seg_df["delta_value"]
+        else:
+            rename_map[dcol] = "delta_value"
+            rename_map[dcol_raw] = "delta_raw"
+            seg_df = seg_df.rename(columns=rename_map)
         seg_df["delta_value"] = pd.to_numeric(seg_df["delta_value"], errors="coerce")
         seg_df["delta_raw"] = pd.to_numeric(seg_df["delta_raw"], errors="coerce")
         seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
