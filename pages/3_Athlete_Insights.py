@@ -3,6 +3,7 @@ import unicodedata
 from typing import Optional
 import re
 import json
+import textwrap
 from io import BytesIO
 from datetime import datetime
 
@@ -2085,6 +2086,13 @@ with tabs[0]:
                                 )
                             ]
                         )
+                        round_list = " | ".join(
+                            list(
+                                dict.fromkeys(
+                                    gsel["round_short"].fillna(gsel["round_title"]).astype(str).tolist()
+                                )
+                            )
+                        )
 
                         # Segment rank in full field.
                         rr = []
@@ -2117,6 +2125,7 @@ with tabs[0]:
                                 "Reference Mode": ref_caption,
                                 "Runs Used (n)": int(len(gsel)),
                                 "Peak Runs": peak_runs,
+                                "Rounds": round_list,
                                 "Segment Rank": seg_rank,
                                 "Field Size": field_size,
                                 "Rank %": rank_pct,
@@ -2201,7 +2210,10 @@ with tabs[0]:
                                     continue
                                 fig = plt.figure(figsize=(8.27, 11.69))
                                 ax = plt.subplot(211, projection="polar")
-                                _draw_radar(ax, evt_peak, f"{clean_spaces(str(erow['display_name']))} | {clean_spaces(str(erow['location']))}")
+                                event_title = f"{clean_spaces(str(erow['display_name']))} | {clean_spaces(str(erow['location']))}"
+                                event_title_wrapped = textwrap.fill(event_title, width=78, max_lines=2, placeholder="...")
+                                _draw_radar(ax, evt_peak, event_title_wrapped)
+                                fig.text(0.08, 0.50, f"Rider: {rider}", fontsize=9, weight="bold")
                                 fig.text(0.08, 0.48, "Aussen = besser (Rank 1).", fontsize=8)
                                 t_ax = plt.subplot(212)
                                 t_ax.axis("off")
@@ -2215,11 +2227,26 @@ with tabs[0]:
                                     "Rider Segment Time (s)",
                                     "Reference Segment Time (s)",
                                     "Runs Used (n)",
+                                    "Rounds",
                                 ]].copy()
-                                tbl["Segment Rank"] = tbl["Segment Rank"].apply(format_rank_value)
-                                for c in ["Field Size", "Runs Used (n)"]:
+                                tbl = tbl.rename(
+                                    columns={
+                                        "Segment Short": "Segment",
+                                        "Segment Rank": "Segment\nRank",
+                                        "Field Size": "Field\nSize",
+                                        "Rank %": "Rank\n%",
+                                        "Delta (s)": "Delta\n(s)",
+                                        "Delta (% ref)": "Delta\n(% ref)",
+                                        "Rider Segment Time (s)": "Rider Segment\nTime (s)",
+                                        "Reference Segment Time (s)": "Reference Segment\nTime (s)",
+                                        "Runs Used (n)": "Runs Used\n(n)",
+                                        "Rounds": "Round(s)",
+                                    }
+                                )
+                                tbl["Segment\nRank"] = tbl["Segment\nRank"].apply(format_rank_value)
+                                for c in ["Field\nSize", "Runs Used\n(n)"]:
                                     tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
-                                for c in ["Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
+                                for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nTime (s)", "Reference Segment\nTime (s)"]:
                                     tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(
                                     cellText=tbl.values,
@@ -2227,8 +2254,8 @@ with tabs[0]:
                                     loc="center",
                                 )
                                 table.auto_set_font_size(False)
-                                table.set_fontsize(7)
-                                table.scale(1, 1.2)
+                                table.set_fontsize(6.7)
+                                table.scale(1, 1.28)
                                 pdf.savefig(fig, bbox_inches="tight")
                                 plt.close(fig)
 
@@ -2238,6 +2265,7 @@ with tabs[0]:
                                 fig = plt.figure(figsize=(8.27, 11.69))
                                 ax = plt.subplot(211, projection="polar")
                                 _draw_radar(ax, ov.rename(columns={"Segment": "Segment", "Segment Rank": "Segment Rank"}), "Overall Peak Segment Radar")
+                                fig.text(0.08, 0.50, f"Rider: {rider}", fontsize=9, weight="bold")
                                 fig.text(0.08, 0.48, "Aussen = besser (Rank 1).", fontsize=8)
                                 t_ax = plt.subplot(212)
                                 t_ax.axis("off")
@@ -2254,15 +2282,28 @@ with tabs[0]:
                                     "Locations Used (n)",
                                 ]].copy()
                                 ov_tbl["Segment"] = ov_tbl["Segment"].apply(segment_short_label)
-                                ov_tbl["Segment Rank"] = ov_tbl["Segment Rank"].apply(format_rank_value)
-                                for c in ["Field Size", "Runs Used (n)", "Locations Used (n)"]:
+                                ov_tbl = ov_tbl.rename(
+                                    columns={
+                                        "Segment Rank": "Segment\nRank",
+                                        "Field Size": "Field\nSize",
+                                        "Rank %": "Rank\n%",
+                                        "Delta (s)": "Delta\n(s)",
+                                        "Delta (% ref)": "Delta\n(% ref)",
+                                        "Rider Segment Time (s)": "Rider Segment\nTime (s)",
+                                        "Reference Segment Time (s)": "Reference Segment\nTime (s)",
+                                        "Runs Used (n)": "Runs Used\n(n)",
+                                        "Locations Used (n)": "Locations Used\n(n)",
+                                    }
+                                )
+                                ov_tbl["Segment\nRank"] = ov_tbl["Segment\nRank"].apply(format_rank_value)
+                                for c in ["Field\nSize", "Runs Used\n(n)", "Locations Used\n(n)"]:
                                     ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
-                                for c in ["Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
+                                for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nTime (s)", "Reference Segment\nTime (s)"]:
                                     ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(cellText=ov_tbl.values, colLabels=ov_tbl.columns, loc="center")
                                 table.auto_set_font_size(False)
-                                table.set_fontsize(7)
-                                table.scale(1, 1.2)
+                                table.set_fontsize(6.7)
+                                table.scale(1, 1.28)
                                 pdf.savefig(fig, bbox_inches="tight")
                                 plt.close(fig)
                     pdf_bytes = pdf_buffer.getvalue()
