@@ -1443,6 +1443,7 @@ with tabs[0]:
                     "Reference Segment Time (s)": peak_ref,
                     "Reference Mode": peak_sel["ref_display_type"].iloc[0],
                     "Runs Used (n)": int(len(peak_sel)),
+                    "Locations Used (n)": int(peak_sel["location"].nunique(dropna=True)),
                     "Peak Runs": peak_runs_text,
                 }
             )
@@ -1463,22 +1464,48 @@ with tabs[0]:
                         "Reference Segment Time (s)": ov_ref,
                         "Reference Mode": g_all["ref_display_type"].iloc[0],
                         "Runs Used (n)": int(len(g_all)),
+                        "Locations Used (n)": int(g_all["location"].nunique(dropna=True)),
                         "Peak Runs": "",
                     }
                 )
 
     peak_df = pd.DataFrame(peak_rows)
     if not peak_df.empty:
+        peak_rank_src = peak_df[peak_df["Profile"] == "Peak"].copy()
+        peak_rank_src["Delta (s)"] = pd.to_numeric(peak_rank_src["Delta (s)"], errors="coerce")
+        peak_rank_src = peak_rank_src.dropna(subset=["Delta (s)"])
+        if not peak_rank_src.empty:
+            peak_rank_src["Segment Rank"] = peak_rank_src.groupby("Segment")["Delta (s)"].rank(method="min", ascending=True)
+            peak_rank_src["Field Size"] = peak_rank_src.groupby("Segment")["Rider"].transform("nunique")
+            peak_rank_src["Rank %"] = np.where(
+                peak_rank_src["Field Size"] > 0,
+                (peak_rank_src["Segment Rank"] / peak_rank_src["Field Size"]) * 100.0,
+                np.nan,
+            )
+            rank_cols = peak_rank_src[["Rider", "Segment", "Segment Rank", "Field Size", "Rank %"]].drop_duplicates(
+                subset=["Rider", "Segment"]
+            )
+            peak_df = peak_df.merge(rank_cols, on=["Rider", "Segment"], how="left")
+        else:
+            peak_df["Segment Rank"] = np.nan
+            peak_df["Field Size"] = np.nan
+            peak_df["Rank %"] = np.nan
+        peak_df.loc[peak_df["Profile"] != "Peak", ["Segment Rank", "Field Size", "Rank %"]] = np.nan
+
         tt = [
             alt.Tooltip("Rider:N"),
             alt.Tooltip("Segment:N"),
             alt.Tooltip("Profile:N"),
+            alt.Tooltip("Segment Rank:Q", format=".0f"),
+            alt.Tooltip("Field Size:Q", format=".0f"),
+            alt.Tooltip("Rank %:Q", format=".1f"),
             alt.Tooltip("Delta (s):Q", format=".4f"),
             alt.Tooltip("Delta (% ref):Q", format=".2f"),
             alt.Tooltip("Rider Segment Time (s):Q", format=".4f"),
             alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
             alt.Tooltip("Reference Mode:N"),
             alt.Tooltip("Runs Used (n):Q"),
+            alt.Tooltip("Locations Used (n):Q"),
             alt.Tooltip("Peak Runs:N"),
         ]
         bottom_peak = peak_df[peak_df["Segment"] == "BottomDelta"].copy()
@@ -1524,9 +1551,58 @@ with tabs[0]:
             else:
                 st.info("Keine weiteren Segment-Deltas fuer aktuelle Filter.")
 
+        st.markdown("**Peak Segment Radar (Rank)**")
+        radar_df = peak_df[peak_df["Profile"] == "Peak"].copy()
+        radar_df["Segment Rank"] = pd.to_numeric(radar_df["Segment Rank"], errors="coerce")
+        radar_df["Field Size"] = pd.to_numeric(radar_df["Field Size"], errors="coerce")
+        radar_df = radar_df.dropna(subset=["Segment Rank", "Field Size"])
+        if not radar_df.empty:
+            seg_order = [x for x in selected_seg_labels if x in radar_df["Segment"].unique().tolist()]
+            seg_counts = radar_df.groupby("Rider")["Segment"].nunique()
+            riders_ok = seg_counts[seg_counts >= 2].index.tolist()
+            hidden = sorted(set(radar_df["Rider"]) - set(riders_ok))
+            if hidden:
+                st.caption("Radar blendet Rider mit <2 verfuegbaren Segmenten aus: " + ", ".join(hidden))
+            radar_df = radar_df[radar_df["Rider"].isin(riders_ok)].copy()
+            max_rank = int(pd.to_numeric(radar_df["Field Size"], errors="coerce").max()) if not radar_df.empty else 0
+            ring_vals = [v for v in [1, 4, 8, 16, 32] if v <= max_rank]
+            if not radar_df.empty and max_rank > 0:
+                radar = (
+                    alt.Chart(radar_df)
+                    .mark_line(point=True)
+                    .encode(
+                        theta=alt.Theta("Segment:N", sort=seg_order),
+                        radius=alt.Radius(
+                            "Segment Rank:Q",
+                            scale=alt.Scale(domain=[0.5, max_rank + 0.5], nice=False),
+                            axis=alt.Axis(title="Segment Rank (1=best)", values=ring_vals if ring_vals else None),
+                        ),
+                        color=alt.Color("Rider:N", title="Rider"),
+                        detail="Rider:N",
+                        tooltip=[
+                            alt.Tooltip("Rider:N"),
+                            alt.Tooltip("Segment:N"),
+                            alt.Tooltip("Segment Rank:Q", format=".0f"),
+                            alt.Tooltip("Field Size:Q", format=".0f"),
+                            alt.Tooltip("Delta (s):Q", format=".4f"),
+                            alt.Tooltip("Delta (% ref):Q", format=".2f"),
+                            alt.Tooltip("Runs Used (n):Q", format=".0f"),
+                            alt.Tooltip("Reference Mode:N"),
+                        ],
+                    )
+                    .properties(height=360)
+                )
+                st.altair_chart(radar, use_container_width=True)
+            else:
+                st.info("Nicht genug Daten fuer Peak Segment Radar.")
+        else:
+            st.info("Keine Peak-Ranks verfuegbar fuer Radar.")
+
         peak_table = peak_df.copy()
-        for col in ["Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
+        for col in ["Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)", "Rank %"]:
             peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").round(4)
+        for col in ["Segment Rank", "Field Size", "Runs Used (n)", "Locations Used (n)"]:
+            peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").astype("Int64")
         st.dataframe(peak_table, use_container_width=True, hide_index=True)
         cov_df = pd.DataFrame(coverage_rows)
         if not cov_df.empty:
