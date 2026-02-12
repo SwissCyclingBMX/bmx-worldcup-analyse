@@ -282,8 +282,10 @@ def segment_short_label(segment: str) -> str:
         "Bottom->T1Delta": "B->T1",
         "T1->T2Delta": "T1->T2",
         "T2->T3Delta": "T2->T3",
-        "T3->FinishDelta": "T3->F",
-        "FinishDelta": "Finish",
+        "T3->LaptimeDelta": "T3->L",
+        "T3->FinishDelta": "T3->L",
+        "LaptimeDelta": "Laptime",
+        "FinishDelta": "Laptime",
     }
     return m.get(str(segment), str(segment))
 
@@ -1290,11 +1292,11 @@ with tabs[0]:
         {"label": "T1Delta", "delta_col": "t1_delta", "time_col": "t1", "seg_base": "t1"},
         {"label": "T2Delta", "delta_col": "t2_delta", "time_col": "t2", "seg_base": "t2"},
         {"label": "T3Delta", "delta_col": "t3_delta", "time_col": "t3", "seg_base": "t3"},
-        {"label": "FinishDelta", "delta_col": "finish_delta", "time_col": "finish", "seg_base": "finish"},
+        {"label": "LaptimeDelta", "delta_col": "finish_delta", "time_col": "finish", "seg_base": "finish"},
         {"label": "Bottom->T1Delta", "delta_col": "split_bottom_t1_delta", "time_col": "split_bottom_t1", "seg_base": "split_bottom_t1"},
         {"label": "T1->T2Delta", "delta_col": "split_t1_t2_delta", "time_col": "split_t1_t2", "seg_base": "split_t1_t2"},
         {"label": "T2->T3Delta", "delta_col": "split_t2_t3_delta", "time_col": "split_t2_t3", "seg_base": "split_t2_t3"},
-        {"label": "T3->FinishDelta", "delta_col": "split_t3_finish_delta", "time_col": "split_t3_finish", "seg_base": "split_t3_finish"},
+        {"label": "T3->LaptimeDelta", "delta_col": "split_t3_finish_delta", "time_col": "split_t3_finish", "seg_base": "split_t3_finish"},
     ]
     available_defs = []
     for sd in seg_defs:
@@ -1617,6 +1619,21 @@ with tabs[0]:
             peak_df["Rank %"] = np.nan
         peak_df.loc[peak_df["Profile"] != "Peak", ["Segment Rank", "Field Size", "Rank %"]] = np.nan
 
+        rider_fr = (
+            runs_sel[["rider_short", "event_id", "final_rank_event"]]
+            .drop_duplicates(subset=["rider_short", "event_id"])
+            .copy()
+        )
+        rider_fr["final_rank_event"] = pd.to_numeric(rider_fr["final_rank_event"], errors="coerce")
+        rider_fr_med = rider_fr.groupby("rider_short", as_index=False)["final_rank_event"].median()
+        fr_map = rider_fr_med.set_index("rider_short")["final_rank_event"].to_dict()
+        peak_df["Final Rank (median)"] = peak_df["Rider"].map(fr_map)
+        peak_df["Final Rank (median) display"] = np.where(
+            pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").notna(),
+            pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").round(1).astype(str),
+            "NA",
+        )
+
         tt = [
             alt.Tooltip("Rider:N"),
             alt.Tooltip("Segment:N"),
@@ -1630,6 +1647,7 @@ with tabs[0]:
             alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
             alt.Tooltip("Reference Mode:N"),
             alt.Tooltip("Active Reference:N"),
+            alt.Tooltip("Final Rank (median) display:N", title="Final Rank"),
             alt.Tooltip("Runs Used (n):Q"),
             alt.Tooltip("Locations Used (n):Q"),
             alt.Tooltip("Peak Runs:N"),
@@ -1746,6 +1764,7 @@ with tabs[0]:
                                 alt.Tooltip("Runs Used (n):Q", format=".0f"),
                                 alt.Tooltip("Reference Mode:N"),
                                 alt.Tooltip("Active Reference:N"),
+                                alt.Tooltip("Final Rank (median) display:N", title="Final Rank"),
                             ],
                         )
                         .properties(height=420)
@@ -1772,6 +1791,7 @@ with tabs[0]:
                                         row.get("Runs Used (n)", np.nan),
                                         row.get("Reference Mode", ""),
                                         row.get("Active Reference", ""),
+                                        row.get("Final Rank (median) display", "NA"),
                                     ]
                                 )
                             else:
@@ -1798,7 +1818,8 @@ with tabs[0]:
                                     "Delta (s): %{customdata[3]:.4f}<br>"
                                     "Runs Used (n): %{customdata[4]:.0f}<br>"
                                     "Reference Mode: %{customdata[5]}<br>"
-                                    "Active Reference: %{customdata[6]}<extra></extra>"
+                                    "Active Reference: %{customdata[6]}<br>"
+                                    "Final Rank: %{customdata[7]}<extra></extra>"
                                 ),
                             )
                         )
