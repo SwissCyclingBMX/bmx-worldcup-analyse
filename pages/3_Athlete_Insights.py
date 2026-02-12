@@ -1319,6 +1319,7 @@ with tabs[0]:
         return max(1, int(np.ceil(n_rows * 0.20)))
 
     peak_rows = []
+    coverage_rows = []
     for sd in available_defs:
         if sd["label"] not in selected_seg_labels:
             continue
@@ -1360,7 +1361,16 @@ with tabs[0]:
         seg_df["delta_raw"] = pd.to_numeric(seg_df["delta_raw"], errors="coerce")
         seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
         seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
-        seg_df = seg_df.dropna(subset=["delta_value", "segment_time", "reference_time"])
+        seg_df["is_valid_peak_row"] = (
+            seg_df["delta_value"].notna() & seg_df["segment_time"].notna() & seg_df["reference_time"].notna()
+        )
+        cov = (
+            seg_df.groupby("rider_short", as_index=False)
+            .agg(n_total=("event_id", "count"), n_valid=("is_valid_peak_row", "sum"))
+        )
+        cov["Segment"] = sd["label"]
+        coverage_rows.extend(cov.to_dict("records"))
+        seg_df = seg_df[seg_df["is_valid_peak_row"]].copy()
         if seg_df.empty:
             continue
         seg_df = seg_df.sort_values(["delta_value", "event_dt", "event_id", "round_sort", "heat_id"], na_position="last")
@@ -1426,34 +1436,68 @@ with tabs[0]:
 
     peak_df = pd.DataFrame(peak_rows)
     if not peak_df.empty:
-        c = (
-            alt.Chart(peak_df)
-            .mark_bar()
-            .encode(
-                x=alt.X("Segment:N", sort=selected_seg_labels if selected_seg_labels else None),
-                xOffset=alt.XOffset("Profile:N"),
-                y=alt.Y("Delta (s):Q", title="Delta (s)"),
-                color=alt.Color("Rider:N", title="Rider"),
-                tooltip=[
-                    alt.Tooltip("Rider:N"),
-                    alt.Tooltip("Segment:N"),
-                    alt.Tooltip("Profile:N"),
-                    alt.Tooltip("Delta (s):Q", format=".4f"),
-                    alt.Tooltip("Delta (% ref):Q", format=".2f"),
-                    alt.Tooltip("Rider Segment Time (s):Q", format=".4f"),
-                    alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
-                    alt.Tooltip("Runs Used (n):Q"),
-                    alt.Tooltip("Peak Runs:N"),
-                ],
-            )
-            .properties(height=320)
-        )
-        st.altair_chart(c, use_container_width=True)
+        tt = [
+            alt.Tooltip("Rider:N"),
+            alt.Tooltip("Segment:N"),
+            alt.Tooltip("Profile:N"),
+            alt.Tooltip("Delta (s):Q", format=".4f"),
+            alt.Tooltip("Delta (% ref):Q", format=".2f"),
+            alt.Tooltip("Rider Segment Time (s):Q", format=".4f"),
+            alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
+            alt.Tooltip("Runs Used (n):Q"),
+            alt.Tooltip("Peak Runs:N"),
+        ]
+        bottom_peak = peak_df[peak_df["Segment"] == "BottomDelta"].copy()
+        other_peak = peak_df[peak_df["Segment"] != "BottomDelta"].copy()
+
+        c_left, c_right = st.columns([1, 4])
+        with c_left:
+            if not bottom_peak.empty:
+                c_bottom = (
+                    alt.Chart(bottom_peak)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Rider:N", title="Rider"),
+                        xOffset=alt.XOffset("Profile:N"),
+                        y=alt.Y("Delta (s):Q", title="Bottom Delta (s)", scale=alt.Scale(domain=[0, 0.2], nice=False)),
+                        color=alt.Color("Rider:N", title="Rider"),
+                        tooltip=tt,
+                    )
+                    .properties(height=320)
+                )
+                st.altair_chart(c_bottom, use_container_width=True)
+            else:
+                st.info("Kein BottomDelta fuer aktuelle Filter.")
+        with c_right:
+            if not other_peak.empty:
+                c_other = (
+                    alt.Chart(other_peak)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Segment:N", sort=[x for x in selected_seg_labels if x != "BottomDelta"]),
+                        xOffset=alt.XOffset("Profile:N"),
+                        y=alt.Y("Delta (s):Q", title="Delta (s)"),
+                        color=alt.Color("Rider:N", title="Rider"),
+                        tooltip=tt,
+                    )
+                    .properties(height=320)
+                )
+                st.altair_chart(c_other, use_container_width=True)
+            else:
+                st.info("Keine weiteren Segment-Deltas fuer aktuelle Filter.")
 
         peak_table = peak_df.copy()
         for col in ["Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
             peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").round(4)
         st.dataframe(peak_table, use_container_width=True, hide_index=True)
+        cov_df = pd.DataFrame(coverage_rows)
+        if not cov_df.empty:
+            cov_df["missing_reason"] = np.where(cov_df["n_valid"] == 0, "Keine gueltigen Kombinationen aus Delta+SegmentTime+Reference", "")
+            st.dataframe(
+                cov_df.sort_values(["Segment", "rider_short"] if "rider_short" in cov_df.columns else ["Segment"]),
+                use_container_width=True,
+                hide_index=True,
+            )
         st.caption("Peak wird pro Rider × Segment unabhaengig berechnet (Top-Auswahl je Segment, danach Median).")
     else:
         st.info("Keine Daten fuer Peak Segment Profile in der aktuellen Auswahl.")
