@@ -310,14 +310,24 @@ def style_pdf_table(table, n_cols: int):
     """Improve readability of matplotlib table headers with wrapped labels."""
     # Slightly smaller body text, but clearer header rows.
     table.auto_set_font_size(False)
-    table.set_fontsize(6.4)
-    # Base cell scaling; make rows a bit taller for wrapped headers.
-    table.scale(1, 1.34)
+    table.set_fontsize(6.2)
+    # Base cell scaling; make rows taller for wrapped headers/body.
+    table.scale(1, 1.42)
+    # Force wrap for all cells.
+    for (_, _), cell in table.get_celld().items():
+        cell.get_text().set_wrap(True)
+    # Keep columns readable on A4 portrait.
+    if n_cols > 0:
+        col_w = min(0.98 / n_cols, 0.12)
+        for c in range(n_cols):
+            for r in range(0, max(k[0] for k in table.get_celld().keys()) + 1):
+                if (r, c) in table.get_celld():
+                    table[(r, c)].set_width(col_w)
     for c in range(n_cols):
         hcell = table[(0, c)]
-        hcell.set_text_props(weight="bold", fontsize=6.0, ha="center", va="center")
+        hcell.set_text_props(weight="bold", fontsize=5.8, ha="center", va="center")
         # Increase header row height to make 2-line headers readable.
-        hcell.set_height(hcell.get_height() * 1.45)
+        hcell.set_height(hcell.get_height() * 1.90)
 
 
 def bin_pos(pos: float) -> str:
@@ -2007,10 +2017,29 @@ with tabs[0]:
         if plt is None or PdfPages is None:
             st.caption("PDF-Export verfuegbar nach Installation von `matplotlib`.")
         else:
+            export_segment_order = [
+                "BottomDelta",
+                "Bottom->T1Delta",
+                "T1Delta",
+                "T1->T2Delta",
+                "T2Delta",
+                "T2->T3Delta",
+                "T3->FinishDelta",
+                "LaptimeDelta",
+                "Final Rank",
+            ]
+            export_segment_order = [
+                s
+                for s in export_segment_order
+                if (s == "Final Rank") or (s in [d["label"] for d in available_defs])
+            ]
+            export_seg_idx = {s: i for i, s in enumerate(export_segment_order)}
+
             def _compute_event_peak_df(event_slice: pd.DataFrame, rank_pool_slice: pd.DataFrame) -> pd.DataFrame:
                 rows = []
-                for sd in available_defs:
-                    if sd["label"] not in selected_seg_labels:
+                seg_defs_for_export = [d for d in available_defs if d["label"] in export_segment_order]
+                for sd in seg_defs_for_export:
+                    if sd["label"] not in export_segment_order:
                         continue
                     dcol = sd["delta_use_col"]
                     dcol_raw = sd["delta_col"]
@@ -2145,6 +2174,67 @@ with tabs[0]:
                                 "Rank %": rank_pct,
                             }
                         )
+
+                # Add event-level final classification as synthetic segment.
+                ev = event_slice.copy()
+                rp_ev = rank_pool_slice.copy()
+                if "final_rank_event" not in ev.columns:
+                    ev = attach_final_rank_event(ev, master_results)
+                if "final_rank_event" not in rp_ev.columns:
+                    rp_ev = attach_final_rank_event(rp_ev, master_results)
+                ev["final_rank_event"] = pd.to_numeric(ev.get("final_rank_event"), errors="coerce")
+                rp_ev["final_rank_event"] = pd.to_numeric(rp_ev.get("final_rank_event"), errors="coerce")
+                ev_fr = (
+                    ev[["rider_short", "category", "gender", "final_rank_event"]]
+                    .drop_duplicates(subset=["rider_short"], keep="first")
+                    .dropna(subset=["final_rank_event"])
+                    .copy()
+                )
+                if not ev_fr.empty:
+                    pool_fr = (
+                        rp_ev[["rider_short", "category", "gender", "final_rank_event"]]
+                        .drop_duplicates(subset=["rider_short"], keep="first")
+                        .dropna(subset=["final_rank_event"])
+                        .copy()
+                    )
+                    if not pool_fr.empty:
+                        for _, rr in ev_fr.iterrows():
+                            cat = rr.get("category")
+                            gen = rr.get("gender")
+                            rider = rr.get("rider_short")
+                            rnk = float(rr.get("final_rank_event"))
+                            field = pool_fr[
+                                (pool_fr["category"] == cat) & (pool_fr["gender"] == gen)
+                            ].copy()
+                            seg_rank = np.nan
+                            field_size = np.nan
+                            rank_pct = np.nan
+                            if not field.empty:
+                                field = field.sort_values("final_rank_event", ascending=True, na_position="last")
+                                field["seg_rank"] = field["final_rank_event"].rank(method="min", ascending=True)
+                                field_size = int(field["rider_short"].nunique())
+                                one = field[field["rider_short"] == rider]
+                                if not one.empty:
+                                    seg_rank = float(one["seg_rank"].iloc[0])
+                                    rank_pct = (seg_rank / field_size) * 100.0 if field_size > 0 else np.nan
+                            rows.append(
+                                {
+                                    "Rider": rider,
+                                    "Segment": "Final Rank",
+                                    "Segment Short": segment_short_label("Final Rank"),
+                                    "Delta (s)": np.nan,
+                                    "Delta (% ref)": np.nan,
+                                    "Rider Segment Time (s)": np.nan,
+                                    "Reference Segment Time (s)": np.nan,
+                                    "Reference Mode": "Final Classification",
+                                    "Runs Used (n)": 1,
+                                    "Peak Runs": "",
+                                    "Rounds": "Final classification",
+                                    "Segment Rank": seg_rank,
+                                    "Field Size": field_size,
+                                    "Rank %": rank_pct,
+                                }
+                            )
                 return pd.DataFrame(rows)
 
             def _draw_radar(ax, one_rider_df: pd.DataFrame, title: str):
@@ -2157,25 +2247,27 @@ with tabs[0]:
                     else:
                         return
                 d["Segment Rank"] = pd.to_numeric(d["Segment Rank"], errors="coerce")
-                d = d.dropna(subset=["Segment Rank"])
+                d["seg_idx"] = d["Segment"].map(export_seg_idx)
+                d = d.sort_values("seg_idx", na_position="last")
                 if d.empty:
                     return
-                d = d.sort_values("Segment", key=lambda s: s.map({k: i for i, k in enumerate(selected_seg_labels)}).fillna(999))
-                theta = np.linspace(0, 2 * np.pi, len(d), endpoint=False)
-                rank_vals = d["Segment Rank"].to_numpy(dtype=float)
+                labels = [segment_short_label(x) for x in export_segment_order]
+                theta = np.linspace(0, 2 * np.pi, len(export_segment_order), endpoint=False)
+                rank_map = d.set_index("Segment")["Segment Rank"].to_dict()
+                rank_vals = np.array([safe_float(rank_map.get(seg)) for seg in export_segment_order], dtype=float)
                 theta = np.concatenate([theta, [theta[0]]])
-                labels = d["Segment Short"].tolist()
                 # Dynamic, page-stable max rank: use field size of this page/rider view.
                 field_max = int(pd.to_numeric(d["Field Size"], errors="coerce").max()) if d["Field Size"].notna().any() else 0
-                rank_max = int(np.nanmax(rank_vals)) if len(rank_vals) > 0 else 0
+                finite_ranks = rank_vals[np.isfinite(rank_vals)]
+                rank_max = int(finite_ranks.max()) if finite_ranks.size > 0 else 0
                 max_rank = max(16, field_max, rank_max)
                 # Keep axis non-inverted; transform rank so Rank 1 is at the outer ring.
                 # r_plot = max_rank + 1 - rank
                 r_plot_vals = (max_rank + 1.0) - rank_vals
                 r = np.concatenate([r_plot_vals, [r_plot_vals[0]]])
-                labels = d["Segment Short"].tolist()
                 ax.plot(theta, r, linewidth=2)
-                ax.scatter(theta[:-1], r[:-1], s=20)
+                valid_mask = ~np.isnan(r_plot_vals)
+                ax.scatter(theta[:-1][valid_mask], r[:-1][valid_mask], s=20)
                 ax.set_title(title, fontsize=10, pad=18)
                 ax.set_xticks(theta[:-1])
                 ax.set_xticklabels(labels, fontsize=8)
@@ -2243,10 +2335,16 @@ with tabs[0]:
                                     "Delta (s)",
                                     "Delta (% ref)",
                                     "Rider Segment Time (s)",
-                                    "Reference Segment Time (s)",
                                     "Runs Used (n)",
                                     "Rounds",
                                 ]].copy()
+                                tbl["seg_idx"] = tbl["Segment Short"].map(
+                                    {segment_short_label(k): i for i, k in enumerate(export_segment_order)}
+                                )
+                                tbl = tbl.sort_values("seg_idx", na_position="last").drop(columns=["seg_idx"])
+                                base_segments = pd.DataFrame(
+                                    {"Segment": [segment_short_label(k) for k in export_segment_order]}
+                                )
                                 tbl = tbl.rename(
                                     columns={
                                         "Segment Short": "Segment",
@@ -2256,15 +2354,15 @@ with tabs[0]:
                                         "Delta (s)": "Delta\n(s)",
                                         "Delta (% ref)": "Delta\n(% ref)",
                                         "Rider Segment Time (s)": "Rider Segment\nTime (s)",
-                                        "Reference Segment Time (s)": "Reference Segment\nTime (s)",
                                         "Runs Used (n)": "Runs Used\n(n)",
                                         "Rounds": "Round(s)",
                                     }
                                 )
+                                tbl = base_segments.merge(tbl, on="Segment", how="left")
                                 tbl["Segment\nRank"] = tbl["Segment\nRank"].apply(format_rank_value)
                                 for c in ["Field\nSize", "Runs Used\n(n)"]:
                                     tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
-                                for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nTime (s)", "Reference Segment\nTime (s)"]:
+                                for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nTime (s)"]:
                                     tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(
                                     cellText=tbl.values,
@@ -2286,16 +2384,23 @@ with tabs[0]:
                                     "Delta (s)",
                                     "Delta (% ref)",
                                     "Rider Segment Time (s)",
-                                    "Reference Segment Time (s)",
                                     "Runs Used (n)",
                                 ]
                                 for c in num_cols:
                                     ov_all[c] = pd.to_numeric(ov_all[c], errors="coerce")
                                 grp_cols = ["Rider", "Segment", "Segment Short", "Reference Mode"]
-                                ov = (
-                                    ov_all.groupby(grp_cols, dropna=False)[num_cols]
-                                    .mean(numeric_only=True)
-                                    .reset_index()
+                                ov = ov_all.groupby(grp_cols, dropna=False)[
+                                    ["Segment Rank", "Field Size", "Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)"]
+                                ].mean(numeric_only=True).reset_index()
+                                ov_runs = (
+                                    ov_all.groupby(grp_cols, dropna=False)["Runs Used (n)"]
+                                    .sum(min_count=1)
+                                    .reset_index(name="Runs Used (n)")
+                                )
+                                ov_var = (
+                                    ov_all.groupby(grp_cols, dropna=False)["Rider Segment Time (s)"]
+                                    .agg(lambda s: (s.max() - s.min()) / 2 if s.notna().sum() > 1 else 0.0)
+                                    .reset_index(name="Rider Segment Variation (±s)")
                                 )
                                 ev_used = (
                                     ov_all.groupby(grp_cols, dropna=False)["event_id"]
@@ -2307,10 +2412,15 @@ with tabs[0]:
                                     .nunique()
                                     .reset_index(name="Locations Used (n)")
                                 )
-                                ov = ov.merge(ev_used, on=grp_cols, how="left").merge(loc_used, on=grp_cols, how="left")
+                                ov = (
+                                    ov.merge(ov_runs, on=grp_cols, how="left")
+                                    .merge(ov_var, on=grp_cols, how="left")
+                                    .merge(ev_used, on=grp_cols, how="left")
+                                    .merge(loc_used, on=grp_cols, how="left")
+                                )
                                 ov = ov.sort_values(
                                     "Segment",
-                                    key=lambda s: s.map({k: i for i, k in enumerate(selected_seg_labels)}).fillna(999),
+                                    key=lambda s: s.map(export_seg_idx).fillna(999),
                                 )
                             if not ov.empty:
                                 fig = plt.figure(figsize=(8.27, 11.69))
@@ -2327,12 +2437,15 @@ with tabs[0]:
                                     "Rank %",
                                     "Delta (s)",
                                     "Delta (% ref)",
-                                    "Rider Segment Time (s)",
-                                    "Reference Segment Time (s)",
+                                    "Rider Segment Variation (±s)",
                                     "Runs Used (n)",
                                     "Locations Used (n)",
                                     "Events Used (n)",
                                 ]].copy()
+                                ov_tbl["seg_idx"] = ov_tbl["Segment"].map(export_seg_idx)
+                                ov_tbl = ov_tbl.sort_values("seg_idx", na_position="last").drop(columns=["seg_idx"])
+                                base_segments = pd.DataFrame({"Segment": export_segment_order})
+                                ov_tbl = base_segments.merge(ov_tbl, on="Segment", how="left")
                                 ov_tbl["Segment"] = ov_tbl["Segment"].apply(segment_short_label)
                                 ov_tbl = ov_tbl.rename(
                                     columns={
@@ -2341,16 +2454,16 @@ with tabs[0]:
                                         "Rank %": "Rank\n%",
                                         "Delta (s)": "Delta\n(s)",
                                         "Delta (% ref)": "Delta\n(% ref)",
-                                        "Rider Segment Time (s)": "Rider Segment\nTime (s)",
-                                        "Reference Segment Time (s)": "Reference Segment\nTime (s)",
+                                        "Rider Segment Variation (±s)": "Rider Segment\nVariation (±s)",
                                         "Runs Used (n)": "Runs Used\n(n)",
                                         "Locations Used (n)": "Locations Used\n(n)",
+                                        "Events Used (n)": "Events Used\n(n)",
                                     }
                                 )
                                 ov_tbl["Segment\nRank"] = ov_tbl["Segment\nRank"].apply(format_rank_value)
-                                for c in ["Field\nSize", "Runs Used\n(n)", "Locations Used\n(n)"]:
+                                for c in ["Field\nSize", "Runs Used\n(n)", "Locations Used\n(n)", "Events Used\n(n)"]:
                                     ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
-                                for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nTime (s)", "Reference Segment\nTime (s)"]:
+                                for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nVariation (±s)"]:
                                     ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(cellText=ov_tbl.values, colLabels=ov_tbl.columns, loc="center")
                                 style_pdf_table(table, len(ov_tbl.columns))
