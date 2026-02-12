@@ -282,8 +282,8 @@ def segment_short_label(segment: str) -> str:
         "Bottom->T1Delta": "B->T1",
         "T1->T2Delta": "T1->T2",
         "T2->T3Delta": "T2->T3",
-        "T3->LaptimeDelta": "T3->L",
-        "T3->FinishDelta": "T3->L",
+        "T3->FinishDelta": "T3->F",
+        "Final Rank": "Final Rank",
         "LaptimeDelta": "Laptime",
         "FinishDelta": "Laptime",
     }
@@ -1296,7 +1296,7 @@ with tabs[0]:
         {"label": "Bottom->T1Delta", "delta_col": "split_bottom_t1_delta", "time_col": "split_bottom_t1", "seg_base": "split_bottom_t1"},
         {"label": "T1->T2Delta", "delta_col": "split_t1_t2_delta", "time_col": "split_t1_t2", "seg_base": "split_t1_t2"},
         {"label": "T2->T3Delta", "delta_col": "split_t2_t3_delta", "time_col": "split_t2_t3", "seg_base": "split_t2_t3"},
-        {"label": "T3->LaptimeDelta", "delta_col": "split_t3_finish_delta", "time_col": "split_t3_finish", "seg_base": "split_t3_finish"},
+        {"label": "T3->FinishDelta", "delta_col": "split_t3_finish_delta", "time_col": "split_t3_finish", "seg_base": "split_t3_finish"},
     ]
     available_defs = []
     for sd in seg_defs:
@@ -1318,10 +1318,22 @@ with tabs[0]:
         available_defs.append(sd2)
 
     available_seg_labels = [sd["label"] for sd in available_defs]
+    segment_options = ["Final Rank"] + [x for x in available_seg_labels if x != "Final Rank"]
+    default_segments = [
+        "Final Rank",
+        "BottomDelta",
+        "Bottom->T1Delta",
+        "T1->T2Delta",
+        "T2->T3Delta",
+        "T3->FinishDelta",
+    ]
+    default_segment_selection = [x for x in default_segments if x in segment_options]
+    if not default_segment_selection:
+        default_segment_selection = segment_options
     selected_seg_labels = st.multiselect(
         "Segmente anzeigen",
-        options=available_seg_labels,
-        default=available_seg_labels,
+        options=segment_options,
+        default=default_segment_selection,
         key="peak_seg_segments",
     )
     peak_mode = st.selectbox(
@@ -1634,6 +1646,81 @@ with tabs[0]:
             "NA",
         )
 
+        # Add one synthetic radar metric for Final Rank per rider (single value).
+        pool_fr = attach_final_rank_event(pool_rel.copy(), master_results)
+        pool_fr = (
+            pool_fr[["rider_short", "category", "gender", "event_id", "location", "final_rank_event"]]
+            .drop_duplicates(subset=["rider_short", "category", "gender", "event_id"])
+            .copy()
+        )
+        pool_fr["final_rank_event"] = pd.to_numeric(pool_fr["final_rank_event"], errors="coerce")
+        pool_fr_med = (
+            pool_fr.groupby(["rider_short", "category", "gender"], as_index=False)["final_rank_event"].median()
+        )
+        pool_field = (
+            pool_fr_med.dropna(subset=["final_rank_event"])
+            .groupby(["category", "gender"], as_index=False)
+            .agg(field_size=("rider_short", "nunique"))
+        )
+        rider_meta = (
+            runs_sel.groupby("rider_short", as_index=False)
+            .agg(
+                category=("category", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+                gender=("gender", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+                runs_used=("event_id", "nunique"),
+                locations_used=("location", "nunique"),
+            )
+        )
+        fr_rows = rider_meta.merge(pool_fr_med, on=["rider_short", "category", "gender"], how="left")
+        fr_rows = fr_rows.merge(pool_field, on=["category", "gender"], how="left")
+        fr_rows = fr_rows.dropna(subset=["final_rank_event"]).copy()
+        if not fr_rows.empty:
+            fr_rows["Segment Rank"] = pd.to_numeric(fr_rows["final_rank_event"], errors="coerce")
+            fr_rows["Field Size"] = pd.to_numeric(fr_rows["field_size"], errors="coerce")
+            fr_rows["Rank %"] = np.where(
+                fr_rows["Field Size"] > 0,
+                (fr_rows["Segment Rank"] / fr_rows["Field Size"]) * 100.0,
+                np.nan,
+            )
+            fr_rows["Final Rank (median)"] = fr_rows["Segment Rank"]
+            fr_rows["Final Rank (median) display"] = fr_rows["Segment Rank"].round(1).astype(str)
+            fr_rows["Profile"] = "Peak"
+            fr_rows["Segment"] = "Final Rank"
+            fr_rows["Delta (s)"] = np.nan
+            fr_rows["Delta (% ref)"] = np.nan
+            fr_rows["Rider Segment Time (s)"] = np.nan
+            fr_rows["Reference Segment Time (s)"] = np.nan
+            fr_rows["Reference Mode"] = "Final Classification"
+            fr_rows["Active Reference"] = ref_caption
+            fr_rows["Runs Used (n)"] = fr_rows["runs_used"].astype(int)
+            fr_rows["Locations Used (n)"] = fr_rows["locations_used"].astype(int)
+            fr_rows["Peak Runs"] = ""
+            fr_rows["Rider"] = fr_rows["rider_short"]
+            fr_rows["Category"] = fr_rows["category"]
+            fr_rows["Gender"] = fr_rows["gender"]
+            add_cols = [
+                "Rider",
+                "Segment",
+                "Category",
+                "Gender",
+                "Profile",
+                "Delta (s)",
+                "Delta (% ref)",
+                "Rider Segment Time (s)",
+                "Reference Segment Time (s)",
+                "Reference Mode",
+                "Active Reference",
+                "Runs Used (n)",
+                "Locations Used (n)",
+                "Peak Runs",
+                "Segment Rank",
+                "Field Size",
+                "Rank %",
+                "Final Rank (median)",
+                "Final Rank (median) display",
+            ]
+            peak_df = pd.concat([peak_df, fr_rows[add_cols]], ignore_index=True)
+
         tt = [
             alt.Tooltip("Rider:N"),
             alt.Tooltip("Segment:N"),
@@ -1653,7 +1740,7 @@ with tabs[0]:
             alt.Tooltip("Peak Runs:N"),
         ]
         bottom_peak = peak_df[peak_df["Segment"] == "BottomDelta"].copy()
-        other_peak = peak_df[peak_df["Segment"] != "BottomDelta"].copy()
+        other_peak = peak_df[(peak_df["Segment"] != "BottomDelta") & (peak_df["Segment"] != "Final Rank")].copy()
 
         rider_domain = sorted(peak_df["Rider"].dropna().unique().tolist())
         rider_color = alt.Color("Rider:N", title="Rider", scale=alt.Scale(domain=rider_domain))
