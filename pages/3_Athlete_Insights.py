@@ -1489,6 +1489,7 @@ with tabs[0]:
                     "Rider Segment Time (s)": peak_time,
                     "Reference Segment Time (s)": peak_ref,
                     "Reference Mode": peak_sel["ref_display_type"].iloc[0],
+                    "Active Reference": ref_caption,
                     "Runs Used (n)": int(len(peak_sel)),
                     "Locations Used (n)": int(peak_sel["location"].nunique(dropna=True)),
                     "Peak Runs": peak_runs_text,
@@ -1512,6 +1513,7 @@ with tabs[0]:
                         "Rider Segment Time (s)": ov_time,
                         "Reference Segment Time (s)": ov_ref,
                         "Reference Mode": g_all["ref_display_type"].iloc[0],
+                        "Active Reference": ref_caption,
                         "Runs Used (n)": int(len(g_all)),
                         "Locations Used (n)": int(g_all["location"].nunique(dropna=True)),
                         "Peak Runs": "",
@@ -1627,6 +1629,7 @@ with tabs[0]:
             alt.Tooltip("Rider Segment Time (s):Q", format=".4f"),
             alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
             alt.Tooltip("Reference Mode:N"),
+            alt.Tooltip("Active Reference:N"),
             alt.Tooltip("Runs Used (n):Q"),
             alt.Tooltip("Locations Used (n):Q"),
             alt.Tooltip("Peak Runs:N"),
@@ -1715,6 +1718,11 @@ with tabs[0]:
                     (radar_df["Segment Rank"] / radar_df["Field Size"]) * 100.0,
                     np.nan,
                 )
+                radar_df["Segment Rank Text"] = (
+                    pd.to_numeric(radar_df["Segment Rank"], errors="coerce").astype("Int64").astype(str)
+                    + "/"
+                    + pd.to_numeric(radar_df["Field Size"], errors="coerce").astype("Int64").astype(str)
+                )
                 if go is None:
                     st.warning("Radar benoetigt `plotly`. Fallback-Ansicht wird angezeigt.")
                     fallback = (
@@ -1732,12 +1740,12 @@ with tabs[0]:
                             tooltip=[
                                 alt.Tooltip("Rider:N"),
                                 alt.Tooltip("Segment Short:N", title="Segment"),
-                                alt.Tooltip("Segment Rank:Q", title="Segment Rank", format=".0f"),
-                                alt.Tooltip("Field Size:Q", title="Field Size", format=".0f"),
+                                alt.Tooltip("Segment Rank Text:N", title="Segment Rank"),
                                 alt.Tooltip("Rank Top %:Q", title="Rank %", format=".1f"),
                                 alt.Tooltip("Delta (s):Q", format=".4f"),
                                 alt.Tooltip("Runs Used (n):Q", format=".0f"),
                                 alt.Tooltip("Reference Mode:N"),
+                                alt.Tooltip("Active Reference:N"),
                             ],
                         )
                         .properties(height=420)
@@ -1763,6 +1771,7 @@ with tabs[0]:
                                         row.get("Delta (s)", np.nan),
                                         row.get("Runs Used (n)", np.nan),
                                         row.get("Reference Mode", ""),
+                                        row.get("Active Reference", ""),
                                     ]
                                 )
                             else:
@@ -1784,11 +1793,12 @@ with tabs[0]:
                                 hovertemplate=(
                                     "Rider: %{fullData.name}<br>"
                                     "Segment: %{theta}<br>"
-                                    "Segment Rank: %{customdata[0]:.0f} / %{customdata[1]:.0f}<br>"
+                                    "Segment Rank: %{customdata[0]:.0f}/%{customdata[1]:.0f}<br>"
                                     "Rank %%: %{customdata[2]:.1f}%<br>"
                                     "Delta (s): %{customdata[3]:.4f}<br>"
                                     "Runs Used (n): %{customdata[4]:.0f}<br>"
-                                    "Reference Mode: %{customdata[5]}<extra></extra>"
+                                    "Reference Mode: %{customdata[5]}<br>"
+                                    "Active Reference: %{customdata[6]}<extra></extra>"
                                 ),
                             )
                         )
