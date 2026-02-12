@@ -2186,15 +2186,17 @@ with tabs[0]:
                 rp_ev["final_rank_event"] = pd.to_numeric(rp_ev.get("final_rank_event"), errors="coerce")
                 ev_fr = (
                     ev[["rider_short", "category", "gender", "final_rank_event"]]
-                    .drop_duplicates(subset=["rider_short"], keep="first")
                     .dropna(subset=["final_rank_event"])
+                    .sort_values(["rider_short", "final_rank_event"], na_position="last")
+                    .drop_duplicates(subset=["rider_short"], keep="first")
                     .copy()
                 )
                 if not ev_fr.empty:
                     pool_fr = (
                         rp_ev[["rider_short", "category", "gender", "final_rank_event"]]
-                        .drop_duplicates(subset=["rider_short"], keep="first")
                         .dropna(subset=["final_rank_event"])
+                        .sort_values(["rider_short", "final_rank_event"], na_position="last")
+                        .drop_duplicates(subset=["rider_short"], keep="first")
                         .copy()
                     )
                     if not pool_fr.empty:
