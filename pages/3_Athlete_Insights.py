@@ -1602,7 +1602,10 @@ with tabs[0]:
         bottom_peak = peak_df[peak_df["Segment"] == "BottomDelta"].copy()
         other_peak = peak_df[peak_df["Segment"] != "BottomDelta"].copy()
 
-        c_left, c_right = st.columns([1, 4])
+        rider_domain = sorted(peak_df["Rider"].dropna().unique().tolist())
+        rider_color = alt.Color("Rider:N", title="Rider", scale=alt.Scale(domain=rider_domain))
+
+        c_left, c_right = st.columns([2, 3])
         with c_left:
             if not bottom_peak.empty:
                 bmin = float(pd.to_numeric(bottom_peak["Delta (s)"], errors="coerce").min())
@@ -1613,10 +1616,10 @@ with tabs[0]:
                     alt.Chart(bottom_peak)
                     .mark_bar()
                     .encode(
-                        x=alt.X("Rider:N", title="Rider"),
+                        x=alt.X("Rider:N", title="Rider", axis=alt.Axis(labelAngle=-90, labelLimit=180)),
                         xOffset=alt.XOffset("Profile:N"),
                         y=alt.Y("Delta (s):Q", title="Bottom Delta (s)", scale=alt.Scale(domain=[by_min, by_max], nice=False)),
-                        color=alt.Color("Rider:N", title="Rider"),
+                        color=alt.Color("Rider:N", scale=alt.Scale(domain=rider_domain), legend=None),
                         tooltip=tt,
                     )
                     .properties(height=320)
@@ -1633,7 +1636,7 @@ with tabs[0]:
                         x=alt.X("Segment:N", sort=[x for x in selected_seg_labels if x != "BottomDelta"]),
                         xOffset=alt.XOffset("Profile:N"),
                         y=alt.Y("Delta (s):Q", title="Delta (s)"),
-                        color=alt.Color("Rider:N", title="Rider"),
+                        color=rider_color,
                         tooltip=tt,
                     )
                     .properties(height=320)
