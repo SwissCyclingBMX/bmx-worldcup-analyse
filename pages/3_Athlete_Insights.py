@@ -2128,6 +2128,11 @@ with tabs[0]:
                 if one_rider_df.empty:
                     return
                 d = one_rider_df.copy()
+                if "Segment Short" not in d.columns:
+                    if "Segment" in d.columns:
+                        d["Segment Short"] = d["Segment"].apply(segment_short_label)
+                    else:
+                        return
                 d["Segment Rank"] = pd.to_numeric(d["Segment Rank"], errors="coerce")
                 d = d.dropna(subset=["Segment Rank"])
                 if d.empty:
