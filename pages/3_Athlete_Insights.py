@@ -295,6 +295,16 @@ def safe_float(v):
     return float(x) if pd.notna(x) else np.nan
 
 
+def format_rank_value(v) -> str:
+    x = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+    if pd.isna(x):
+        return "NA"
+    x = float(x)
+    if abs(x - round(x)) < 1e-9:
+        return str(int(round(x)))
+    return f"{x:.1f}"
+
+
 def bin_pos(pos: float) -> str:
     if pd.isna(pos):
         return "NA"
@@ -1864,10 +1874,9 @@ with tabs[0]:
                     (radar_df["Segment Rank"] / radar_df["Field Size"]) * 100.0,
                     np.nan,
                 )
-                radar_df["Segment Rank Text"] = (
-                    pd.to_numeric(radar_df["Segment Rank"], errors="coerce").astype("Int64").astype(str)
-                    + "/"
-                    + pd.to_numeric(radar_df["Field Size"], errors="coerce").astype("Int64").astype(str)
+                radar_df["Segment Rank Text"] = radar_df.apply(
+                    lambda r: f"{format_rank_value(r.get('Segment Rank'))}/{format_rank_value(r.get('Field Size'))}",
+                    axis=1,
                 )
                 if go is None:
                     st.warning("Radar benoetigt `plotly`. Fallback-Ansicht wird angezeigt.")
@@ -1912,8 +1921,7 @@ with tabs[0]:
                                 r_vals.append(float(row["Segment Rank"]))
                                 custom.append(
                                     [
-                                        row.get("Segment Rank", np.nan),
-                                        row.get("Field Size", np.nan),
+                                        row.get("Segment Rank Text", "NA/NA"),
                                         row.get("Rank Top %", np.nan),
                                         row.get("Delta (s)", np.nan),
                                         row.get("Runs Used (n)", np.nan),
@@ -1941,13 +1949,13 @@ with tabs[0]:
                                 hovertemplate=(
                                     "Rider: %{fullData.name}<br>"
                                     "Segment: %{theta}<br>"
-                                    "Segment Rank: %{customdata[0]:.0f}/%{customdata[1]:.0f}<br>"
-                                    "Rank %%: %{customdata[2]:.1f}%<br>"
-                                    "Delta (s): %{customdata[3]:.4f}<br>"
-                                    "Runs Used (n): %{customdata[4]:.0f}<br>"
-                                    "Reference Mode: %{customdata[5]}<br>"
-                                    "Active Reference: %{customdata[6]}<br>"
-                                    "Final Rank: %{customdata[7]}<extra></extra>"
+                                    "Segment Rank: %{customdata[0]}<br>"
+                                    "Rank %%: %{customdata[1]:.1f}%<br>"
+                                    "Delta (s): %{customdata[2]:.4f}<br>"
+                                    "Runs Used (n): %{customdata[3]:.0f}<br>"
+                                    "Reference Mode: %{customdata[4]}<br>"
+                                    "Active Reference: %{customdata[5]}<br>"
+                                    "Final Rank: %{customdata[6]}<extra></extra>"
                                 ),
                             )
                         )
@@ -2166,8 +2174,9 @@ with tabs[0]:
                                     "Reference Segment Time (s)",
                                     "Runs Used (n)",
                                 ]].copy()
-                                for c in ["Segment Rank", "Field Size", "Runs Used (n)"]:
-                                    tbl[c] = pd.to_numeric(tbl[c], errors="coerce").astype("Int64").astype(str)
+                                tbl["Segment Rank"] = tbl["Segment Rank"].apply(format_rank_value)
+                                for c in ["Field Size", "Runs Used (n)"]:
+                                    tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
                                 for c in ["Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
                                     tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(
@@ -2203,8 +2212,9 @@ with tabs[0]:
                                     "Locations Used (n)",
                                 ]].copy()
                                 ov_tbl["Segment"] = ov_tbl["Segment"].apply(segment_short_label)
-                                for c in ["Segment Rank", "Field Size", "Runs Used (n)", "Locations Used (n)"]:
-                                    ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").astype("Int64").astype(str)
+                                ov_tbl["Segment Rank"] = ov_tbl["Segment Rank"].apply(format_rank_value)
+                                for c in ["Field Size", "Runs Used (n)", "Locations Used (n)"]:
+                                    ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
                                 for c in ["Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)"]:
                                     ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(cellText=ov_tbl.values, colLabels=ov_tbl.columns, loc="center")
@@ -2229,8 +2239,9 @@ with tabs[0]:
         peak_table = peak_df.copy()
         for col in ["Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)", "Rank %"]:
             peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").round(4)
-        for col in ["Segment Rank", "Field Size", "Runs Used (n)", "Locations Used (n)"]:
-            peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").astype("Int64")
+        peak_table["Segment Rank"] = pd.to_numeric(peak_table["Segment Rank"], errors="coerce").round(2)
+        for col in ["Field Size", "Runs Used (n)", "Locations Used (n)"]:
+            peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").round(0).astype("Int64")
         st.dataframe(peak_table, use_container_width=True, hide_index=True)
         cov_df = pd.DataFrame(coverage_rows)
         if not cov_df.empty:
