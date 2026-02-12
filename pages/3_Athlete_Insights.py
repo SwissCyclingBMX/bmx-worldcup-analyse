@@ -2139,19 +2139,28 @@ with tabs[0]:
                     return
                 d = d.sort_values("Segment", key=lambda s: s.map({k: i for i, k in enumerate(selected_seg_labels)}).fillna(999))
                 theta = np.linspace(0, 2 * np.pi, len(d), endpoint=False)
-                r = d["Segment Rank"].to_numpy(dtype=float)
+                rank_vals = d["Segment Rank"].to_numpy(dtype=float)
                 theta = np.concatenate([theta, [theta[0]]])
-                r = np.concatenate([r, [r[0]]])
                 labels = d["Segment Short"].tolist()
-                field_max = int(pd.to_numeric(d["Field Size"], errors="coerce").max()) if d["Field Size"].notna().any() else max(16, int(np.nanmax(r)))
+                # Dynamic, page-stable max rank: use field size of this page/rider view.
+                field_max = int(pd.to_numeric(d["Field Size"], errors="coerce").max()) if d["Field Size"].notna().any() else 0
+                rank_max = int(np.nanmax(rank_vals)) if len(rank_vals) > 0 else 0
+                max_rank = max(16, field_max, rank_max)
+                # Keep axis non-inverted; transform rank so Rank 1 is at the outer ring.
+                # r_plot = max_rank + 1 - rank
+                r_plot_vals = (max_rank + 1.0) - rank_vals
+                r = np.concatenate([r_plot_vals, [r_plot_vals[0]]])
+                labels = d["Segment Short"].tolist()
                 ax.plot(theta, r, linewidth=2)
                 ax.scatter(theta[:-1], r[:-1], s=20)
                 ax.set_title(title, fontsize=10, pad=18)
                 ax.set_xticks(theta[:-1])
                 ax.set_xticklabels(labels, fontsize=8)
-                ax.set_ylim(1, max(field_max, 16))
-                ax.set_yticks([x for x in [1, 8, 16] if x <= max(field_max, 16)])
-                ax.set_yticklabels([str(x) for x in [1, 8, 16] if x <= max(field_max, 16)], fontsize=7)
+                ax.set_ylim(0.5, max_rank + 0.5)
+                ring_ranks = [x for x in [1, 8, 16, 32] if x <= max_rank]
+                ring_pos = [(max_rank + 1) - x for x in ring_ranks]
+                ax.set_yticks(ring_pos)
+                ax.set_yticklabels([str(x) for x in ring_ranks], fontsize=7)
                 ax.set_theta_offset(np.pi / 2)
                 ax.set_theta_direction(-1)
 
@@ -2193,7 +2202,7 @@ with tabs[0]:
                                 fig = plt.figure(figsize=(8.27, 11.69))
                                 ax = plt.subplot(211, projection="polar")
                                 _draw_radar(ax, evt_peak, f"{clean_spaces(str(erow['display_name']))} | {clean_spaces(str(erow['location']))}")
-                                fig.text(0.08, 0.48, "Innen = besser (Rank 1).", fontsize=8)
+                                fig.text(0.08, 0.48, "Aussen = besser (Rank 1).", fontsize=8)
                                 t_ax = plt.subplot(212)
                                 t_ax.axis("off")
                                 tbl = evt_peak[[
@@ -2229,7 +2238,7 @@ with tabs[0]:
                                 fig = plt.figure(figsize=(8.27, 11.69))
                                 ax = plt.subplot(211, projection="polar")
                                 _draw_radar(ax, ov.rename(columns={"Segment": "Segment", "Segment Rank": "Segment Rank"}), "Overall Peak Segment Radar")
-                                fig.text(0.08, 0.48, "Innen = besser (Rank 1).", fontsize=8)
+                                fig.text(0.08, 0.48, "Aussen = besser (Rank 1).", fontsize=8)
                                 t_ax = plt.subplot(212)
                                 t_ax.axis("off")
                                 ov_tbl = ov[[
