@@ -1891,8 +1891,9 @@ with tabs[0]:
                 keep_riders = rider_top["Rider"].head(4).tolist()
                 st.warning("Mehr als 4 Rider im Radar. Es werden automatisch die Top 4 (bester mittlerer Segment Rank) angezeigt.")
                 radar_df = radar_df[radar_df["Rider"].isin(keep_riders)].copy()
-            max_rank = int(pd.to_numeric(radar_df["Field Size"], errors="coerce").max()) if not radar_df.empty else 0
-            if not radar_df.empty and max_rank > 0 and len(seg_order) >= 2:
+            fixed_radar_max_rank = 48
+            radar_df["Segment Rank Plot"] = pd.to_numeric(radar_df["Segment Rank"], errors="coerce").clip(lower=1, upper=fixed_radar_max_rank)
+            if not radar_df.empty and len(seg_order) >= 2:
                 seg_order_short = [segment_short_label(x) for x in seg_order]
                 radar_df["Rank Top %"] = np.where(
                     radar_df["Field Size"] > 0,
@@ -1911,9 +1912,9 @@ with tabs[0]:
                         .encode(
                             x=alt.X("Segment Short:N", sort=seg_order_short),
                             y=alt.Y(
-                                "Segment Rank:Q",
+                                "Segment Rank Plot:Q",
                                 title="Segment Rank (1=best)",
-                                scale=alt.Scale(domain=[1, max_rank], reverse=False),
+                                scale=alt.Scale(domain=[1, fixed_radar_max_rank], reverse=False),
                             ),
                             color=alt.Color("Rider:N", title="Rider"),
                             detail="Rider:N",
@@ -1943,7 +1944,7 @@ with tabs[0]:
                                 row = gm.loc[seg]
                                 if isinstance(row, pd.DataFrame):
                                     row = row.iloc[0]
-                                r_vals.append(float(row["Segment Rank"]))
+                                r_vals.append(float(row["Segment Rank Plot"]))
                                 custom.append(
                                     [
                                         row.get("Segment Rank Text", "NA/NA"),
@@ -1984,7 +1985,7 @@ with tabs[0]:
                                 ),
                             )
                         )
-                    ring_vals = [v for v in [1, 8, 16] if v <= max_rank]
+                    ring_vals = [1, 8, 16, 32, 48]
                     fig.update_layout(
                         height=560,
                         showlegend=True,
@@ -1994,7 +1995,7 @@ with tabs[0]:
                             domain=dict(x=[0.08, 0.92], y=[0.06, 0.98]),
                             radialaxis=dict(
                                 autorange="reversed",
-                                range=[max_rank + 0.5, 0.5],
+                                range=[fixed_radar_max_rank + 0.5, 0.5],
                                 tickmode="array" if ring_vals else "auto",
                                 tickvals=ring_vals if ring_vals else None,
                                 ticktext=[str(v) for v in ring_vals] if ring_vals else None,
@@ -2003,10 +2004,8 @@ with tabs[0]:
                         ),
                     )
                     st.plotly_chart(fig, use_container_width=True)
-                    ring_vals = [str(v) for v in [1, 8, 16] if v <= max_rank]
                     st.caption(
-                        "Segment Rank (1=best). "
-                        + ("Referenzringe: " + ", ".join(ring_vals) if ring_vals else "")
+                        "Segment Rank (1=best). Referenzringe (fix): 1, 8, 16, 32, 48."
                     )
             else:
                 st.info("Nicht genug Daten fuer Peak Segment Radar.")
