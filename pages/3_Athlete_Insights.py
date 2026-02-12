@@ -1299,17 +1299,16 @@ with tabs[0]:
         key="peak_seg_per_location",
         help="Wenn aktiv: pro Location wird zuerst nur der beste Run genommen, dann der Peak daraus berechnet.",
     )
-    show_delta_vs_rank2 = st.toggle(
-        "Delta vs Rank 2 anzeigen",
-        value=(ref_key in {"winner", "event_best"}),
-        key="peak_seg_rank2_delta",
-        help="Zeigt Delta zur zweitschnellsten Zeit (statt zur aktiven Referenz), damit Spitzenleistungen als negative Werte sichtbar werden.",
-    )
+    # Automatic behavior: when Event Best is selected as reference, show deltas vs Rank 2
+    # so the reference rider can appear with negative delta.
+    show_delta_vs_rank2 = ref_key == "event_best"
     show_overall_median = st.toggle(
         "Show Overall Median (Reality Check)",
         value=False,
         key="peak_seg_show_overall",
     )
+    if show_delta_vs_rank2:
+        st.caption("Bei Event Best wird Peak Delta automatisch gegen Rank 2 berechnet.")
 
     def _take_n(n_rows: int, mode: str) -> int:
         if n_rows <= 0:
