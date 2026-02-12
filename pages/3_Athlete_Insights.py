@@ -869,13 +869,15 @@ base_rel_ref = apply_reference(
     event_ko_final_only=event_ko_final_only,
     reference_source=base_rel,
 )
-runs_sel = base_rel_ref[base_rel_ref["rider_id"].isin(selected_ids)].copy()
-runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
-runs_sel = add_robust_outlier_flags_and_winsor(
-    runs_sel,
+# Pool with all riders from current filters (without rider filter),
+# used for robust thresholds and ranking against full category field.
+pool_rel = add_robust_outlier_flags_and_winsor(
+    base_rel_ref.copy(),
     reference_df=base_rel_ref,
     group_cols=["category", "gender"],
 )
+runs_sel = pool_rel[pool_rel["rider_id"].isin(selected_ids)].copy()
+runs_sel = runs_sel.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
 runs_sel = attach_final_rank_event(runs_sel, master_results)
 runs_sel["event_label"] = make_event_label(runs_sel)
 
@@ -1243,6 +1245,7 @@ with tabs[0]:
 
     st.markdown("**Peak Segment Profile**")
     contrib_src = runs_sel.copy()
+    rank_pool_src = pool_rel.copy()
     ref_suffix_map = {
         "rank4": "rank4_ref",
         "winner": "winner",
@@ -1335,6 +1338,8 @@ with tabs[0]:
 
         seg_cols = [
             "rider_short",
+            "category",
+            "gender",
             "display_name",
             "location",
             "round_short",
@@ -1436,6 +1441,8 @@ with tabs[0]:
                 {
                     "Rider": rider,
                     "Segment": sd["label"],
+                    "Category": peak_sel["category"].mode().iloc[0] if "category" in peak_sel.columns and not peak_sel["category"].mode().empty else "Unknown",
+                    "Gender": peak_sel["gender"].mode().iloc[0] if "gender" in peak_sel.columns and not peak_sel["gender"].mode().empty else "Unknown",
                     "Profile": "Peak",
                     "Delta (s)": peak_delta,
                     "Delta (% ref)": peak_pct,
@@ -1457,6 +1464,8 @@ with tabs[0]:
                     {
                         "Rider": rider,
                         "Segment": sd["label"],
+                        "Category": g_all["category"].mode().iloc[0] if "category" in g_all.columns and not g_all["category"].mode().empty else "Unknown",
+                        "Gender": g_all["gender"].mode().iloc[0] if "gender" in g_all.columns and not g_all["gender"].mode().empty else "Unknown",
                         "Profile": "Overall Median",
                         "Delta (s)": ov_delta,
                         "Delta (% ref)": ov_pct,
@@ -1471,21 +1480,99 @@ with tabs[0]:
 
     peak_df = pd.DataFrame(peak_rows)
     if not peak_df.empty:
-        peak_rank_src = peak_df[peak_df["Profile"] == "Peak"].copy()
-        peak_rank_src["Delta (s)"] = pd.to_numeric(peak_rank_src["Delta (s)"], errors="coerce")
-        peak_rank_src = peak_rank_src.dropna(subset=["Delta (s)"])
-        if not peak_rank_src.empty:
-            peak_rank_src["Segment Rank"] = peak_rank_src.groupby("Segment")["Delta (s)"].rank(method="min", ascending=True)
-            peak_rank_src["Field Size"] = peak_rank_src.groupby("Segment")["Rider"].transform("nunique")
-            peak_rank_src["Rank %"] = np.where(
-                peak_rank_src["Field Size"] > 0,
-                (peak_rank_src["Segment Rank"] / peak_rank_src["Field Size"]) * 100.0,
+        # Segment ranks are computed against full field (same filters, without rider filter),
+        # grouped by Segment + Category + Gender.
+        rank_rows = []
+        for sd in available_defs:
+            if sd["label"] not in selected_seg_labels:
+                continue
+            dcol = sd["delta_use_col"]
+            dcol_raw = sd["delta_col"]
+            tcol = sd["time_col"]
+            rcol = sd["ref_col"]
+
+            rseg_cols = [
+                "rider_short",
+                "category",
+                "gender",
+                "location",
+                "event_dt",
+                "event_id",
+                "group_id",
+                dcol,
+                dcol_raw,
+                tcol,
+                rcol,
+                "round_sort",
+                "heat_id",
+            ]
+            rseg_cols = list(dict.fromkeys(rseg_cols))
+            rseg = rank_pool_src[rseg_cols].copy()
+            rrename = {tcol: "segment_time", rcol: "reference_time"}
+            if dcol == dcol_raw:
+                rrename[dcol] = "delta_value"
+                rseg = rseg.rename(columns=rrename)
+                rseg["delta_raw"] = rseg["delta_value"]
+            else:
+                rrename[dcol] = "delta_value"
+                rrename[dcol_raw] = "delta_raw"
+                rseg = rseg.rename(columns=rrename)
+
+            rseg["delta_value"] = pd.to_numeric(rseg["delta_value"], errors="coerce")
+            rseg["segment_time"] = pd.to_numeric(rseg["segment_time"], errors="coerce")
+            rseg["reference_time"] = pd.to_numeric(rseg["reference_time"], errors="coerce")
+            rseg["rank2_ref_event"] = rseg.groupby(["event_id", "group_id"], dropna=False)["segment_time"].transform(
+                lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
+            )
+            rseg["ref_time_display"] = rseg["reference_time"]
+            rseg["delta_display"] = rseg["delta_value"]
+            if show_delta_vs_rank2:
+                is_best_row = (
+                    rseg["segment_time"].notna()
+                    & rseg["reference_time"].notna()
+                    & np.isclose(rseg["segment_time"], rseg["reference_time"], atol=1e-6)
+                )
+                use_rank2 = is_best_row & rseg["rank2_ref_event"].notna()
+                rseg.loc[use_rank2, "ref_time_display"] = rseg.loc[use_rank2, "rank2_ref_event"]
+                rseg.loc[use_rank2, "delta_display"] = (
+                    rseg.loc[use_rank2, "segment_time"] - rseg.loc[use_rank2, "rank2_ref_event"]
+                )
+            rseg = rseg.dropna(subset=["delta_display", "segment_time", "ref_time_display"])
+            if rseg.empty:
+                continue
+            rseg = rseg.sort_values(["delta_display", "event_dt", "event_id", "round_sort", "heat_id"], na_position="last")
+
+            for rider, g in rseg.groupby("rider_short", dropna=False):
+                g_peak_base = g.drop_duplicates(subset=["location"], keep="first") if peak_per_location else g
+                if g_peak_base.empty:
+                    continue
+                k = _take_n(len(g_peak_base), peak_mode)
+                peak_sel = g_peak_base.nsmallest(k, "delta_display")
+                if peak_sel.empty:
+                    continue
+                rank_rows.append(
+                    {
+                        "Rider": rider,
+                        "Segment": sd["label"],
+                        "Category": peak_sel["category"].mode().iloc[0] if not peak_sel["category"].mode().empty else "Unknown",
+                        "Gender": peak_sel["gender"].mode().iloc[0] if not peak_sel["gender"].mode().empty else "Unknown",
+                        "Delta (s) rank_base": float(peak_sel["delta_display"].median()),
+                    }
+                )
+
+        rank_pool_df = pd.DataFrame(rank_rows)
+        if not rank_pool_df.empty:
+            rank_pool_df["Segment Rank"] = rank_pool_df.groupby(["Segment", "Category", "Gender"])["Delta (s) rank_base"].rank(method="min", ascending=True)
+            rank_pool_df["Field Size"] = rank_pool_df.groupby(["Segment", "Category", "Gender"])["Rider"].transform("nunique")
+            rank_pool_df["Rank %"] = np.where(
+                rank_pool_df["Field Size"] > 0,
+                (rank_pool_df["Segment Rank"] / rank_pool_df["Field Size"]) * 100.0,
                 np.nan,
             )
-            rank_cols = peak_rank_src[["Rider", "Segment", "Segment Rank", "Field Size", "Rank %"]].drop_duplicates(
-                subset=["Rider", "Segment"]
-            )
-            peak_df = peak_df.merge(rank_cols, on=["Rider", "Segment"], how="left")
+            rank_cols = rank_pool_df[
+                ["Rider", "Segment", "Category", "Gender", "Segment Rank", "Field Size", "Rank %"]
+            ].drop_duplicates(subset=["Rider", "Segment", "Category", "Gender"])
+            peak_df = peak_df.merge(rank_cols, on=["Rider", "Segment", "Category", "Gender"], how="left")
         else:
             peak_df["Segment Rank"] = np.nan
             peak_df["Field Size"] = np.nan
@@ -1558,6 +1645,9 @@ with tabs[0]:
         radar_df = radar_df.dropna(subset=["Segment Rank", "Field Size"])
         if not radar_df.empty:
             seg_order = [x for x in selected_seg_labels if x in radar_df["Segment"].unique().tolist()]
+            seg_idx_map = {s: i for i, s in enumerate(seg_order)}
+            radar_df["seg_idx"] = radar_df["Segment"].map(seg_idx_map)
+            radar_df = radar_df.dropna(subset=["seg_idx"])
             seg_counts = radar_df.groupby("Rider")["Segment"].nunique()
             riders_ok = seg_counts[seg_counts >= 2].index.tolist()
             hidden = sorted(set(radar_df["Rider"]) - set(riders_ok))
@@ -1565,12 +1655,35 @@ with tabs[0]:
                 st.caption("Radar blendet Rider mit <2 verfuegbaren Segmenten aus: " + ", ".join(hidden))
             radar_df = radar_df[radar_df["Rider"].isin(riders_ok)].copy()
             max_rank = int(pd.to_numeric(radar_df["Field Size"], errors="coerce").max()) if not radar_df.empty else 0
-            if not radar_df.empty and max_rank > 0:
-                radar = (
-                    alt.Chart(radar_df)
-                    .mark_line(point=True)
+            if not radar_df.empty and max_rank > 0 and len(seg_order) >= 2:
+                radar_lines = []
+                for rider, g in radar_df.groupby("Rider", dropna=False):
+                    gs = g.sort_values("seg_idx").copy()
+                    if gs.empty:
+                        continue
+                    first = gs.iloc[[0]].copy()
+                    first["seg_idx"] = float(len(seg_order))
+                    radar_lines.append(pd.concat([gs, first], ignore_index=True))
+                radar_line_df = pd.concat(radar_lines, ignore_index=True) if radar_lines else pd.DataFrame()
+                theta_scale = alt.Scale(domain=[0, max(1, len(seg_order))], range=[0, 2 * np.pi], nice=False)
+                line = (
+                    alt.Chart(radar_line_df)
+                    .mark_line(opacity=0.85)
                     .encode(
-                        theta=alt.Theta("Segment:N", sort=seg_order),
+                        theta=alt.Theta("seg_idx:Q", scale=theta_scale, stack=False),
+                        radius=alt.Radius(
+                            "Segment Rank:Q",
+                            scale=alt.Scale(domain=[0.5, max_rank + 0.5], nice=False),
+                        ),
+                        color=alt.Color("Rider:N", title="Rider"),
+                        detail="Rider:N",
+                    )
+                )
+                points = (
+                    alt.Chart(radar_df)
+                    .mark_point(size=55)
+                    .encode(
+                        theta=alt.Theta("seg_idx:Q", scale=theta_scale, stack=False),
                         radius=alt.Radius(
                             "Segment Rank:Q",
                             scale=alt.Scale(domain=[0.5, max_rank + 0.5], nice=False),
@@ -1588,10 +1701,13 @@ with tabs[0]:
                             alt.Tooltip("Reference Mode:N"),
                         ],
                     )
-                    .properties(height=360)
                 )
-                st.altair_chart(radar, use_container_width=True)
-                st.caption("Radar: Segment Rank (1=best, weiter aussen = hoeherer Rank).")
+                st.altair_chart((line + points).properties(height=360), use_container_width=True)
+                ring_vals = [str(v) for v in [4, 8, 16, 32] if v <= max_rank]
+                st.caption(
+                    "Radar: Segment Rank (1=best, weiter aussen = hoeherer Rank). "
+                    + ("Referenzringe: " + ", ".join(ring_vals) if ring_vals else "")
+                )
             else:
                 st.info("Nicht genug Daten fuer Peak Segment Radar.")
         else:
