@@ -1985,7 +1985,7 @@ with tabs[0]:
                                 ),
                             )
                         )
-                    ring_vals = [1, 8, 16, 32, 48]
+                    ring_vals = [48, 32, 16, 8, 1]
                     fig.update_layout(
                         height=560,
                         showlegend=True,
@@ -1995,10 +1995,13 @@ with tabs[0]:
                             domain=dict(x=[0.08, 0.92], y=[0.06, 0.98]),
                             radialaxis=dict(
                                 autorange="reversed",
-                                range=[fixed_radar_max_rank + 0.5, 0.5],
-                                tickmode="array" if ring_vals else "auto",
-                                tickvals=ring_vals if ring_vals else None,
-                                ticktext=[str(v) for v in ring_vals] if ring_vals else None,
+                                range=[fixed_radar_max_rank, 1],
+                                tickmode="array",
+                                tickvals=ring_vals,
+                                ticktext=[str(v) for v in ring_vals],
+                                showticklabels=True,
+                                ticks="outside",
+                                tickfont=dict(size=11),
                             ),
                             angularaxis=dict(categoryorder="array", categoryarray=seg_order_short),
                         ),
