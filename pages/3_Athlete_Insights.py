@@ -8,7 +8,10 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.graph_objects as go
+try:
+    import plotly.graph_objects as go
+except ImportError:
+    go = None
 
 
 DB_PATH = "bmx.db"
@@ -1654,75 +1657,104 @@ with tabs[0]:
             radar_df = radar_df[radar_df["Rider"].isin(riders_ok)].copy()
             max_rank = int(pd.to_numeric(radar_df["Field Size"], errors="coerce").max()) if not radar_df.empty else 0
             if not radar_df.empty and max_rank > 0 and len(seg_order) >= 2:
-                fig = go.Figure()
-                for rider, g in radar_df.groupby("Rider", dropna=False):
-                    gm = g.set_index("Segment")
-                    r_vals = []
-                    custom = []
-                    for seg in seg_order:
-                        if seg in gm.index:
-                            row = gm.loc[seg]
-                            if isinstance(row, pd.DataFrame):
-                                row = row.iloc[0]
-                            r_vals.append(float(row["Segment Rank"]))
-                            custom.append(
-                                [
-                                    row.get("Segment Rank", np.nan),
-                                    row.get("Field Size", np.nan),
-                                    row.get("Delta (s)", np.nan),
-                                    row.get("Delta (% ref)", np.nan),
-                                    row.get("Runs Used (n)", np.nan),
-                                    row.get("Reference Mode", ""),
-                                ]
-                            )
-                        else:
-                            r_vals.append(np.nan)
-                            custom.append([np.nan, np.nan, np.nan, np.nan, np.nan, ""])
-                    theta_vals = seg_order.copy()
-                    r_plot = r_vals + [r_vals[0]]
-                    theta_plot = theta_vals + [theta_vals[0]]
-                    custom_plot = custom + [custom[0]]
-                    fig.add_trace(
-                        go.Scatterpolar(
-                            r=r_plot,
-                            theta=theta_plot,
-                            mode="lines+markers",
-                            name=str(rider),
-                            customdata=custom_plot,
-                            hovertemplate=(
-                                "Rider: %{fullData.name}<br>"
-                                "Segment: %{theta}<br>"
-                                "Segment Rank: %{customdata[0]:.0f}<br>"
-                                "Field Size: %{customdata[1]:.0f}<br>"
-                                "Delta (s): %{customdata[2]:.4f}<br>"
-                                "Delta (% ref): %{customdata[3]:.2f}<br>"
-                                "Runs Used (n): %{customdata[4]:.0f}<br>"
-                                "Reference Mode: %{customdata[5]}<extra></extra>"
+                if go is None:
+                    st.warning("Radar benoetigt `plotly`. Fallback-Ansicht wird angezeigt.")
+                    fallback = (
+                        alt.Chart(radar_df)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("Segment:N", sort=seg_order),
+                            y=alt.Y(
+                                "Segment Rank:Q",
+                                title="Segment Rank (1=best)",
+                                scale=alt.Scale(domain=[1, max_rank], reverse=True),
                             ),
+                            color=alt.Color("Rider:N", title="Rider"),
+                            detail="Rider:N",
+                            tooltip=[
+                                alt.Tooltip("Rider:N"),
+                                alt.Tooltip("Segment:N"),
+                                alt.Tooltip("Segment Rank:Q", format=".0f"),
+                                alt.Tooltip("Field Size:Q", format=".0f"),
+                                alt.Tooltip("Delta (s):Q", format=".4f"),
+                                alt.Tooltip("Delta (% ref):Q", format=".2f"),
+                                alt.Tooltip("Runs Used (n):Q", format=".0f"),
+                                alt.Tooltip("Reference Mode:N"),
+                            ],
                         )
+                        .properties(height=300)
                     )
-                ring_vals = [v for v in [1, 4, 8, 16, 32] if v <= max_rank]
-                fig.update_layout(
-                    height=420,
-                    showlegend=True,
-                    margin=dict(l=20, r=20, t=20, b=20),
-                    polar=dict(
-                        radialaxis=dict(
-                            autorange="reversed",
-                            range=[max_rank + 0.5, 0.5],
-                            tickmode="array" if ring_vals else "auto",
-                            tickvals=ring_vals if ring_vals else None,
-                            title="Segment Rank (1=best)",
+                    st.altair_chart(fallback, use_container_width=True)
+                else:
+                    fig = go.Figure()
+                    for rider, g in radar_df.groupby("Rider", dropna=False):
+                        gm = g.set_index("Segment")
+                        r_vals = []
+                        custom = []
+                        for seg in seg_order:
+                            if seg in gm.index:
+                                row = gm.loc[seg]
+                                if isinstance(row, pd.DataFrame):
+                                    row = row.iloc[0]
+                                r_vals.append(float(row["Segment Rank"]))
+                                custom.append(
+                                    [
+                                        row.get("Segment Rank", np.nan),
+                                        row.get("Field Size", np.nan),
+                                        row.get("Delta (s)", np.nan),
+                                        row.get("Delta (% ref)", np.nan),
+                                        row.get("Runs Used (n)", np.nan),
+                                        row.get("Reference Mode", ""),
+                                    ]
+                                )
+                            else:
+                                r_vals.append(np.nan)
+                                custom.append([np.nan, np.nan, np.nan, np.nan, np.nan, ""])
+                        theta_vals = seg_order.copy()
+                        r_plot = r_vals + [r_vals[0]]
+                        theta_plot = theta_vals + [theta_vals[0]]
+                        custom_plot = custom + [custom[0]]
+                        fig.add_trace(
+                            go.Scatterpolar(
+                                r=r_plot,
+                                theta=theta_plot,
+                                mode="lines+markers",
+                                name=str(rider),
+                                customdata=custom_plot,
+                                hovertemplate=(
+                                    "Rider: %{fullData.name}<br>"
+                                    "Segment: %{theta}<br>"
+                                    "Segment Rank: %{customdata[0]:.0f}<br>"
+                                    "Field Size: %{customdata[1]:.0f}<br>"
+                                    "Delta (s): %{customdata[2]:.4f}<br>"
+                                    "Delta (% ref): %{customdata[3]:.2f}<br>"
+                                    "Runs Used (n): %{customdata[4]:.0f}<br>"
+                                    "Reference Mode: %{customdata[5]}<extra></extra>"
+                                ),
+                            )
+                        )
+                    ring_vals = [v for v in [1, 4, 8, 16, 32] if v <= max_rank]
+                    fig.update_layout(
+                        height=420,
+                        showlegend=True,
+                        margin=dict(l=20, r=20, t=20, b=20),
+                        polar=dict(
+                            radialaxis=dict(
+                                autorange="reversed",
+                                range=[max_rank + 0.5, 0.5],
+                                tickmode="array" if ring_vals else "auto",
+                                tickvals=ring_vals if ring_vals else None,
+                                title="Segment Rank (1=best)",
+                            ),
+                            angularaxis=dict(categoryorder="array", categoryarray=seg_order),
                         ),
-                        angularaxis=dict(categoryorder="array", categoryarray=seg_order),
-                    ),
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                ring_vals = [str(v) for v in [4, 8, 16, 32] if v <= max_rank]
-                st.caption(
-                    "Radar: Segment Rank (1=best, weiter aussen = hoeherer Rank). "
-                    + ("Referenzringe: " + ", ".join(ring_vals) if ring_vals else "")
-                )
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    ring_vals = [str(v) for v in [4, 8, 16, 32] if v <= max_rank]
+                    st.caption(
+                        "Radar: Segment Rank (1=best, weiter aussen = hoeherer Rank). "
+                        + ("Referenzringe: " + ", ".join(ring_vals) if ring_vals else "")
+                    )
             else:
                 st.info("Nicht genug Daten fuer Peak Segment Radar.")
         else:

@@ -3,3 +3,4 @@ pandas>=2,<3
 requests
 openpyxl
 xlrd
+plotly>=5,<6
