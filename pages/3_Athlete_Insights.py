@@ -1605,7 +1605,7 @@ with tabs[0]:
         rider_domain = sorted(peak_df["Rider"].dropna().unique().tolist())
         rider_color = alt.Color("Rider:N", title="Rider", scale=alt.Scale(domain=rider_domain))
 
-        c_left, c_right = st.columns([2, 3])
+        c_left, c_right = st.columns([14, 36])
         with c_left:
             if not bottom_peak.empty:
                 bmin = float(pd.to_numeric(bottom_peak["Delta (s)"], errors="coerce").min())
@@ -1775,7 +1775,6 @@ with tabs[0]:
                                 range=[max_rank + 0.5, 0.5],
                                 tickmode="array" if ring_vals else "auto",
                                 tickvals=ring_vals if ring_vals else None,
-                                title="Segment Rank (1=best)",
                             ),
                             angularaxis=dict(categoryorder="array", categoryarray=seg_order_short),
                         ),
@@ -1783,7 +1782,7 @@ with tabs[0]:
                     st.plotly_chart(fig, use_container_width=True)
                     ring_vals = [str(v) for v in [4, 8, 16, 32] if v <= max_rank]
                     st.caption(
-                        "Further out = stronger segment (Rank 1 is best). "
+                        "Segment Rank (1=best). Further out = stronger segment. "
                         + ("Referenzringe: " + ", ".join(ring_vals) if ring_vals else "")
                     )
             else:
