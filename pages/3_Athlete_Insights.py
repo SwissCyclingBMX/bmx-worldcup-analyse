@@ -306,6 +306,20 @@ def format_rank_value(v) -> str:
     return f"{x:.1f}"
 
 
+def style_pdf_table(table, n_cols: int):
+    """Improve readability of matplotlib table headers with wrapped labels."""
+    # Slightly smaller body text, but clearer header rows.
+    table.auto_set_font_size(False)
+    table.set_fontsize(6.4)
+    # Base cell scaling; make rows a bit taller for wrapped headers.
+    table.scale(1, 1.34)
+    for c in range(n_cols):
+        hcell = table[(0, c)]
+        hcell.set_text_props(weight="bold", fontsize=6.0, ha="center", va="center")
+        # Increase header row height to make 2-line headers readable.
+        hcell.set_height(hcell.get_height() * 1.45)
+
+
 def bin_pos(pos: float) -> str:
     if pd.isna(pos):
         return "NA"
@@ -2253,9 +2267,7 @@ with tabs[0]:
                                     colLabels=tbl.columns,
                                     loc="center",
                                 )
-                                table.auto_set_font_size(False)
-                                table.set_fontsize(6.7)
-                                table.scale(1, 1.28)
+                                style_pdf_table(table, len(tbl.columns))
                                 pdf.savefig(fig, bbox_inches="tight")
                                 plt.close(fig)
 
@@ -2301,9 +2313,7 @@ with tabs[0]:
                                 for c in ["Rank\n%", "Delta\n(s)", "Delta\n(% ref)", "Rider Segment\nTime (s)", "Reference Segment\nTime (s)"]:
                                     ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(4)
                                 table = t_ax.table(cellText=ov_tbl.values, colLabels=ov_tbl.columns, loc="center")
-                                table.auto_set_font_size(False)
-                                table.set_fontsize(6.7)
-                                table.scale(1, 1.28)
+                                style_pdf_table(table, len(ov_tbl.columns))
                                 pdf.savefig(fig, bbox_inches="tight")
                                 plt.close(fig)
                     pdf_bytes = pdf_buffer.getvalue()
