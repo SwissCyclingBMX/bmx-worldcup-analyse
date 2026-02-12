@@ -2202,6 +2202,7 @@ with tabs[0]:
                     )
                     with PdfPages(pdf_buffer) as pdf:
                         for rider in rider_list:
+                            rider_event_peaks: list[pd.DataFrame] = []
                             # Header page
                             fig = plt.figure(figsize=(8.27, 11.69))
                             fig.text(0.08, 0.94, f"Peak Segment Radar Report - {rider}", fontsize=14, weight="bold")
@@ -2222,6 +2223,9 @@ with tabs[0]:
                                 evt_peak = evt_peak[evt_peak["Rider"] == rider].copy()
                                 if evt_peak.empty:
                                     continue
+                                evt_peak["event_id"] = eid
+                                evt_peak["event_location"] = clean_spaces(str(erow["location"]))
+                                rider_event_peaks.append(evt_peak.copy())
                                 fig = plt.figure(figsize=(8.27, 11.69))
                                 ax = plt.subplot(211, projection="polar")
                                 event_title = f"{clean_spaces(str(erow['display_name']))} | {clean_spaces(str(erow['location']))}"
@@ -2272,7 +2276,42 @@ with tabs[0]:
                                 plt.close(fig)
 
                             # Overall page for rider
-                            ov = peak_df[(peak_df["Profile"] == "Peak") & (peak_df["Rider"] == rider)].copy()
+                            ov = pd.DataFrame()
+                            if rider_event_peaks:
+                                ov_all = pd.concat(rider_event_peaks, ignore_index=True)
+                                num_cols = [
+                                    "Segment Rank",
+                                    "Field Size",
+                                    "Rank %",
+                                    "Delta (s)",
+                                    "Delta (% ref)",
+                                    "Rider Segment Time (s)",
+                                    "Reference Segment Time (s)",
+                                    "Runs Used (n)",
+                                ]
+                                for c in num_cols:
+                                    ov_all[c] = pd.to_numeric(ov_all[c], errors="coerce")
+                                grp_cols = ["Rider", "Segment", "Segment Short", "Reference Mode"]
+                                ov = (
+                                    ov_all.groupby(grp_cols, dropna=False)[num_cols]
+                                    .mean(numeric_only=True)
+                                    .reset_index()
+                                )
+                                ev_used = (
+                                    ov_all.groupby(grp_cols, dropna=False)["event_id"]
+                                    .nunique()
+                                    .reset_index(name="Events Used (n)")
+                                )
+                                loc_used = (
+                                    ov_all.groupby(grp_cols, dropna=False)["event_location"]
+                                    .nunique()
+                                    .reset_index(name="Locations Used (n)")
+                                )
+                                ov = ov.merge(ev_used, on=grp_cols, how="left").merge(loc_used, on=grp_cols, how="left")
+                                ov = ov.sort_values(
+                                    "Segment",
+                                    key=lambda s: s.map({k: i for i, k in enumerate(selected_seg_labels)}).fillna(999),
+                                )
                             if not ov.empty:
                                 fig = plt.figure(figsize=(8.27, 11.69))
                                 ax = plt.subplot(211, projection="polar")
@@ -2292,6 +2331,7 @@ with tabs[0]:
                                     "Reference Segment Time (s)",
                                     "Runs Used (n)",
                                     "Locations Used (n)",
+                                    "Events Used (n)",
                                 ]].copy()
                                 ov_tbl["Segment"] = ov_tbl["Segment"].apply(segment_short_label)
                                 ov_tbl = ov_tbl.rename(
