@@ -261,6 +261,8 @@ def round_short_label(round_title: str) -> str:
     t = str(round_title or "").lower()
     if "lcq" in t or "last chance" in t:
         return "LCQ"
+    if "1/16" in t:
+        return "1/16"
     if "1/8" in t:
         return "1/8"
     if "1/4" in t:
@@ -859,7 +861,7 @@ g1, g2 = st.columns(2)
 with g1:
     sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
 with g2:
-    round_opts = [x for x in ["R1", "LCQ", "1/8", "1/4", "1/2", "F"] if x in set(loc_scope["round_short"].dropna().unique().tolist())]
+    round_opts = [x for x in ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(loc_scope["round_short"].dropna().unique().tolist())]
     sel_rounds = st.multiselect("Runde (optional)", round_opts, default=round_opts)
 
 base_scope = all_runs.copy()
@@ -987,7 +989,7 @@ with tabs[0]:
     st.subheader("Athlete Trend")
     plot = runs_sel.copy()
     plot["round_short"] = plot["round_title"].apply(round_short_label)
-    round_order_map = {"R1": 1, "LCQ": 2, "1/8": 3, "1/4": 4, "1/2": 5, "F": 6}
+    round_order_map = {"R1": 1, "LCQ": 2, "1/16": 3, "1/8": 4, "1/4": 5, "1/2": 6, "F": 7}
     plot["round_order"] = plot["round_short"].map(round_order_map).fillna(99)
     plot["heat_sort"] = pd.to_numeric(plot["heat_id"], errors="coerce").fillna(99999)
     plot["event_label_full"] = plot["display_name"].fillna(plot["event_label"])
@@ -1891,7 +1893,9 @@ with tabs[0]:
                 keep_riders = rider_top["Rider"].head(4).tolist()
                 st.warning("Mehr als 4 Rider im Radar. Es werden automatisch die Top 4 (bester mittlerer Segment Rank) angezeigt.")
                 radar_df = radar_df[radar_df["Rider"].isin(keep_riders)].copy()
-            fixed_radar_max_rank = 48
+            fr_scope = pd.to_numeric(runs_sel.get("final_rank_event"), errors="coerce")
+            has_top8 = fr_scope.notna().any() and (fr_scope <= 8).any()
+            fixed_radar_max_rank = 48 if has_top8 else 80
             radar_df["Segment Rank Plot"] = pd.to_numeric(radar_df["Segment Rank"], errors="coerce").clip(lower=1, upper=fixed_radar_max_rank)
             if not radar_df.empty and len(seg_order) >= 2:
                 seg_order_short = [segment_short_label(x) for x in seg_order]
@@ -1985,7 +1989,7 @@ with tabs[0]:
                                 ),
                             )
                         )
-                    ring_vals = [48, 32, 16, 8, 1]
+                    ring_vals = [48, 32, 16, 8, 1] if fixed_radar_max_rank == 48 else [80, 32, 16, 8, 1]
                     fig.update_layout(
                         height=560,
                         showlegend=True,
@@ -2008,7 +2012,8 @@ with tabs[0]:
                     )
                     st.plotly_chart(fig, use_container_width=True)
                     st.caption(
-                        "Segment Rank (1=best). Referenzringe (fix): 1, 8, 16, 32, 48."
+                        "Segment Rank (1=best). Referenzringe (fix): "
+                        + ("1, 8, 16, 32, 48." if fixed_radar_max_rank == 48 else "1, 8, 16, 32, 80.")
                     )
             else:
                 st.info("Nicht genug Daten fuer Peak Segment Radar.")
