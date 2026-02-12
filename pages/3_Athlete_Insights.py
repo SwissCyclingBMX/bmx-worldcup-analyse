@@ -1327,23 +1327,23 @@ with tabs[0]:
         tcol = sd["time_col"]
         rcol = sd["ref_col"]
 
-        seg_df = contrib_src[
-            [
-                "rider_short",
-                "display_name",
-                "location",
-                "round_short",
-                "round_title",
-                "event_dt",
-                "event_id",
-                dcol,
-                dcol_raw,
-                tcol,
-                rcol,
-                "round_sort",
-                "heat_id",
-            ]
-        ].copy()
+        seg_cols = [
+            "rider_short",
+            "display_name",
+            "location",
+            "round_short",
+            "round_title",
+            "event_dt",
+            "event_id",
+            dcol,
+            dcol_raw,
+            tcol,
+            rcol,
+            "round_sort",
+            "heat_id",
+        ]
+        seg_cols = list(dict.fromkeys(seg_cols))
+        seg_df = contrib_src[seg_cols].copy()
         rename_map = {
             tcol: "segment_time",
             rcol: "reference_time",
