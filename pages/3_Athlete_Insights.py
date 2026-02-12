@@ -1787,15 +1787,15 @@ with tabs[0]:
                         )
                     ring_vals = [v for v in [1, 8, 16] if v <= max_rank]
                     fig.update_layout(
-                        height=620,
+                        height=560,
                         showlegend=True,
-                        margin=dict(l=20, r=20, t=10, b=40),
-                        legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center", yanchor="top"),
+                        margin=dict(l=10, r=10, t=10, b=20),
+                        legend=dict(orientation="h", y=-0.12, x=0.5, xanchor="center", yanchor="top"),
                         polar=dict(
-                            domain=dict(x=[0.02, 0.98], y=[0.06, 0.98]),
+                            domain=dict(x=[0.08, 0.92], y=[0.06, 0.98]),
                             radialaxis=dict(
-                                autorange=False,
-                                range=[1, max_rank + 0.5],
+                                autorange="reversed",
+                                range=[max_rank + 0.5, 0.5],
                                 tickmode="array" if ring_vals else "auto",
                                 tickvals=ring_vals if ring_vals else None,
                                 ticktext=[str(v) for v in ring_vals] if ring_vals else None,
@@ -1806,7 +1806,7 @@ with tabs[0]:
                     st.plotly_chart(fig, use_container_width=True)
                     ring_vals = [str(v) for v in [1, 8, 16] if v <= max_rank]
                     st.caption(
-                        "Segment Rank (1=best). Innen = besser, aussen = schlechter. "
+                        "Segment Rank (1=best). "
                         + ("Referenzringe: " + ", ".join(ring_vals) if ring_vals else "")
                     )
             else:
