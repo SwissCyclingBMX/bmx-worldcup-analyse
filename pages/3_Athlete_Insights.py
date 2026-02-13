@@ -561,7 +561,7 @@ def apply_reference(
                 .apply(
                     lambda g: pd.Series(
                         {
-                            f"{seg}_event_topn_ref": g[seg].dropna().nsmallest(max(1, event_top_n)).median()
+                            f"{seg}_event_topn_ref": g[seg].dropna().nsmallest(max(1, event_top_n)).mean()
                             if g[seg].notna().sum() > 0
                             else np.nan,
                             f"{seg}_event_best_ref": g[seg].dropna().min() if g[seg].notna().sum() > 0 else np.nan,
