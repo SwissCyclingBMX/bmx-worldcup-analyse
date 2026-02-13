@@ -1213,35 +1213,18 @@ with tab_start:
 
     # Training stats for riders in heat
     if show_times:
-        training_source_note = "Training-Zeiten: aktuelles Event (Gate Practice)"
-        df_train = load_training_for_events(analysis_event_ids)
-        if not df_train.empty:
-            stats = training_stats(df_train)
-            stats_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]
-            stats = stats[stats_cols]
-            start_df = start_df.merge(stats, on="name_key", how="left")
-            start_df = start_df.rename(
-                columns={
-                    "best_start": "train_best_start",
-                    "best_t1": "train_best_t1",
-                    "avg_top3_start": "train_avg3_start",
-                    "avg_top3_t1": "train_avg3_t1",
-                    "cons_score": "train_cons_score",
-                }
-            )
-
-        # Race stats for Startliste:
-        # - If Round 1: use other selected analysis events (e.g., previous day)
-        # - Else: use current event up to (but not including) the selected heat
+        # Race/Training source routing for Startliste:
+        # - Round 1, day 2 of same location/series: use previous day (vortag) as context.
+        # - Round 1, day 1: use training from current event only (no previous weekend spillover).
+        # - Other rounds: race from current event up to selected heat.
         is_round1 = False
         rt = str(chosen.get("round_title") or "").strip().lower()
         if rt.startswith("round 1") or rt.startswith("runde 1"):
             is_round1 = True
 
+        prev_event_id = None
+        prev_is_vortag = False
         if is_round1:
-            df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
-            # For Round 1: only use previous day of the SAME event/location (no cross-location carryover)
-            prev_event_id = None
             try:
                 current_date = int(str(event_id)[:8])
                 current_loc = (
@@ -1264,11 +1247,56 @@ with tab_start:
                         ev["event_date_num"] = ev["event_id"].astype(str).str.slice(0, 8).astype(int)
                         prevs = ev[ev["event_date_num"] < current_date].sort_values("event_date_num")
                         if not prevs.empty:
-                            prev_event_id = prevs.iloc[-1]["event_id"]
+                            prev_candidate = str(prevs.iloc[-1]["event_id"])
+                            prev_date_num = int(prev_candidate[:8])
+                            if (current_date - prev_date_num) == 1:
+                                prev_event_id = prev_candidate
+                                prev_is_vortag = True
             except Exception:
                 prev_event_id = None
+                prev_is_vortag = False
 
-            if prev_event_id:
+        training_source_note = "Training-Zeiten: aktuelles Event (Gate Practice)"
+        # Small values in Startliste:
+        # - Round 1 day2: use race stats from previous day (same location/series).
+        # - Otherwise: use training times from current event only.
+        if is_round1 and prev_is_vortag and prev_event_id:
+            df_prev_small = load_picks_for_event(prev_event_id)
+            if not df_prev_small.empty:
+                prev_small = race_stats(df_prev_small)
+                if not prev_small.empty:
+                    prev_small = prev_small[["name_norm", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]]
+                    start_df = start_df.merge(prev_small, on="name_norm", how="left")
+                    start_df = start_df.rename(
+                        columns={
+                            "best_start": "train_best_start",
+                            "best_t1": "train_best_t1",
+                            "avg_top3_start": "train_avg3_start",
+                            "avg_top3_t1": "train_avg3_t1",
+                            "cons_score": "train_cons_score",
+                        }
+                    )
+                    training_source_note = "Training-Zeiten: Vortag gleiche Location (gleiche Serie)"
+        else:
+            df_train = load_training_for_events([event_id])
+            if not df_train.empty:
+                stats = training_stats(df_train)
+                stats_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]
+                stats = stats[stats_cols]
+                start_df = start_df.merge(stats, on="name_key", how="left")
+                start_df = start_df.rename(
+                    columns={
+                        "best_start": "train_best_start",
+                        "best_t1": "train_best_t1",
+                        "avg_top3_start": "train_avg3_start",
+                        "avg_top3_t1": "train_avg3_t1",
+                        "cons_score": "train_cons_score",
+                    }
+                )
+
+        if is_round1:
+            df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
+            if prev_is_vortag and prev_event_id:
                 if df_race_hist.empty or prev_event_id not in df_race_hist["event_id"].unique():
                     df_prev = load_picks_for_event(prev_event_id)
                     df_race_hist = df_prev.copy() if not df_prev.empty else df_race_hist.iloc[0:0].copy()
