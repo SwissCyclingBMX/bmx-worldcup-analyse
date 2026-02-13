@@ -822,39 +822,46 @@ if all_runs.empty:
     st.stop()
 master_results = load_master_results()
 
-rider_opts_all = sorted([x for x in all_runs["rider_label"].dropna().unique().tolist() if x])
-selected_prev = st.session_state.get("insight_riders", [])
-rider_opts = sorted(set(rider_opts_all).union(set(selected_prev)))
-if not rider_opts and not selected_prev:
-    st.warning("Keine Rider verfuegbar.")
+rider_nation_opts = sorted([x for x in all_runs["nation"].dropna().unique().tolist() if x])
+
+nf1, nf2 = st.columns([1, 3])
+with nf1:
+    sel_nations = st.multiselect("Nation (Rider) – leer = alle", rider_nation_opts, default=[])
+with nf2:
+    rider_pool_for_select = all_runs.copy()
+    if sel_nations:
+        rider_pool_for_select = rider_pool_for_select[rider_pool_for_select["nation"].isin(sel_nations)].copy()
+    rider_opts = sorted([x for x in rider_pool_for_select["rider_label"].dropna().unique().tolist() if x])
+    sel_riders = st.multiselect("Athlete (leer = keinen anzeigen)", rider_opts, default=[], key="insight_riders")
+
+if not sel_riders:
+    st.info("Bitte mindestens einen Athleten auswaehlen.")
     st.stop()
-sel_riders = st.multiselect("Rider Filter (zuerst waehlen, optional leer = alle)", rider_opts, key="insight_riders")
 
 scope_after_rider = all_runs.copy()
-if sel_riders:
-    selected_ids_seed = (
-        scope_after_rider.loc[scope_after_rider["rider_label"].isin(sel_riders), "rider_id"]
-        .dropna()
-        .unique()
-        .tolist()
-    )
-    scope_after_rider = scope_after_rider[scope_after_rider["rider_id"].isin(selected_ids_seed)].copy()
+if sel_nations:
+    scope_after_rider = scope_after_rider[scope_after_rider["nation"].isin(sel_nations)].copy()
+selected_ids_seed = (
+    scope_after_rider.loc[scope_after_rider["rider_label"].isin(sel_riders), "rider_id"]
+    .dropna()
+    .unique()
+    .tolist()
+)
+scope_after_rider = scope_after_rider[scope_after_rider["rider_id"].isin(selected_ids_seed)].copy()
 
 if scope_after_rider.empty:
-    st.warning("Keine Daten fuer die aktuelle Rider-Auswahl.")
+    st.warning("Keine Daten fuer die aktuelle Athleten-Auswahl.")
     st.stop()
 
 event_type_opts = sorted([x for x in scope_after_rider["event_type"].dropna().unique().tolist() if x])
 year_opts = sorted([int(x) for x in scope_after_rider["year"].dropna().unique().tolist()], reverse=True)
 cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(scope_after_rider["category"].dropna().unique().tolist())]
 gender_opts = [x for x in ["Men", "Women"] if x in set(scope_after_rider["gender"].dropna().unique().tolist())]
-nation_opts = sorted([x for x in scope_after_rider["nation"].dropna().unique().tolist() if x])
 default_years = [y for y in [2025, 2024, 2023] if y in year_opts]
 if not default_years:
     default_years = year_opts
-default_nations = ["SUI"] if "SUI" in nation_opts else []
 
-f1, f2, f3, f4, f5 = st.columns(5)
+f1, f2, f3, f4 = st.columns(4)
 with f1:
     sel_years = st.multiselect("Jahr", year_opts, default=default_years)
 with f2:
@@ -863,8 +870,6 @@ with f3:
     sel_categories = st.multiselect("Kategorie", cat_opts, default=cat_opts)
 with f4:
     sel_gender = st.multiselect("Geschlecht", gender_opts, default=gender_opts)
-with f5:
-    sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=default_nations)
 
 loc_scope = scope_after_rider.copy()
 if sel_years:
@@ -875,8 +880,6 @@ if sel_categories:
     loc_scope = loc_scope[loc_scope["category"].isin(sel_categories)]
 if sel_gender:
     loc_scope = loc_scope[loc_scope["gender"].isin(sel_gender)]
-if sel_nations:
-    loc_scope = loc_scope[loc_scope["nation"].isin(sel_nations)]
 loc_opts = sorted([x for x in loc_scope["location"].dropna().unique().tolist() if x])
 
 g1, g2 = st.columns(2)
@@ -908,7 +911,7 @@ if sel_riders:
         .tolist()
     )
 else:
-    selected_ids = base_scope["rider_id"].dropna().unique().tolist()
+    selected_ids = []
 
 if not selected_ids:
     st.warning("Keine Rider fuer die aktuelle Auswahl.")
