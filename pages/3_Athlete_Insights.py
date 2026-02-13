@@ -841,25 +841,25 @@ if not sel_riders:
     st.info("Bitte mindestens einen Athleten auswaehlen.")
     st.stop()
 
-scope_after_rider = all_runs.copy()
+rider_scope = all_runs.copy()
 if sel_nations:
-    scope_after_rider = scope_after_rider[scope_after_rider["nation"].isin(sel_nations)].copy()
+    rider_scope = rider_scope[rider_scope["nation"].isin(sel_nations)].copy()
 selected_ids_seed = (
-    scope_after_rider.loc[scope_after_rider["rider_label"].isin(sel_riders), "rider_id"]
+    rider_scope.loc[rider_scope["rider_label"].isin(sel_riders), "rider_id"]
     .dropna()
     .unique()
     .tolist()
 )
-scope_after_rider = scope_after_rider[scope_after_rider["rider_id"].isin(selected_ids_seed)].copy()
+rider_scope = rider_scope[rider_scope["rider_id"].isin(selected_ids_seed)].copy()
 
-if scope_after_rider.empty:
+if rider_scope.empty:
     st.warning("Keine Daten fuer die aktuelle Athleten-Auswahl.")
     st.stop()
 
-event_type_opts = sorted([x for x in scope_after_rider["event_type"].dropna().unique().tolist() if x])
-year_opts = sorted([int(x) for x in scope_after_rider["year"].dropna().unique().tolist()], reverse=True)
-cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(scope_after_rider["category"].dropna().unique().tolist())]
-gender_opts = [x for x in ["Men", "Women"] if x in set(scope_after_rider["gender"].dropna().unique().tolist())]
+event_type_opts = sorted([x for x in rider_scope["event_type"].dropna().unique().tolist() if x])
+year_opts = sorted([int(x) for x in rider_scope["year"].dropna().unique().tolist()], reverse=True)
+cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(rider_scope["category"].dropna().unique().tolist())]
+gender_opts = [x for x in ["Men", "Women"] if x in set(rider_scope["gender"].dropna().unique().tolist())]
 default_years = [y for y in [2025, 2024, 2023] if y in year_opts]
 if not default_years:
     default_years = year_opts
@@ -874,7 +874,7 @@ with f3:
 with f4:
     sel_gender = st.multiselect("Geschlecht", gender_opts, default=gender_opts)
 
-loc_scope = scope_after_rider.copy()
+loc_scope = rider_scope.copy()
 if sel_years:
     loc_scope = loc_scope[loc_scope["year"].isin(sel_years)]
 if sel_event_types:
@@ -892,7 +892,10 @@ with g2:
     round_opts = [x for x in ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(loc_scope["round_short"].dropna().unique().tolist())]
     sel_rounds = st.multiselect("Runde (optional)", round_opts, default=round_opts)
 
-base_scope = scope_after_rider.copy()
+# Comparison/reference pool must stay on full field for selected filters.
+base_scope = all_runs.copy()
+if sel_nations:
+    base_scope = base_scope[base_scope["nation"].isin(sel_nations)]
 if sel_years:
     base_scope = base_scope[base_scope["year"].isin(sel_years)]
 if sel_event_types:
@@ -908,7 +911,7 @@ if sel_rounds:
 
 if sel_riders:
     selected_ids = (
-        base_scope.loc[base_scope["rider_label"].isin(sel_riders), "rider_id"]
+        all_runs.loc[all_runs["rider_label"].isin(sel_riders), "rider_id"]
         .dropna()
         .unique()
         .tolist()
