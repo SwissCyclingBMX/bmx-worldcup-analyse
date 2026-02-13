@@ -1223,15 +1223,22 @@ with tab_start:
             is_round1 = True
 
         prev_event_id = None
-        prev_is_vortag = False
+        prev_is_same_loc_year = False
         if is_round1:
             try:
                 current_date = int(str(event_id)[:8])
+                current_year = str(event_id)[:4]
                 current_loc = (
                     events.loc[events["event_id"] == event_id, "loc_clean"].iloc[0]
                     if "loc_clean" in events.columns and (events["event_id"] == event_id).any()
                     else ""
                 )
+                current_row = events.loc[events["event_id"] == event_id].head(1)
+                current_label = ""
+                if not current_row.empty:
+                    current_label = str(current_row.iloc[0].get("label_short", "") or current_row.iloc[0].get("display_name", ""))
+                m_curr = re.search(r"ROUND\\s*(\\d+)", current_label, flags=re.IGNORECASE)
+                current_round_num = int(m_curr.group(1)) if m_curr else None
                 series = "euc" if "_euc_" in str(event_id) else "wc"
                 if series in ("wc", "euc") and current_loc:
                     ev = events.copy()
@@ -1243,24 +1250,35 @@ with tab_start:
                     loc_col = "loc_clean" if "loc_clean" in ev.columns else "location"
                     ev = ev[ev[loc_col] == current_loc]
                     ev = ev[ev["event_id"].astype(str).str.slice(0, 8).str.isdigit()]
+                    ev = ev[ev["event_id"].astype(str).str.slice(0, 4) == current_year]
                     if not ev.empty:
                         ev["event_date_num"] = ev["event_id"].astype(str).str.slice(0, 8).astype(int)
                         prevs = ev[ev["event_date_num"] < current_date].sort_values("event_date_num")
                         if not prevs.empty:
-                            prev_candidate = str(prevs.iloc[-1]["event_id"])
-                            prev_date_num = int(prev_candidate[:8])
-                            if (current_date - prev_date_num) == 1:
-                                prev_event_id = prev_candidate
-                                prev_is_vortag = True
+                            # Prefer same-location previous round in same year (ROUND X-1).
+                            if current_round_num is not None:
+                                prevs["round_num"] = (
+                                    prevs["label_short"]
+                                    .fillna(prevs["display_name"])
+                                    .astype(str)
+                                    .str.extract(r"ROUND\\s*(\\d+)", flags=re.IGNORECASE)[0]
+                                )
+                                prevs["round_num"] = pd.to_numeric(prevs["round_num"], errors="coerce")
+                                prev_round = prevs[prevs["round_num"] == (current_round_num - 1)]
+                                if not prev_round.empty:
+                                    prev_event_id = str(prev_round.iloc[-1]["event_id"])
+                            if not prev_event_id:
+                                prev_event_id = str(prevs.iloc[-1]["event_id"])
+                            prev_is_same_loc_year = bool(prev_event_id)
             except Exception:
                 prev_event_id = None
-                prev_is_vortag = False
+                prev_is_same_loc_year = False
 
         training_source_note = "Training-Zeiten: aktuelles Event (Gate Practice)"
         # Small values in Startliste:
-        # - Round 1 day2: use race stats from previous day (same location/series).
+        # - Round 1 day2: use race stats from previous event at same location + same year (same series).
         # - Otherwise: use training times from current event only.
-        if is_round1 and prev_is_vortag and prev_event_id:
+        if is_round1 and prev_is_same_loc_year and prev_event_id:
             df_prev_small = load_picks_for_event(prev_event_id)
             if not df_prev_small.empty:
                 prev_small = race_stats(df_prev_small)
@@ -1276,7 +1294,7 @@ with tab_start:
                             "cons_score": "train_cons_score",
                         }
                     )
-                    training_source_note = "Training-Zeiten: Vortag gleiche Location (gleiche Serie)"
+                    training_source_note = "Training-Zeiten: vorheriges Event gleiche Location (gleiches Jahr, gleiche Serie)"
         else:
             df_train = load_training_for_events([event_id])
             if not df_train.empty:
@@ -1296,16 +1314,16 @@ with tab_start:
 
         if is_round1:
             df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
-            if prev_is_vortag and prev_event_id:
+            if prev_is_same_loc_year and prev_event_id:
                 if df_race_hist.empty or prev_event_id not in df_race_hist["event_id"].unique():
                     df_prev = load_picks_for_event(prev_event_id)
                     df_race_hist = df_prev.copy() if not df_prev.empty else df_race_hist.iloc[0:0].copy()
                 else:
                     df_race_hist = df_race_hist[df_race_hist["event_id"] == prev_event_id].copy()
-                race_source_note = "Race-Zeiten: Vortag gleiche Location (gleiche Serie)"
+                race_source_note = "Race-Zeiten: vorheriges Event gleiche Location (gleiches Jahr, gleiche Serie)"
             else:
                 df_race_hist = df_race_hist.iloc[0:0].copy()
-                race_source_note = "Race-Zeiten: keine Daten (kein Vortag gefunden)"
+                race_source_note = "Race-Zeiten: keine Daten (kein passendes Vor-Event gleiche Location/Jahr)"
         else:
             df_race_hist = df_event.copy()
             if not df_race_hist.empty:
