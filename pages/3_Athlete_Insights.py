@@ -973,8 +973,13 @@ ranks_pool_all = attach_final_rank_event(pool_rel.copy(), master_results)
 if not ranks_pool_all.empty:
     rank_fb = (
         ranks_pool_all[["rider_id", "event_id", "final_rank_event"]]
-        .dropna(subset=["final_rank_event"])
-        .drop_duplicates(subset=["rider_id", "event_id"], keep="first")
+        .copy()
+    )
+    rank_fb["final_rank_event"] = pd.to_numeric(rank_fb["final_rank_event"], errors="coerce")
+    rank_fb = (
+        rank_fb.dropna(subset=["final_rank_event"])
+        .groupby(["rider_id", "event_id"], as_index=False)["final_rank_event"]
+        .min()
         .rename(columns={"final_rank_event": "final_rank_event_fb"})
     )
     runs_sel = runs_sel.merge(rank_fb, on=["rider_id", "event_id"], how="left")
@@ -2918,10 +2923,12 @@ with tabs[7]:
             year=("year", "first"),
         )
     )
+    event_rank_map = rr[["rider_id", "event_id", "final_rank_event"]].copy()
+    event_rank_map["final_rank_event"] = pd.to_numeric(event_rank_map["final_rank_event"], errors="coerce")
     event_rank_map = (
-        rr[["rider_id", "event_id", "final_rank_event"]]
-        .drop_duplicates(subset=["rider_id", "event_id"])
-        .copy()
+        event_rank_map.dropna(subset=["final_rank_event"])
+        .groupby(["rider_id", "event_id"], as_index=False)["final_rank_event"]
+        .min()
     )
     rider_event = rider_event.merge(event_rank_map, on=["rider_id", "event_id"], how="left")
     rider_event["final_rank"] = pd.to_numeric(rider_event["final_rank_event"], errors="coerce")
