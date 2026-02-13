@@ -930,15 +930,12 @@ ref_label = st.radio(
     index=0,
 )
 event_top_n = 1
-event_ko_final_only = True
+event_ko_final_only = False
 if ref_label == "Event Top N (robust)":
-    c1, c2 = st.columns(2)
-    with c1:
+    with st.container():
         if "event_top_n" in st.session_state and st.session_state["event_top_n"] not in [1, 3, 8]:
             st.session_state["event_top_n"] = 1
         event_top_n = st.selectbox("Event Top N", [1, 3, 8], index=0, key="event_top_n")
-    with c2:
-        event_ko_final_only = st.toggle("Event-Referenz nur KO+Final", value=True, key="event_ref_ko_final")
 
 ref_key = "rank4"
 if ref_label == "Event Top N (robust)":
@@ -951,8 +948,7 @@ elif ref_label == "Heat Rank 1 (Winner)":
 ref_caption = ref_label
 if ref_label == "Event Top N (robust)":
     base_ref = f"Event Top{event_top_n}"
-    scope_ref = "KO+Final" if event_ko_final_only else "alle Runden"
-    ref_caption = f"{base_ref} ({scope_ref})"
+    ref_caption = f"{base_ref} (gefilterte Runden)"
 st.caption(f"Aktive Delta-Referenz: {ref_caption}")
 
 base_rel = add_heat_relative_metrics(base_scope)
