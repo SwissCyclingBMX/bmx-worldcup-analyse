@@ -822,11 +822,33 @@ if all_runs.empty:
     st.stop()
 master_results = load_master_results()
 
-event_type_opts = sorted([x for x in all_runs["event_type"].dropna().unique().tolist() if x])
-year_opts = sorted([int(x) for x in all_runs["year"].dropna().unique().tolist()], reverse=True)
-cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(all_runs["category"].dropna().unique().tolist())]
-gender_opts = [x for x in ["Men", "Women"] if x in set(all_runs["gender"].dropna().unique().tolist())]
-nation_opts = sorted([x for x in all_runs["nation"].dropna().unique().tolist() if x])
+rider_opts_all = sorted([x for x in all_runs["rider_label"].dropna().unique().tolist() if x])
+selected_prev = st.session_state.get("insight_riders", [])
+rider_opts = sorted(set(rider_opts_all).union(set(selected_prev)))
+if not rider_opts and not selected_prev:
+    st.warning("Keine Rider verfuegbar.")
+    st.stop()
+sel_riders = st.multiselect("Rider Filter (zuerst waehlen, optional leer = alle)", rider_opts, key="insight_riders")
+
+scope_after_rider = all_runs.copy()
+if sel_riders:
+    selected_ids_seed = (
+        scope_after_rider.loc[scope_after_rider["rider_label"].isin(sel_riders), "rider_id"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    scope_after_rider = scope_after_rider[scope_after_rider["rider_id"].isin(selected_ids_seed)].copy()
+
+if scope_after_rider.empty:
+    st.warning("Keine Daten fuer die aktuelle Rider-Auswahl.")
+    st.stop()
+
+event_type_opts = sorted([x for x in scope_after_rider["event_type"].dropna().unique().tolist() if x])
+year_opts = sorted([int(x) for x in scope_after_rider["year"].dropna().unique().tolist()], reverse=True)
+cat_opts = [x for x in ["Elite", "U23", "Junior"] if x in set(scope_after_rider["category"].dropna().unique().tolist())]
+gender_opts = [x for x in ["Men", "Women"] if x in set(scope_after_rider["gender"].dropna().unique().tolist())]
+nation_opts = sorted([x for x in scope_after_rider["nation"].dropna().unique().tolist() if x])
 default_years = [y for y in [2025, 2024, 2023] if y in year_opts]
 if not default_years:
     default_years = year_opts
@@ -844,7 +866,7 @@ with f4:
 with f5:
     sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=default_nations)
 
-loc_scope = all_runs.copy()
+loc_scope = scope_after_rider.copy()
 if sel_years:
     loc_scope = loc_scope[loc_scope["year"].isin(sel_years)]
 if sel_event_types:
@@ -864,7 +886,7 @@ with g2:
     round_opts = [x for x in ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(loc_scope["round_short"].dropna().unique().tolist())]
     sel_rounds = st.multiselect("Runde (optional)", round_opts, default=round_opts)
 
-base_scope = all_runs.copy()
+base_scope = scope_after_rider.copy()
 if sel_years:
     base_scope = base_scope[base_scope["year"].isin(sel_years)]
 if sel_event_types:
@@ -878,22 +900,15 @@ if sel_locations:
 if sel_rounds:
     base_scope = base_scope[base_scope["round_short"].isin(sel_rounds)]
 
-rider_pool = base_scope.copy()
-if sel_nations:
-    rider_pool = rider_pool[rider_pool["nation"].isin(sel_nations)]
-
-rider_opts_filtered = set(rider_pool["rider_label"].dropna().unique().tolist())
-selected_prev = st.session_state.get("insight_riders", [])
-rider_opts = sorted(rider_opts_filtered.union(set(selected_prev)))
-if not rider_opts and not selected_prev:
-    st.warning("Keine Rider fuer die aktuelle Filterauswahl.")
-    st.stop()
-sel_riders = st.multiselect("Rider Filter (optional, leer = alle)", rider_opts, key="insight_riders")
-
 if sel_riders:
-    selected_ids = rider_pool.loc[rider_pool["rider_label"].isin(sel_riders), "rider_id"].dropna().unique().tolist()
+    selected_ids = (
+        base_scope.loc[base_scope["rider_label"].isin(sel_riders), "rider_id"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
 else:
-    selected_ids = rider_pool["rider_id"].dropna().unique().tolist()
+    selected_ids = base_scope["rider_id"].dropna().unique().tolist()
 
 if not selected_ids:
     st.warning("Keine Rider fuer die aktuelle Auswahl.")
