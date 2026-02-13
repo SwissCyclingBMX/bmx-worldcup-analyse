@@ -889,25 +889,8 @@ g1, g2 = st.columns(2)
 with g1:
     sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
 with g2:
-    known_round_order = ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F"]
-    rounds_available = [
-        str(x).strip()
-        for x in loc_scope["round_short"].dropna().unique().tolist()
-        if str(x).strip()
-    ]
-    rounds_known = [x for x in known_round_order if x in set(rounds_available)]
-    rounds_other = sorted([x for x in rounds_available if x not in known_round_order])
-    round_opts = rounds_known + rounds_other
-    if "insight_rounds" in st.session_state:
-        st.session_state["insight_rounds"] = [
-            r for r in st.session_state["insight_rounds"] if r in round_opts
-        ]
-    sel_rounds = st.multiselect(
-        "Runde (optional, leer = alle)",
-        round_opts,
-        default=[],
-        key="insight_rounds",
-    )
+    round_opts = [x for x in ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(loc_scope["round_short"].dropna().unique().tolist())]
+    sel_rounds = st.multiselect("Runde (optional)", round_opts, default=round_opts)
 
 base_scope = scope_after_rider.copy()
 if sel_years:
@@ -944,12 +927,15 @@ ref_label = st.radio(
     index=0,
 )
 event_top_n = 1
-event_ko_final_only = False
+event_ko_final_only = True
 if ref_label == "Event Top N (robust)":
-    with st.container():
+    c1, c2 = st.columns(2)
+    with c1:
         if "event_top_n" in st.session_state and st.session_state["event_top_n"] not in [1, 3, 8]:
             st.session_state["event_top_n"] = 1
         event_top_n = st.selectbox("Event Top N", [1, 3, 8], index=0, key="event_top_n")
+    with c2:
+        event_ko_final_only = st.toggle("Event-Referenz nur KO+Final", value=True, key="event_ref_ko_final")
 
 ref_key = "rank4"
 if ref_label == "Event Top N (robust)":
@@ -962,7 +948,8 @@ elif ref_label == "Heat Rank 1 (Winner)":
 ref_caption = ref_label
 if ref_label == "Event Top N (robust)":
     base_ref = f"Event Top{event_top_n}"
-    ref_caption = f"{base_ref} (gefilterte Runden)"
+    scope_ref = "KO+Final" if event_ko_final_only else "alle Runden"
+    ref_caption = f"{base_ref} ({scope_ref})"
 st.caption(f"Aktive Delta-Referenz: {ref_caption}")
 
 base_rel = add_heat_relative_metrics(base_scope)
