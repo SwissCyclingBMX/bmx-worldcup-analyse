@@ -889,8 +889,25 @@ g1, g2 = st.columns(2)
 with g1:
     sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
 with g2:
-    round_opts = [x for x in ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(loc_scope["round_short"].dropna().unique().tolist())]
-    sel_rounds = st.multiselect("Runde (optional)", round_opts, default=round_opts)
+    known_round_order = ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F"]
+    rounds_available = [
+        str(x).strip()
+        for x in loc_scope["round_short"].dropna().unique().tolist()
+        if str(x).strip()
+    ]
+    rounds_known = [x for x in known_round_order if x in set(rounds_available)]
+    rounds_other = sorted([x for x in rounds_available if x not in known_round_order])
+    round_opts = rounds_known + rounds_other
+    if "insight_rounds" in st.session_state:
+        st.session_state["insight_rounds"] = [
+            r for r in st.session_state["insight_rounds"] if r in round_opts
+        ]
+    sel_rounds = st.multiselect(
+        "Runde (optional, leer = alle)",
+        round_opts,
+        default=[],
+        key="insight_rounds",
+    )
 
 base_scope = scope_after_rider.copy()
 if sel_years:
