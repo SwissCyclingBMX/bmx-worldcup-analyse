@@ -895,6 +895,28 @@ if events.empty:
     st.error("events-Tabelle ist leer. Bitte ingest.py für mindestens ein Event laufen lassen.")
     st.stop()
 
+# Robust series code for sidebar filtering (works even if cached events lacks 'series').
+events_work = events.copy()
+if "series" in events_work.columns:
+    series_code = events_work["series"].astype(str).str.lower().str.strip()
+else:
+    eid_l = events_work["event_id"].astype(str).str.lower()
+    name_l = events_work["display_name"].fillna("").astype(str).str.lower()
+    series_code = np.where(
+        eid_l.str.contains("wch", regex=False) | name_l.str.contains("world championship", regex=False),
+        "wch",
+        np.where(
+            eid_l.str.contains("_em_", regex=False) | name_l.str.contains("european championship", regex=False),
+            "em",
+            np.where(
+                eid_l.str.contains("_euc_", regex=False) | name_l.str.contains("european cup", regex=False),
+                "euc",
+                "wc",
+            ),
+        ),
+    )
+events_work["_series_code"] = pd.Series(series_code, index=events_work.index)
+
 # Sidebar: Event Auswahl
 st.sidebar.header("Event Auswahl")
 
@@ -910,15 +932,19 @@ else:
 
 # Which set of events is shown in the CURRENT event dropdown?
 if mode == "Live":
-    df_current_pool = events[events["event_id"].isin(live_ids)].copy()
+    df_current_pool = events_work[events_work["event_id"].isin(live_ids)].copy()
 else:
-    years = sorted(events["year"].dropna().unique().tolist(), reverse=True)
+    years = sorted(events_work["year"].dropna().unique().tolist(), reverse=True)
     year_sel = st.sidebar.selectbox("Jahr", years, index=0)
-    type_opts = [x for x in ["WC", "WM", "EC", "EM"] if x in set(events["series"].dropna().unique().tolist())]
+    code_to_label = {"wc": "WC", "wch": "WM", "euc": "EC", "em": "EM"}
+    label_to_code = {v: k for k, v in code_to_label.items()}
+    available_codes = set(events_work["_series_code"].dropna().astype(str).tolist())
+    type_opts = [code_to_label[c] for c in ["wc", "wch", "euc", "em"] if c in available_codes]
     type_sel = st.sidebar.multiselect("Wettkampftyp", type_opts, default=type_opts)
-    df_current_pool = events[events["year"] == year_sel].copy()
+    df_current_pool = events_work[events_work["year"] == year_sel].copy()
     if type_sel:
-        df_current_pool = df_current_pool[df_current_pool["series"].isin(type_sel)].copy()
+        sel_codes = [label_to_code[t] for t in type_sel if t in label_to_code]
+        df_current_pool = df_current_pool[df_current_pool["_series_code"].isin(sel_codes)].copy()
 
 df_current_pool = df_current_pool.sort_values("event_id", ascending=False)
 if df_current_pool.empty:
@@ -931,8 +957,8 @@ st.sidebar.caption(f"Aktives Event: {event_id}")
 
 # Analyse selection (directly under Event)
 default_analysis_labels = []
-if event_id in events["event_id"].tolist():
-    default_analysis_labels = [events.loc[events["event_id"] == event_id, "label_analysis"].iloc[0]]
+if event_id in events_work["event_id"].tolist():
+    default_analysis_labels = [events_work.loc[events_work["event_id"] == event_id, "label_analysis"].iloc[0]]
 
 analysis_options = df_current_pool["label_analysis"].tolist()
 analysis_event_labels = st.sidebar.multiselect(
@@ -942,7 +968,7 @@ analysis_event_labels = st.sidebar.multiselect(
 )
 
 analysis_event_labels = [x for x in analysis_event_labels if x]
-analysis_event_ids = events.loc[events["label_analysis"].isin(analysis_event_labels), "event_id"].tolist()
+analysis_event_ids = events_work.loc[events_work["label_analysis"].isin(analysis_event_labels), "event_id"].tolist()
 # always include current event for training/race context
 if event_id not in analysis_event_ids:
     analysis_event_ids.append(event_id)
