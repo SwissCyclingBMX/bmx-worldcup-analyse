@@ -538,17 +538,17 @@ def make_event_label(df: pd.DataFrame) -> pd.Series:
 def apply_reference(
     df: pd.DataFrame,
     ref_key: str,
-    event_top_n: int = 4,
+    event_top_n: int = 1,
     event_ko_final_only: bool = True,
     reference_source: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     out = df.copy()
     if event_top_n < 1:
-        event_top_n = 4
+        event_top_n = 1
     all_segments = ["start", "t1", "t2", "t3", "finish", "split_bottom_t1", "split_t1_t2", "split_t2_t3", "split_t3_finish"]
 
     # Event-level references (per event + category/group) from absolute segment times.
-    if ref_key in {"event_top4", "event_best"}:
+    if ref_key in {"event_topn", "event_top4", "event_best"}:
         src = reference_source.copy() if reference_source is not None else out.copy()
         if event_ko_final_only and "phase" in src.columns:
             src = src[src["phase"].isin(["KO", "Final"])].copy()
@@ -571,14 +571,17 @@ def apply_reference(
                 .reset_index()
             )
             out = out.merge(ref_df, on=group_cols, how="left")
-            out[f"{seg}_delta_event_top4"] = out[seg] - out.get(f"{seg}_event_topn_ref")
+            out[f"{seg}_delta_event_topn"] = out[seg] - out.get(f"{seg}_event_topn_ref")
+            # Backward-compatible alias
+            out[f"{seg}_delta_event_top4"] = out[f"{seg}_delta_event_topn"]
             out[f"{seg}_delta_event_best"] = out[seg] - out.get(f"{seg}_event_best_ref")
 
     map_suffix = {
         "rank4": "rank4",
         "winner": "winner",
-        "event_top4": "event_top4",
-        "event_best": "event_best",
+        "event_topn": "event_topn",
+        "event_top4": "event_topn",
+        "event_best": "event_topn",
     }
     suffix = map_suffix.get(ref_key, "rank4")
     for seg in all_segments:
@@ -919,33 +922,32 @@ if not selected_ids:
 
 ref_label = st.radio(
     "Referenz",
-    ["Event Top4 (robust)", "Heat Rank 4 (Qualification Cut)", "Heat Rank 1 (Winner)"],
+    ["Event Top N (robust)", "Heat Rank 4 (Qualification Cut)", "Heat Rank 1 (Winner)"],
     horizontal=True,
     index=0,
 )
-event_top_n = 4
+event_top_n = 1
 event_ko_final_only = True
-use_event_best = False
-if ref_label == "Event Top4 (robust)":
-    c1, c2, c3 = st.columns(3)
+if ref_label == "Event Top N (robust)":
+    c1, c2 = st.columns(2)
     with c1:
-        event_top_n = st.selectbox("Event Top N", [4, 8], index=0, key="event_top_n")
+        if "event_top_n" in st.session_state and st.session_state["event_top_n"] not in [1, 3, 8]:
+            st.session_state["event_top_n"] = 1
+        event_top_n = st.selectbox("Event Top N", [1, 3, 8], index=0, key="event_top_n")
     with c2:
         event_ko_final_only = st.toggle("Event-Referenz nur KO+Final", value=True, key="event_ref_ko_final")
-    with c3:
-        use_event_best = st.toggle("Event Best (Ceiling) statt Event Top N", value=False, key="event_ref_best")
 
 ref_key = "rank4"
-if ref_label == "Event Top4 (robust)":
-    ref_key = "event_best" if use_event_best else "event_top4"
+if ref_label == "Event Top N (robust)":
+    ref_key = "event_topn"
 elif ref_label == "Heat Rank 4 (Qualification Cut)":
     ref_key = "rank4"
 elif ref_label == "Heat Rank 1 (Winner)":
     ref_key = "winner"
 
 ref_caption = ref_label
-if ref_label == "Event Top4 (robust)":
-    base_ref = "Event Best" if use_event_best else f"Event Top{event_top_n}"
+if ref_label == "Event Top N (robust)":
+    base_ref = f"Event Top{event_top_n}"
     scope_ref = "KO+Final" if event_ko_final_only else "alle Runden"
     ref_caption = f"{base_ref} ({scope_ref})"
 st.caption(f"Aktive Delta-Referenz: {ref_caption}")
@@ -1358,8 +1360,9 @@ with tabs[0]:
     ref_suffix_map = {
         "rank4": "rank4_ref",
         "winner": "winner",
+        "event_topn": "event_topn_ref",
         "event_top4": "event_topn_ref",
-        "event_best": "event_best_ref",
+        "event_best": "event_topn_ref",
     }
     ref_suffix = ref_suffix_map.get(ref_key, "rank4_ref")
     seg_defs = [
@@ -1423,16 +1426,15 @@ with tabs[0]:
         key="peak_seg_per_location",
         help="Wenn aktiv: pro Location wird zuerst nur der beste Run genommen, dann der Peak daraus berechnet.",
     )
-    # Automatic behavior: when Event Best is selected as reference, only the
-    # reference rider (event-best row) is shown vs Rank 2. All others remain vs Event Best.
-    show_delta_vs_rank2 = ref_key == "event_best"
+    # For Event Top1 only: reference rider row can be compared vs Rank 2 for visibility.
+    show_delta_vs_rank2 = ref_key in {"event_topn", "event_top4", "event_best"} and int(event_top_n) == 1
     show_overall_median = st.toggle(
         "Show Overall Median (Reality Check)",
         value=False,
         key="peak_seg_show_overall",
     )
     if show_delta_vs_rank2:
-        st.caption("Bei Event Best wird nur fuer den Referenz-Rider Delta gegen Rank 2 berechnet.")
+        st.caption("Bei Event Top 1 wird nur fuer den Referenz-Rider Delta gegen Rank 2 berechnet.")
 
     def _take_n(n_rows: int, mode: str) -> int:
         if n_rows <= 0:
