@@ -832,53 +832,16 @@ if not default_years:
     default_years = year_opts
 default_nations = ["SUI"] if "SUI" in nation_opts else []
 
-f1, f2, f3 = st.columns([1, 1, 3])
+f1, f2, f3, f4, f5 = st.columns(5)
 with f1:
     sel_years = st.multiselect("Jahr", year_opts, default=default_years)
 with f2:
     sel_event_types = st.multiselect("Event Type", event_type_opts, default=event_type_opts)
-event_scope = all_runs.copy()
-if sel_years:
-    event_scope = event_scope[event_scope["year"].isin(sel_years)]
-if sel_event_types:
-    event_scope = event_scope[event_scope["event_type"].isin(sel_event_types)]
-event_opts_df = (
-    event_scope[["event_id", "event_dt", "event_short", "display_name"]]
-    .drop_duplicates(subset=["event_id"])
-    .sort_values(["event_dt", "event_id"], ascending=[False, False], na_position="last")
-    .copy()
-)
-event_opts_df["event_date_label"] = event_opts_df["event_dt"].dt.strftime("%Y-%m-%d").fillna(
-    event_opts_df["event_id"].astype(str).str[:8]
-)
-event_opts_df["event_filter_label"] = (
-    event_opts_df["event_date_label"]
-    + " | "
-    + event_opts_df["event_short"].fillna(event_opts_df["display_name"]).fillna(event_opts_df["event_id"]).astype(str)
-)
-dup_event_label = event_opts_df["event_filter_label"].duplicated(keep=False)
-event_opts_df.loc[dup_event_label, "event_filter_label"] = (
-    event_opts_df.loc[dup_event_label, "event_filter_label"]
-    + " ("
-    + event_opts_df.loc[dup_event_label, "event_id"].astype(str)
-    + ")"
-)
-event_opts = event_opts_df["event_filter_label"].tolist()
 with f3:
-    sel_events = st.multiselect("Event", event_opts, default=[])
-
-sel_event_ids = (
-    event_opts_df.loc[event_opts_df["event_filter_label"].isin(sel_events), "event_id"]
-    .dropna()
-    .tolist()
-)
-
-f4, f5, f6 = st.columns(3)
-with f4:
     sel_categories = st.multiselect("Kategorie", cat_opts, default=cat_opts)
-with f5:
+with f4:
     sel_gender = st.multiselect("Geschlecht", gender_opts, default=gender_opts)
-with f6:
+with f5:
     sel_nations = st.multiselect("Nation (Rider)", nation_opts, default=default_nations)
 
 loc_scope = all_runs.copy()
@@ -886,8 +849,6 @@ if sel_years:
     loc_scope = loc_scope[loc_scope["year"].isin(sel_years)]
 if sel_event_types:
     loc_scope = loc_scope[loc_scope["event_type"].isin(sel_event_types)]
-if sel_event_ids:
-    loc_scope = loc_scope[loc_scope["event_id"].isin(sel_event_ids)]
 if sel_categories:
     loc_scope = loc_scope[loc_scope["category"].isin(sel_categories)]
 if sel_gender:
@@ -908,8 +869,6 @@ if sel_years:
     base_scope = base_scope[base_scope["year"].isin(sel_years)]
 if sel_event_types:
     base_scope = base_scope[base_scope["event_type"].isin(sel_event_types)]
-if sel_event_ids:
-    base_scope = base_scope[base_scope["event_id"].isin(sel_event_ids)]
 if sel_categories:
     base_scope = base_scope[base_scope["category"].isin(sel_categories)]
 if sel_gender:

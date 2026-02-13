@@ -914,9 +914,16 @@ if mode == "Live":
 else:
     years = sorted(events["year"].dropna().unique().tolist(), reverse=True)
     year_sel = st.sidebar.selectbox("Jahr", years, index=0)
+    type_opts = [x for x in ["WC", "WM", "EC", "EM"] if x in set(events["series"].dropna().unique().tolist())]
+    type_sel = st.sidebar.multiselect("Wettkampftyp", type_opts, default=type_opts)
     df_current_pool = events[events["year"] == year_sel].copy()
+    if type_sel:
+        df_current_pool = df_current_pool[df_current_pool["series"].isin(type_sel)].copy()
 
 df_current_pool = df_current_pool.sort_values("event_id", ascending=False)
+if df_current_pool.empty:
+    st.warning("Keine Events für die aktuelle Auswahl (Jahr/Wettkampftyp).")
+    st.stop()
 
 event_label_current = st.sidebar.selectbox("Event", df_current_pool["label_short"].tolist(), index=0)
 event_id = df_current_pool.loc[df_current_pool["label_short"] == event_label_current, "event_id"].iloc[0]
@@ -927,9 +934,10 @@ default_analysis_labels = []
 if event_id in events["event_id"].tolist():
     default_analysis_labels = [events.loc[events["event_id"] == event_id, "label_analysis"].iloc[0]]
 
+analysis_options = df_current_pool["label_analysis"].tolist()
 analysis_event_labels = st.sidebar.multiselect(
     "Event (Analyse) – frei kombinierbar",
-    options=events["label_analysis"].tolist(),
+    options=analysis_options,
     default=default_analysis_labels,
 )
 
