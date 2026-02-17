@@ -936,13 +936,15 @@ if mode == "Live":
     df_current_pool = events_work[events_work["event_id"].isin(live_ids)].copy()
 else:
     years = sorted(events_work["year"].dropna().unique().tolist(), reverse=True)
-    year_sel = st.sidebar.selectbox("Jahr", years, index=0)
+    year_sel = st.sidebar.multiselect("Jahr", years, default=[years[0]] if years else [])
     code_to_label = {"wc": "WC", "wch": "WM", "euc": "EC", "em": "EM"}
     label_to_code = {v: k for k, v in code_to_label.items()}
     available_codes = set(events_work["_series_code"].dropna().astype(str).tolist())
     type_opts = [code_to_label[c] for c in ["wc", "wch", "euc", "em"] if c in available_codes]
     type_sel = st.sidebar.multiselect("Wettkampftyp", type_opts, default=type_opts)
-    df_current_pool = events_work[events_work["year"] == year_sel].copy()
+    df_current_pool = events_work.copy()
+    if year_sel:
+        df_current_pool = df_current_pool[df_current_pool["year"].isin(year_sel)].copy()
     if type_sel:
         sel_codes = [label_to_code[t] for t in type_sel if t in label_to_code]
         df_current_pool = df_current_pool[df_current_pool["_series_code"].isin(sel_codes)].copy()
@@ -952,8 +954,8 @@ if df_current_pool.empty:
     st.warning("Keine Events für die aktuelle Auswahl (Jahr/Wettkampftyp).")
     st.stop()
 
-event_label_current = st.sidebar.selectbox("Event", df_current_pool["label_short"].tolist(), index=0)
-event_id = df_current_pool.loc[df_current_pool["label_short"] == event_label_current, "event_id"].iloc[0]
+event_label_current = st.sidebar.selectbox("Event", df_current_pool["label_analysis"].tolist(), index=0)
+event_id = df_current_pool.loc[df_current_pool["label_analysis"] == event_label_current, "event_id"].iloc[0]
 st.sidebar.caption(f"Aktives Event: {event_id}")
 
 # Analyse selection (directly under Event)
