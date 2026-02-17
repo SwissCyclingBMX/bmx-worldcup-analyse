@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""
+ingest_usabmx.py
+
+Ingest USA BMX-style payloads (classRanks / competitorRankSummaries / competitorRankDetails)
+into the existing bmx.db schema (events + picks).
+
+Input options:
+  1) --payload-file payload.json
+  2) --url ... [--post-json '{"accountId":"...","eventId":"..."}']
+
+Examples:
+  python3 ingest_usabmx.py --payload-file usa_payload.json --event-id 20251128_uspro_bmx
+
+  python3 ingest_usabmx.py \\
+    --url "https://example/api/event/summary" \\
+    --post-json '{"accountId":"...","regionCode":"US","eventId":"..."}' \\
+    --event-id 20251128_uspro_bmx
+"""
+
+import argparse
+import datetime as dt
+import json
+import re
+import sqlite3
+import zlib
+from typing import Any, Dict, List, Optional, Tuple
+
+import requests
+
+from ingest import DEFAULT_DB_PATH, init_db, now_iso, upsert_event, upsert_picks
+
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", default=DEFAULT_DB_PATH, help="SQLite DB path (default: bmx.db)")
+    ap.add_argument("--payload-file", help="Path to JSON payload file")
+    ap.add_argument("--url", help="API URL returning payload JSON")
+    ap.add_argument("--post-json", help="Optional JSON body string for POST requests")
+    ap.add_argument("--event-id", help="Target event_id (default: derived from payload)")
+    ap.add_argument("--series-code", default="usap", help="Series code for derived event_id (default: usap)")
+    ap.add_argument(
+        "--all-classes",
+        action="store_true",
+        help="Ingest all classes (default ingests only Men Pro + Women Pro)",
+    )
+    ap.add_argument(
+        "--class-contains",
+        action="append",
+        default=["Men Pro", "Women Pro"],
+        help="Optional filter: only ingest classes whose className contains this text (case-insensitive). Repeatable.",
+    )
+    return ap.parse_args()
+
+
+def unwrap_payload(obj: Any) -> Dict[str, Any]:
+    if isinstance(obj, dict) and "classRanks" in obj:
+        return obj
+    if isinstance(obj, dict):
+        for k in ("data", "result", "payload", "response"):
+            v = obj.get(k)
+            if isinstance(v, dict) and "classRanks" in v:
+                return v
+    raise RuntimeError("Payload does not contain classRanks")
+
+
+def load_payload(args: argparse.Namespace) -> Dict[str, Any]:
+    raw: Any
+    if args.payload_file:
+        with open(args.payload_file, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    elif args.url:
+        headers = {"accept": "application/json", "user-agent": "HeatScout/1.0"}
+        if args.post_json:
+            body = json.loads(args.post_json)
+            r = requests.post(args.url, headers=headers, json=body, timeout=30)
+        else:
+            r = requests.get(args.url, headers=headers, timeout=30)
+        r.raise_for_status()
+        raw = r.json()
+    else:
+        raise RuntimeError("Provide either --payload-file or --url")
+    return unwrap_payload(raw)
+
+
+def parse_event_date(s: Optional[str]) -> Tuple[str, str]:
+    if not s:
+        d = dt.date.today()
+        return d.strftime("%Y%m%d"), d.isoformat()
+    s2 = str(s).strip()
+    # expected: YYYY-MM-DD
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", s2)
+    if m:
+        y, mo, d = m.groups()
+        return f"{y}{mo}{d}", f"{y}-{mo}-{d}"
+    # fallback: DD-MM-YYYY
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})$", s2)
+    if m:
+        d, mo, y = m.groups()
+        return f"{y}{mo}{d}", f"{y}-{mo}-{d}"
+    d = dt.date.today()
+    return d.strftime("%Y%m%d"), d.isoformat()
+
+
+def map_category_gender(class_name: str, competitor_gender: Any) -> Tuple[str, str]:
+    n = (class_name or "").lower()
+    if "junior" in n:
+        category = "Junior"
+    elif "u23" in n:
+        category = "U23"
+    elif "pro" in n or "elite" in n:
+        category = "Elite"
+    else:
+        category = "Elite"
+
+    g = str(competitor_gender or "").strip()
+    if g == "2" or "women" in n or "female" in n:
+        gender = "W"
+    elif g == "1" or "men" in n or "male" in n:
+        gender = "M"
+    else:
+        gender = "M"
+    return category, gender
+
+
+def map_group_id(category: str, gender: str, class_code: str) -> int:
+    known = {
+        ("Elite", "M"): 91,
+        ("Elite", "W"): 92,
+        ("U23", "M"): 93,
+        ("U23", "W"): 94,
+        ("Junior", "M"): 95,
+        ("Junior", "W"): 96,
+    }
+    if (category, gender) in known:
+        return known[(category, gender)]
+    return 1000 + (zlib.crc32(str(class_code).encode("utf-8")) % 8000)
+
+
+def map_round(phase_code: str, phase_name: str) -> Tuple[int, str]:
+    pc = (phase_code or "").upper()
+    pn = (phase_name or "").upper()
+    if pc in {"M1", "M2", "M3"} or "MOTO" in pn:
+        return 1, "Round 1"
+    if "LCQ" in pc or "LCQ" in pn or "LAST CHANCE" in pn:
+        return 2, "LCQ"
+    if "1/16" in pn or "16" in pc and "F" in pc:
+        return 3, "1/16 Finals"
+    if "1/8" in pn or "8" in pc and "F" in pc:
+        return 4, "1/8 Finals"
+    if pc == "4F" or "QUARTER" in pn:
+        return 5, "1/4 Finals"
+    if pc == "2F" or "SEMI" in pn:
+        return 6, "1/2 Finals"
+    if pc.startswith("1F") or "MAIN" in pn or "FINAL" in pn:
+        return 7, "Final"
+    return 99, phase_name or phase_code or "Round"
+
+
+def parse_local_time_from_ms(ms: Any, utc_offset_minutes: Any) -> Optional[str]:
+    try:
+        if ms is None:
+            return None
+        ms_i = int(ms)
+        offset = int(utc_offset_minutes or 0)
+        ts = dt.datetime.utcfromtimestamp(ms_i / 1000.0) + dt.timedelta(minutes=offset)
+        return ts.strftime("%H:%M:%S")
+    except Exception:
+        return None
+
+
+def build_race_start_map(payload: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
+    out: Dict[Tuple[str, str], str] = {}
+    utc_offset = payload.get("utcOffset")
+    for r in payload.get("raceOrder", []) or []:
+        pbc = str(r.get("phaseBlockCode") or "").strip()
+        rn = str(r.get("raceName") or "").strip()
+        st = parse_local_time_from_ms(r.get("startTime"), utc_offset)
+        if pbc and rn and st:
+            out[(pbc, rn)] = st
+    return out
+
+
+def get_nation(comp: Dict[str, Any], group_country: Dict[str, str], default_region: str) -> Optional[str]:
+    gid = str(comp.get("groupId") or "").strip().upper()
+    if re.match(r"^[A-Z]{3}$", gid):
+        return gid
+    if gid in group_country:
+        return group_country[gid]
+    return (default_region or "").strip().upper()[:3] or None
+
+
+def stable_heat_id(class_code: str, phase_code: str, race_name: str) -> int:
+    key = f"{class_code}|{phase_code}|{race_name}".encode("utf-8")
+    return int(zlib.crc32(key) % 1000000) + 1
+
+
+def to_int(v: Any) -> Optional[int]:
+    try:
+        if v is None or str(v).strip() == "":
+            return None
+        return int(float(str(v)))
+    except Exception:
+        return None
+
+
+def class_allowed(class_name: str, filters: List[str]) -> bool:
+    if not class_name:
+        return False
+    if not filters:
+        return True
+    n = (class_name or "").lower()
+    return any(f.lower() in n for f in filters)
+
+
+def ingest_payload(conn: sqlite3.Connection, payload: Dict[str, Any], args: argparse.Namespace) -> Tuple[str, int]:
+    event_summary = payload.get("eventSummary", {}) or {}
+    event_name = str(event_summary.get("eventName") or payload.get("eventName") or "USA BMX Event").strip()
+    date_key, date_iso = parse_event_date(event_summary.get("eventDate"))
+    region = str(payload.get("regionCode") or "").upper()
+    payload_event_id = str(payload.get("eventId") or event_summary.get("eventId") or "").strip()
+    event_id = args.event_id or f"{date_key}_{args.series_code}_bmx"
+    if payload_event_id:
+        event_id = args.event_id or f"{date_key}_{args.series_code}_{payload_event_id[:8]}"
+
+    upsert_event(
+        conn,
+        {
+            "event_id": event_id,
+            "display_name": event_name,
+            "location": None,
+            "country": region or None,
+            "event_date": date_iso,
+            "last_seen": now_iso(),
+        },
+    )
+
+    group_country: Dict[str, str] = {}
+    for g in payload.get("groups", []) or []:
+        gid = str(g.get("groupId") or "").strip().upper()
+        gct = str(g.get("groupCountryCode") or "").strip().upper()
+        if gid and gct:
+            group_country[gid] = gct
+
+    race_start_map = build_race_start_map(payload)
+    seen_at = now_iso()
+    rows: List[Dict[str, Any]] = []
+
+    class_filters = [] if args.all_classes else (args.class_contains or ["Men Pro", "Women Pro"])
+    for cls in payload.get("classRanks", []) or []:
+        class_name = str(cls.get("className") or "").strip()
+        if not class_allowed(class_name, class_filters):
+            continue
+        class_code = str(cls.get("classCode") or cls.get("perpetualClassCode") or "").strip()
+        details = cls.get("competitorRankSummaries") or []
+        if not isinstance(details, list):
+            continue
+
+        for comp in details:
+            first = str(comp.get("firstName") or "").strip()
+            last = str(comp.get("lastName") or "").strip()
+            name = f"{first} {last}".strip() or str(comp.get("name") or "").strip()
+            bib = to_int(comp.get("plate"))
+            if bib is None:
+                # no bib -> skip row for picks PK consistency
+                continue
+            category, gender = map_category_gender(class_name, comp.get("gender"))
+            group_id = map_group_id(category, gender, class_code)
+            nation = get_nation(comp, group_country, region)
+            uci_id = str(comp.get("memberId") or "").strip() or None
+
+            rank_details = comp.get("competitorRankDetails") or []
+            if not isinstance(rank_details, list):
+                continue
+            for d in rank_details:
+                phase_code = str(d.get("phaseCode") or d.get("phaseBlockCode") or "").strip()
+                phase_block = str(d.get("phaseBlockCode") or "").strip()
+                phase_name = str(d.get("phaseName") or "").strip()
+                race_name = str(d.get("raceName") or "").strip()
+                if not phase_code:
+                    continue
+                round_key, round_title = map_round(phase_code, phase_name)
+                heat_id = stable_heat_id(class_code, phase_code, race_name or phase_name)
+                heat_title = f"{phase_name} {race_name}".strip() if phase_name or race_name else phase_code
+                start_time_string = (
+                    race_start_map.get((phase_block, race_name))
+                    or race_start_map.get((phase_code, race_name))
+                    or None
+                )
+                race_pos = to_int(d.get("racePosition"))
+                rank = to_int(d.get("rank"))
+                tval = str(d.get("time") or "").strip() or None
+
+                rows.append(
+                    {
+                        "event_id": event_id,
+                        "group_id": group_id,
+                        "round_key": round_key,
+                        "round_title": round_title,
+                        "heat_id": heat_id,
+                        "heat_title": heat_title,
+                        "heat_status": None,
+                        "start_time_string": start_time_string,
+                        "bib": bib,
+                        "name": name,
+                        "nation": nation,
+                        "pick_order": race_pos,
+                        "lane": str(race_pos) if race_pos is not None else None,
+                        "lane_idx": race_pos,
+                        "uci_id": uci_id,
+                        "start": None,
+                        "t1": None,
+                        "t2": None,
+                        "t3": None,
+                        "t4": None,
+                        "time": tval,
+                        "rank": rank,
+                        "seen_at": seen_at,
+                    }
+                )
+
+    upsert_picks(conn, rows)
+    return event_id, len(rows)
+
+
+def main() -> None:
+    args = parse_args()
+    payload = load_payload(args)
+    conn = sqlite3.connect(args.db)
+    init_db(conn)
+    event_id, nrows = ingest_payload(conn, payload, args)
+    conn.close()
+    print(f"ingested event_id={event_id} rows={nrows}")
+
+
+if __name__ == "__main__":
+    main()
