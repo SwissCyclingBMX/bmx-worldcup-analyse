@@ -1,0 +1,14 @@
+[Unit]
+Description=oauth2-proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/oauth2-proxy --config=/etc/oauth2-proxy.cfg
+Restart=always
+RestartSec=5
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

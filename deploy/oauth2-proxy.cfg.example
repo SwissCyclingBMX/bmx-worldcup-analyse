@@ -1,0 +1,36 @@
+# oauth2-proxy configuration for Auth0 (OIDC)
+# Copy to: /etc/oauth2-proxy.cfg
+#
+# Replace the placeholders:
+#   __AUTH0_DOMAIN__
+#   __AUTH0_CLIENT_ID__
+#   __AUTH0_CLIENT_SECRET__
+#   __COOKIE_SECRET_BASE64_32__
+#   __PUBLIC_BASE_URL__
+
+provider = "oidc"
+oidc_issuer_url = "https://__AUTH0_DOMAIN__/"
+scope = "openid profile email"
+
+client_id = "__AUTH0_CLIENT_ID__"
+client_secret = "__AUTH0_CLIENT_SECRET__"
+cookie_secret = "__COOKIE_SECRET_BASE64_32__"
+
+# Must match Auth0 Allowed Callback URLs
+redirect_url = "__PUBLIC_BASE_URL__/oauth2/callback"
+
+http_address = "127.0.0.1:4180"
+reverse_proxy = true
+upstreams = ["http://127.0.0.1:8501/"]
+
+# Optional hardening
+email_domains = ["*"]
+set_xauthrequest = true
+pass_authorization_header = true
+pass_access_token = true
+skip_provider_button = true
+
+# Set to true only when site is HTTPS
+cookie_secure = false
+cookie_httponly = true
+cookie_samesite = "lax"
