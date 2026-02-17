@@ -333,6 +333,12 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
         df["event_id"].astype(str).str.contains("_euc_", case=False, regex=False)
         | df["display_name"].fillna("").astype(str).str.contains("european cup", case=False, regex=False)
     )
+    is_usap = (
+        df["event_id"].astype(str).str.contains("_usap_", case=False, regex=False)
+        | df["event_id"].astype(str).str.contains("_usabmx_", case=False, regex=False)
+        | df["display_name"].fillna("").astype(str).str.contains("usa bmx", case=False, regex=False)
+        | df["display_name"].fillna("").astype(str).str.contains("pro championship", case=False, regex=False)
+    )
     is_wc = (
         df["display_name"].fillna("").astype(str).str.contains("world cup", case=False, regex=False)
     )
@@ -341,6 +347,7 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
     df.loc[is_euc, "series"] = "euc"
     df.loc[is_em, "series"] = "em"
     df.loc[is_wch, "series"] = "wch"
+    df.loc[is_usap, "series"] = "usap"
 
     # Determine which events have race picks (avoid counting practice/training as rounds)
     race_event_ids = set()
@@ -912,7 +919,14 @@ else:
             np.where(
                 eid_l.str.contains("_euc_", regex=False) | name_l.str.contains("european cup", regex=False),
                 "euc",
-                "wc",
+                np.where(
+                    eid_l.str.contains("_usap_", regex=False)
+                    | eid_l.str.contains("_usabmx_", regex=False)
+                    | name_l.str.contains("usa bmx", regex=False)
+                    | name_l.str.contains("pro championship", regex=False),
+                    "usap",
+                    "wc",
+                ),
             ),
         ),
     )
@@ -940,10 +954,10 @@ if mode == "Live":
 else:
     years = sorted(events_work["year"].dropna().unique().tolist(), reverse=True)
     year_sel = st.sidebar.multiselect("Jahr", years, default=[years[0]] if years else [])
-    code_to_label = {"wc": "WC", "wch": "WM", "euc": "EC", "em": "EM"}
+    code_to_label = {"wc": "WC", "wch": "WM", "euc": "EC", "em": "EM", "usap": "USABMX"}
     label_to_code = {v: k for k, v in code_to_label.items()}
     available_codes = set(events_work["_series_code"].dropna().astype(str).tolist())
-    type_opts = [code_to_label[c] for c in ["wc", "wch", "euc", "em"] if c in available_codes]
+    type_opts = [code_to_label[c] for c in ["wc", "wch", "euc", "em", "usap"] if c in available_codes]
     type_sel = st.sidebar.multiselect("Wettkampftyp", type_opts, default=type_opts)
     df_current_pool = events_work.copy()
     if year_sel:
