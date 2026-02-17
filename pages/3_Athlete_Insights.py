@@ -79,14 +79,23 @@ def clean_spaces(s: str) -> str:
 
 def norm_uci_id(v) -> str:
     s = "".join(ch for ch in str(v or "").strip() if ch.isdigit())
-    return s if len(s) >= 8 else ""
+    # Use only UCI-like IDs for identity stitching.
+    # This avoids treating local federation/member IDs (e.g. 8-digit USABMX memberId)
+    # as global rider identity across series.
+    if len(s) >= 10 and s.startswith("100"):
+        return s
+    return ""
 
 
 def norm_name_key(name: str) -> str:
     s = clean_spaces(name).lower()
     s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
     s = "".join(ch for ch in s if ch.isalnum() or ch.isspace())
-    return " ".join(sorted(s.split()))
+    parts = [p for p in s.split() if p]
+    # Ignore single-letter middle initials to unify
+    # "SIMON M MARQUART" and "SIMON MARQUART".
+    parts = [p for p in parts if len(p) > 1]
+    return " ".join(sorted(parts))
 
 
 def short_name(name: str) -> str:

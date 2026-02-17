@@ -68,7 +68,7 @@ def norm_name_key(s: str) -> str:
     base = norm_name(s)
     if not base:
         return ""
-    tokens = base.split()
+    tokens = [t for t in base.split() if len(t) > 1]
     tokens.sort()
     return " ".join(tokens)
 
@@ -81,7 +81,9 @@ def norm_uci_id(v) -> str:
         s = s[:-2]
     # keep digits only
     s = re.sub(r"\\D+", "", s)
-    return s
+    if len(s) >= 10 and s.startswith("100"):
+        return s
+    return ""
 
 
 def auto_height(df: pd.DataFrame, row_h: int = 28, min_h: int = 120) -> int:
