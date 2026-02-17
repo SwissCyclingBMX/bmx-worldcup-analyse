@@ -913,22 +913,6 @@ if sel_locations:
 if sel_rounds:
     base_scope = base_scope[base_scope["round_short"].isin(sel_rounds)]
 
-# Dedicated rank pool: same filters, but intentionally WITHOUT nation filter.
-# This keeps Segment Rank / Field Size comparable against the full category field.
-base_scope_rank = all_runs.copy()
-if sel_years:
-    base_scope_rank = base_scope_rank[base_scope_rank["year"].isin(sel_years)]
-if sel_event_types:
-    base_scope_rank = base_scope_rank[base_scope_rank["event_type"].isin(sel_event_types)]
-if sel_categories:
-    base_scope_rank = base_scope_rank[base_scope_rank["category"].isin(sel_categories)]
-if sel_gender:
-    base_scope_rank = base_scope_rank[base_scope_rank["gender"].isin(sel_gender)]
-if sel_locations:
-    base_scope_rank = base_scope_rank[base_scope_rank["location"].isin(sel_locations)]
-if sel_rounds:
-    base_scope_rank = base_scope_rank[base_scope_rank["round_short"].isin(sel_rounds)]
-
 if sel_riders:
     selected_ids = (
         all_runs.loc[all_runs["rider_label"].isin(sel_riders), "rider_id"]
@@ -979,24 +963,11 @@ base_rel_ref = apply_reference(
     event_ko_final_only=event_ko_final_only,
     reference_source=base_rel,
 )
-base_rel_rank = add_heat_relative_metrics(base_scope_rank)
-base_rel_rank_ref = apply_reference(
-    base_rel_rank,
-    ref_key,
-    event_top_n=event_top_n,
-    event_ko_final_only=event_ko_final_only,
-    reference_source=base_rel_rank,
-)
 # Pool with all riders from current filters (without rider filter),
 # used for robust thresholds and ranking against full category field.
 pool_rel = add_robust_outlier_flags_and_winsor(
     base_rel_ref.copy(),
     reference_df=base_rel_ref,
-    group_cols=["category", "gender"],
-)
-pool_rel_rank = add_robust_outlier_flags_and_winsor(
-    base_rel_rank_ref.copy(),
-    reference_df=base_rel_rank_ref,
     group_cols=["category", "gender"],
 )
 runs_sel = pool_rel[pool_rel["rider_id"].isin(selected_ids)].copy()
@@ -1393,7 +1364,7 @@ with tabs[0]:
 
     st.markdown("**Peak Segment Profile**")
     contrib_src = runs_sel.copy()
-    rank_pool_src = pool_rel_rank.copy()
+    rank_pool_src = pool_rel.copy()
     ref_suffix_map = {
         "rank4": "rank4_ref",
         "winner": "winner",
@@ -1761,7 +1732,7 @@ with tabs[0]:
         )
 
         # Add one synthetic radar metric for Final Rank per rider (single value).
-        pool_fr = attach_final_rank_event(pool_rel_rank.copy(), master_results)
+        pool_fr = attach_final_rank_event(pool_rel.copy(), master_results)
         pool_fr = (
             pool_fr[["rider_short", "category", "gender", "event_id", "location", "final_rank_event"]]
             .drop_duplicates(subset=["rider_short", "category", "gender", "event_id"])
