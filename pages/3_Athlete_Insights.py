@@ -823,6 +823,27 @@ st.sidebar.divider()
 st.title("Athlete Insights")
 st.caption("Trend, Segmente, Positionen, Druck, Track-Profile, Benchmark, Fatigue und Result-Trend.")
 
+# Keep Vega/Altair tooltips anchored at top-center for better readability on dense charts.
+st.markdown(
+    """
+    <style>
+      .vg-tooltip,
+      .vega-tooltip {
+        position: fixed !important;
+        top: 10px !important;
+        left: 50% !important;
+        transform: translateX(-50%) !important;
+        max-width: min(95vw, 1200px) !important;
+        max-height: 70vh !important;
+        overflow-y: auto !important;
+        white-space: pre-line !important;
+        z-index: 999999 !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 all_runs = load_runs()
 if all_runs.empty:
     st.warning("Keine Daten gefunden.")
@@ -1575,17 +1596,17 @@ with tabs[0]:
                     )
                 ]
             )
-            peak_runs_meta_text = " || ".join(
-                [
-                    f"{int(y) if pd.notna(y) else 'NA'} | {clean_spaces(loc)} | {clean_spaces(rsh)} | {clean_spaces(cat)}"
-                    for y, loc, rsh, cat in zip(
-                        peak_sel["event_dt"].dt.year,
-                        peak_sel["location"].fillna("Unknown").astype(str),
-                        peak_sel["round_short"].fillna(peak_sel["round_title"]).astype(str),
-                        peak_sel["category"].fillna("Unknown").astype(str),
-                    )
-                ]
-            )
+            peak_runs_meta_lines = [
+                f"{int(y) if pd.notna(y) else 'NA'} | {clean_spaces(loc)} | {clean_spaces(rsh)} | {clean_spaces(cat)}"
+                for y, loc, rsh, cat in zip(
+                    peak_sel["event_dt"].dt.year,
+                    peak_sel["location"].fillna("Unknown").astype(str),
+                    peak_sel["round_short"].fillna(peak_sel["round_title"]).astype(str),
+                    peak_sel["category"].fillna("Unknown").astype(str),
+                )
+            ]
+            peak_runs_meta_text = "\n".join(peak_runs_meta_lines)
+            peak_runs_meta_html = "<br>".join(peak_runs_meta_lines)
 
             peak_rows.append(
                 {
@@ -1604,6 +1625,7 @@ with tabs[0]:
                     "Locations Used (n)": int(peak_sel["location"].nunique(dropna=True)),
                     "Peak Runs": peak_runs_text,
                     "Peak Runs (meta)": peak_runs_meta_text,
+                    "Peak Runs (meta html)": peak_runs_meta_html,
                 }
             )
 
@@ -1629,6 +1651,7 @@ with tabs[0]:
                         "Locations Used (n)": int(g_all["location"].nunique(dropna=True)),
                         "Peak Runs": "",
                         "Peak Runs (meta)": "",
+                        "Peak Runs (meta html)": "",
                     }
                 )
 
@@ -1794,6 +1817,7 @@ with tabs[0]:
             fr_rows["Locations Used (n)"] = fr_rows["locations_used"].astype(int)
             fr_rows["Peak Runs"] = ""
             fr_rows["Peak Runs (meta)"] = ""
+            fr_rows["Peak Runs (meta html)"] = ""
             fr_rows["Rider"] = fr_rows["rider_short"]
             fr_rows["Category"] = fr_rows["category"]
             fr_rows["Gender"] = fr_rows["gender"]
@@ -2002,7 +2026,7 @@ with tabs[0]:
                                         row.get("Reference Mode", ""),
                                         row.get("Active Reference", ""),
                                         row.get("Final Rank (median) display", "NA"),
-                                        row.get("Peak Runs (meta)", ""),
+                                        row.get("Peak Runs (meta html)", ""),
                                     ]
                                 )
                             else:
@@ -2031,7 +2055,7 @@ with tabs[0]:
                                     "Reference Mode: %{customdata[4]}<br>"
                                     "Active Reference: %{customdata[5]}<br>"
                                     "Final Rank: %{customdata[6]}<br>"
-                                    "Runs (Y|Loc|Rnd|Cat): %{customdata[7]}<extra></extra>"
+                                    "Runs (Y|Loc|Rnd|Cat):<br>%{customdata[7]}<extra></extra>"
                                 ),
                             )
                         )
