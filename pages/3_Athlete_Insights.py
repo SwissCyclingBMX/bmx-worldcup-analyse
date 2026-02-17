@@ -1445,8 +1445,8 @@ with tabs[0]:
     )
     peak_mode = st.selectbox(
         "Peak Selection",
-        ["Best Run", "Best 3 Runs", "Best 5 Runs", "Best 10%", "Best 20%"],
-        index=4,
+        ["All", "Best Run", "Best 3 Runs", "Best 5 Runs", "Best 10%", "Best 20%"],
+        index=5,
         key="peak_seg_mode",
     )
     peak_per_location = st.checkbox(
@@ -1468,6 +1468,8 @@ with tabs[0]:
     def _take_n(n_rows: int, mode: str) -> int:
         if n_rows <= 0:
             return 0
+        if mode == "All":
+            return n_rows
         if mode == "Best Run":
             return 1
         if mode == "Best 3 Runs":
@@ -1481,6 +1483,8 @@ with tabs[0]:
     def _pick_peak_rows(g_in: pd.DataFrame) -> pd.DataFrame:
         g_base = g_in.copy()
         g_peak_base = g_base.drop_duplicates(subset=["location"], keep="first") if peak_per_location else g_base
+        if peak_mode == "All":
+            return g_peak_base.copy()
         if peak_mode == "Best Run":
             if peak_per_location:
                 return g_peak_base.copy()
