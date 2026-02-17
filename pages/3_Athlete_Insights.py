@@ -1575,6 +1575,17 @@ with tabs[0]:
                     )
                 ]
             )
+            peak_runs_meta_text = " || ".join(
+                [
+                    f"{int(y) if pd.notna(y) else 'NA'} | {clean_spaces(loc)} | {clean_spaces(rsh)} | {clean_spaces(cat)}"
+                    for y, loc, rsh, cat in zip(
+                        peak_sel["event_dt"].dt.year,
+                        peak_sel["location"].fillna("Unknown").astype(str),
+                        peak_sel["round_short"].fillna(peak_sel["round_title"]).astype(str),
+                        peak_sel["category"].fillna("Unknown").astype(str),
+                    )
+                ]
+            )
 
             peak_rows.append(
                 {
@@ -1592,6 +1603,7 @@ with tabs[0]:
                     "Runs Used (n)": int(len(peak_sel)),
                     "Locations Used (n)": int(peak_sel["location"].nunique(dropna=True)),
                     "Peak Runs": peak_runs_text,
+                    "Peak Runs (meta)": peak_runs_meta_text,
                 }
             )
 
@@ -1616,6 +1628,7 @@ with tabs[0]:
                         "Runs Used (n)": int(len(g_all)),
                         "Locations Used (n)": int(g_all["location"].nunique(dropna=True)),
                         "Peak Runs": "",
+                        "Peak Runs (meta)": "",
                     }
                 )
 
@@ -1780,6 +1793,7 @@ with tabs[0]:
             fr_rows["Runs Used (n)"] = fr_rows["runs_used"].astype(int)
             fr_rows["Locations Used (n)"] = fr_rows["locations_used"].astype(int)
             fr_rows["Peak Runs"] = ""
+            fr_rows["Peak Runs (meta)"] = ""
             fr_rows["Rider"] = fr_rows["rider_short"]
             fr_rows["Category"] = fr_rows["category"]
             fr_rows["Gender"] = fr_rows["gender"]
@@ -1838,13 +1852,14 @@ with tabs[0]:
             alt.Tooltip("Delta (% ref):Q", format=".2f"),
             alt.Tooltip("Rider Segment Time (s):Q", format=".4f"),
             alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
-            alt.Tooltip("Reference Mode:N"),
-            alt.Tooltip("Active Reference:N"),
-            alt.Tooltip("Final Rank (median) display:N", title="Final Rank"),
-            alt.Tooltip("Runs Used (n):Q"),
-            alt.Tooltip("Locations Used (n):Q"),
-            alt.Tooltip("Peak Runs:N"),
-        ]
+                alt.Tooltip("Reference Mode:N"),
+                alt.Tooltip("Active Reference:N"),
+                alt.Tooltip("Final Rank (median) display:N", title="Final Rank"),
+                alt.Tooltip("Runs Used (n):Q"),
+                alt.Tooltip("Locations Used (n):Q"),
+                alt.Tooltip("Peak Runs (meta):N", title="Runs (Year | Location | Round | Category)"),
+                alt.Tooltip("Peak Runs:N"),
+            ]
         bottom_peak = peak_df[peak_df["Segment"] == "BottomDelta"].copy()
         other_peak = peak_df[(peak_df["Segment"] != "BottomDelta") & (peak_df["Segment"] != "Final Rank")].copy()
 
@@ -1960,6 +1975,7 @@ with tabs[0]:
                                 alt.Tooltip("Reference Mode:N"),
                                 alt.Tooltip("Active Reference:N"),
                                 alt.Tooltip("Final Rank (median) display:N", title="Final Rank"),
+                                alt.Tooltip("Peak Runs (meta):N", title="Runs (Year | Location | Round | Category)"),
                             ],
                         )
                         .properties(height=420)
@@ -1986,6 +2002,7 @@ with tabs[0]:
                                         row.get("Reference Mode", ""),
                                         row.get("Active Reference", ""),
                                         row.get("Final Rank (median) display", "NA"),
+                                        row.get("Peak Runs (meta)", ""),
                                     ]
                                 )
                             else:
@@ -2013,7 +2030,8 @@ with tabs[0]:
                                     "Runs Used (n): %{customdata[3]:.0f}<br>"
                                     "Reference Mode: %{customdata[4]}<br>"
                                     "Active Reference: %{customdata[5]}<br>"
-                                    "Final Rank: %{customdata[6]}<extra></extra>"
+                                    "Final Rank: %{customdata[6]}<br>"
+                                    "Runs (Y|Loc|Rnd|Cat): %{customdata[7]}<extra></extra>"
                                 ),
                             )
                         )
