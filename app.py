@@ -873,7 +873,7 @@ def lane_distribution(df_hist: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------
 # UI
 # ----------------------------
-st.set_page_config(page_title="BMX Heat Scout", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Heat Analyser", layout="wide", initial_sidebar_state="expanded")
 
 # Remove internal scrollbars for tables
 st.markdown(
@@ -885,7 +885,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-st.title("BMX Heat Scout")
+st.title("Heat Analyser")
 st.caption("Live-Ansicht aktualisiert sich bei Interaktionen (kein Auto-Refresh).")
 
 if "cache_bust" not in st.session_state:
