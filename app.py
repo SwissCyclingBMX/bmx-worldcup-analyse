@@ -919,6 +919,9 @@ else:
 events_work["_series_code"] = pd.Series(series_code, index=events_work.index)
 
 # Sidebar: Event Auswahl
+st.sidebar.page_link("app.py", label="Heat Analyser")
+st.sidebar.page_link("pages/3_Athlete_Insights.py", label="Athlete Insights")
+st.sidebar.divider()
 st.sidebar.header("Event Auswahl")
 
 # Live only if there is actually something live today (event_date == today) in the latest year

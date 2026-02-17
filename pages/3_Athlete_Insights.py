@@ -816,6 +816,10 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
     return out
 
 
+st.sidebar.page_link("app.py", label="Heat Analyser")
+st.sidebar.page_link("pages/3_Athlete_Insights.py", label="Athlete Insights")
+st.sidebar.divider()
+
 st.title("Athlete Insights")
 st.caption("Trend, Segmente, Positionen, Druck, Track-Profile, Benchmark, Fatigue und Result-Trend.")
 
