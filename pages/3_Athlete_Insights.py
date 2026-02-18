@@ -77,6 +77,38 @@ def clean_spaces(s: str) -> str:
     return " ".join(str(s or "").strip().split())
 
 
+def _title_token(token: str) -> str:
+    # Preserve separators like "-" and apostrophes while title-casing segments.
+    if not token:
+        return token
+    if "-" in token:
+        return "-".join(_title_token(t) for t in token.split("-"))
+    if "'" in token:
+        return "'".join(_title_token(t) for t in token.split("'"))
+    if not any(ch.isalpha() for ch in token):
+        return token
+    return token[:1].upper() + token[1:].lower()
+
+
+def pretty_name(name: str) -> str:
+    n = clean_spaces(name)
+    if not n:
+        return ""
+    parts = n.split()
+    # If all alpha tokens are uppercase, normalize to title case.
+    alpha_parts = [p for p in parts if any(ch.isalpha() for ch in p)]
+    if alpha_parts and all(p == p.upper() for p in alpha_parts):
+        return " ".join(_title_token(p) for p in parts)
+    # Otherwise only fix tokens that are still all-uppercase (common mixed-source case).
+    out = []
+    for p in parts:
+        if any(ch.isalpha() for ch in p) and p == p.upper() and len(p) > 1:
+            out.append(_title_token(p))
+        else:
+            out.append(p)
+    return " ".join(out)
+
+
 def norm_uci_id(v) -> str:
     s = "".join(ch for ch in str(v or "").strip() if ch.isdigit())
     # Use only UCI-like IDs for identity stitching.
@@ -430,10 +462,31 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     df["gender"] = [c[1] for c in cats]
 
     df["name_clean"] = df["name"].fillna("").astype(str).apply(clean_spaces)
+    df["name_pretty"] = df["name_clean"].apply(pretty_name)
     df["name_key"] = df["name_clean"].apply(norm_name_key)
     df["uci_norm"] = df["uci_id"].apply(norm_uci_id)
-    df["rider_id"] = np.where(df["uci_norm"] != "", "uci:" + df["uci_norm"], "name:" + df["name_key"] + "|" + df["nation"])
-    df["rider_label_raw"] = df["name_clean"] + " (" + df["nation"] + ")"
+    df["name_nat_key"] = df["name_key"] + "|" + df["nation"]
+
+    # Stitch source rows without UCI ID to the known UCI ID of the same normalized
+    # rider name+nation when available. This avoids duplicate riders in selectors.
+    uci_by_name_nat = (
+        df[df["uci_norm"] != ""]
+        .groupby("name_nat_key")["uci_norm"]
+        .agg(lambda s: s.value_counts().index[0] if not s.empty else "")
+        .to_dict()
+    )
+    df["uci_norm_stitched"] = df["uci_norm"]
+    missing_uci = df["uci_norm_stitched"] == ""
+    df.loc[missing_uci, "uci_norm_stitched"] = (
+        df.loc[missing_uci, "name_nat_key"].map(uci_by_name_nat).fillna("")
+    )
+
+    df["rider_id"] = np.where(
+        df["uci_norm_stitched"] != "",
+        "uci:" + df["uci_norm_stitched"],
+        "name:" + df["name_nat_key"],
+    )
+    df["rider_label_raw"] = df["name_pretty"] + " (" + df["nation"] + ")"
 
     counts = (
         df.groupby(["rider_id", "rider_label_raw"], as_index=False)
@@ -441,7 +494,15 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
         .rename(columns={"size": "cnt"})
     )
     counts["len"] = counts["rider_label_raw"].astype(str).str.len()
-    counts = counts.sort_values(["rider_id", "cnt", "len", "rider_label_raw"], ascending=[True, False, False, True])
+    # Prefer non-all-caps labels for display when counts tie.
+    counts["name_part"] = counts["rider_label_raw"].str.replace(r"\s*\([A-Z]{2,3}\)\s*$", "", regex=True)
+    counts["is_all_caps"] = counts["name_part"].fillna("").apply(
+        lambda s: int(bool(s) and any(ch.isalpha() for ch in s) and s == s.upper())
+    )
+    counts = counts.sort_values(
+        ["rider_id", "cnt", "is_all_caps", "len", "rider_label_raw"],
+        ascending=[True, False, True, False, True],
+    )
     label_map = counts.drop_duplicates(subset=["rider_id"]).set_index("rider_id")["rider_label_raw"].to_dict()
     df["rider_label"] = df["rider_id"].map(label_map).fillna(df["rider_label_raw"])
 
