@@ -2702,22 +2702,30 @@ with tabs[0]:
     st.markdown("**Start Delta vs Finish Delta**")
     scat = runs_sel.dropna(subset=["start_delta", "finish_delta"]).copy()
     if not scat.empty:
-        mn = float(min(scat["start_delta"].min(), scat["finish_delta"].min()))
-        mx = float(max(scat["start_delta"].max(), scat["finish_delta"].max()))
-        diag = pd.DataFrame({"x": [mn, mx], "y": [mn, mx]})
-        scatter = (
-            alt.Chart(scat)
-            .mark_circle(opacity=0.75)
-            .encode(
-                x=alt.X("start_delta:Q", title="Start Delta (s)"),
-                y=alt.Y("finish_delta:Q", title="Finish Delta (s)"),
-                color=alt.Color("rider_short:N", title="Rider"),
-                tooltip=["rider_short:N", "event_label:N", "round_title:N", "heat_title:N", "start_delta:Q", "finish_delta:Q"],
+        # Keep x-axis readable for coaching use: fixed Start Delta window [0, 0.5]s.
+        x_min, x_max = 0.0, 0.5
+        scat_plot = scat[(scat["start_delta"] >= x_min) & (scat["start_delta"] <= x_max)].copy()
+        if scat_plot.empty:
+            st.info("Keine Punkte im Start-Delta Bereich 0.0-0.5s.")
+        else:
+            y_min = float(scat_plot["finish_delta"].min())
+            y_max = float(scat_plot["finish_delta"].max())
+            if y_max <= y_min:
+                y_max = y_min + 0.1
+            diag = pd.DataFrame({"x": [x_min, x_max], "y": [x_min, x_max]})
+            scatter = (
+                alt.Chart(scat_plot)
+                .mark_circle(opacity=0.75)
+                .encode(
+                    x=alt.X("start_delta:Q", title="Start Delta (s)", scale=alt.Scale(domain=[x_min, x_max])),
+                    y=alt.Y("finish_delta:Q", title="Finish Delta (s)", scale=alt.Scale(domain=[y_min, y_max])),
+                    color=alt.Color("rider_short:N", title="Rider"),
+                    tooltip=["rider_short:N", "event_label:N", "round_title:N", "heat_title:N", "start_delta:Q", "finish_delta:Q"],
+                )
+                .properties(height=320)
             )
-            .properties(height=320)
-        )
-        diag_line = alt.Chart(diag).mark_line(strokeDash=[4, 4], color="gray").encode(x="x:Q", y="y:Q")
-        st.altair_chart(scatter + diag_line, use_container_width=True)
+            diag_line = alt.Chart(diag).mark_line(strokeDash=[4, 4], color="gray").encode(x="x:Q", y="y:Q")
+            st.altair_chart(scatter + diag_line, use_container_width=True)
 
 with tabs[1]:
     st.subheader("Segment Strength Profile")
