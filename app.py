@@ -488,6 +488,29 @@ def short_name(name: str) -> str:
     return parts[0]
 
 
+def coachnow_athlete_tag(name: str) -> str:
+    """Format athlete name for one-tag copy: VornameNachname (ASCII, no spaces)."""
+    if not isinstance(name, str):
+        return ""
+    s = name.strip()
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    tokens = re.findall(r"[A-Za-z0-9]+", s)
+    if not tokens:
+        return ""
+
+    def _cap(tok: str) -> str:
+        return tok[:1].upper() + tok[1:].lower() if tok else ""
+
+    first = _cap(tokens[0])
+    tail = [_cap(t) for t in tokens[1:] if len(t) > 1]
+    if not tail and len(tokens) > 1:
+        tail = [_cap(tokens[-1])]
+    return first + "".join(tail)
+
+
 def normalize_picks_df(df: pd.DataFrame) -> pd.DataFrame:
     """Make columns consistent across historical schema changes."""
     if df is None or df.empty:
@@ -1468,7 +1491,14 @@ if not df_heat_ctx.empty and "name" in df_heat_ctx.columns:
             .drop_duplicates(subset=["name_clean"], keep="first")
         )
     names = tag_src["name_clean"].tolist()
-    athlete_tags = [{"label": n, "value": re.sub(r"\\s+", "", n)} for n in names]
+    seen_tags = set()
+    athlete_tags = []
+    for n in names:
+        tag_val = coachnow_athlete_tag(n)
+        if not tag_val or tag_val in seen_tags:
+            continue
+        seen_tags.add(tag_val)
+        athlete_tags.append({"label": tag_val, "value": tag_val})
 
 round_tag = round_tag_from_title(chosen_round_title)
 heat_tag_label = None
