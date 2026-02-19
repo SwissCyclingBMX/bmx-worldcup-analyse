@@ -896,7 +896,13 @@ def render_copy_buttons(
     title_html = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     section_class = "athlete" if section_style == "athlete" else "meta"
     columns = max(1, int(columns))
-    comp_height = max(130, 70 + len(tags) * 56)
+    rows = (len(tags) + columns - 1) // columns
+    base_h = 18
+    if show_title:
+        base_h += 28
+    if show_last_copied:
+        base_h += 24
+    comp_height = max(90, base_h + rows * 56)
     components.html(
         f"""
         <div class="tag-section {section_class}">
