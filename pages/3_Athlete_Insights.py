@@ -2702,16 +2702,18 @@ with tabs[0]:
     st.markdown("**Start Delta vs Finish Delta**")
     scat = runs_sel.dropna(subset=["start_delta", "finish_delta"]).copy()
     if not scat.empty:
-        # Keep x-axis readable for coaching use: fixed Start Delta window [0, 0.5]s.
+        # Keep axes readable for coaching use: fixed windows.
         x_min, x_max = 0.0, 0.5
-        scat_plot = scat[(scat["start_delta"] >= x_min) & (scat["start_delta"] <= x_max)].copy()
+        y_min, y_max = 0.0, 3.0
+        scat_plot = scat[
+            (scat["start_delta"] >= x_min)
+            & (scat["start_delta"] <= x_max)
+            & (scat["finish_delta"] >= y_min)
+            & (scat["finish_delta"] <= y_max)
+        ].copy()
         if scat_plot.empty:
-            st.info("Keine Punkte im Start-Delta Bereich 0.0-0.5s.")
+            st.info("Keine Punkte im Bereich Start 0.0-0.5s und Finish 0.0-3.0s.")
         else:
-            y_min = float(scat_plot["finish_delta"].min())
-            y_max = float(scat_plot["finish_delta"].max())
-            if y_max <= y_min:
-                y_max = y_min + 0.1
             diag = pd.DataFrame({"x": [x_min, x_max], "y": [x_min, x_max]})
             scatter = (
                 alt.Chart(scat_plot)
