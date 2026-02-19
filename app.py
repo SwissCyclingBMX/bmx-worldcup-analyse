@@ -1449,15 +1449,25 @@ if "pick_order" in df_heat_ctx.columns:
 # Tagging payload from current heat only (no archive/analysis event merge)
 athlete_tags: List[Dict[str, str]] = []
 if not df_heat_ctx.empty and "name" in df_heat_ctx.columns:
-    names = (
-        df_heat_ctx["name"]
-        .dropna()
-        .astype(str)
-        .map(str.strip)
-        .loc[lambda s: s != ""]
-        .drop_duplicates()
-        .tolist()
-    )
+    tag_src = df_heat_ctx.copy()
+    tag_src["name_clean"] = tag_src["name"].fillna("").astype(str).str.strip()
+    tag_src = tag_src[tag_src["name_clean"] != ""].copy()
+    if not tag_src.empty:
+        nation_src = (
+            tag_src["nation"]
+            if "nation" in tag_src.columns
+            else pd.Series([""] * len(tag_src), index=tag_src.index)
+        )
+        tag_src["nation_clean"] = nation_src.fillna("").astype(str).str.upper()
+        tag_src["is_sui"] = (tag_src["nation_clean"] == "SUI").astype(int)
+        tag_src = tag_src.reset_index(drop=True)
+        tag_src["ord"] = range(len(tag_src))
+        # Swiss riders first, then keep original heat/startlist order.
+        tag_src = (
+            tag_src.sort_values(["is_sui", "ord"], ascending=[False, True], kind="stable")
+            .drop_duplicates(subset=["name_clean"], keep="first")
+        )
+    names = tag_src["name_clean"].tolist()
     athlete_tags = [{"label": n, "value": re.sub(r"\\s+", "", n)} for n in names]
 
 round_tag = round_tag_from_title(chosen_round_title)
