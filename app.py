@@ -888,6 +888,7 @@ def render_copy_buttons(
     section_style: str = "default",
     columns: int = 1,
     show_title: bool = True,
+    show_last_copied: bool = True,
 ) -> None:
     if not tags:
         return
@@ -900,7 +901,7 @@ def render_copy_buttons(
         f"""
         <div class="tag-section {section_class}">
           {"<div class='tag-title'>" + title_html + "</div>" if show_title else ""}
-          <div class="last-copied" id="lastcopied">Last copied: -</div>
+          {"<div class='last-copied' id='lastcopied'>Last copied: -</div>" if show_last_copied else ""}
           <div class="tag-grid" id="grid"></div>
           <div class="toast" id="toast"></div>
         </div>
@@ -961,7 +962,9 @@ def render_copy_buttons(
               if (!val) return;
               const ok = await copyText(val);
               if (ok) {{
-                lastCopied.textContent = "Last copied: " + val;
+                if (lastCopied) {{
+                  lastCopied.textContent = "Last copied: " + val;
+                }}
                 showToast("Copied");
               }} else {{
                 showToast("Copy failed");
@@ -2319,20 +2322,27 @@ with tab_tagging:
     else:
         st.info("No startlist loaded für den gewählten Heat.")
 
-    # 2) Round
+    # 2) Round, 3) Heat, 4) Class (direkt unter Athleten)
+    meta_tags: List[Dict[str, str]] = []
     if round_tag:
-        any_section = True
-        render_copy_buttons("", [{"label": round_tag, "value": round_tag}], section_style="meta", show_title=False)
+        meta_tags.append({"label": round_tag, "value": round_tag})
 
-    # 3) Heat
     if heat_tag_value:
-        any_section = True
-        render_copy_buttons("", [{"label": heat_tag_label, "value": heat_tag_value}], section_style="meta", show_title=False)
+        meta_tags.append({"label": heat_tag_label, "value": heat_tag_value})
 
-    # 4) Class
     if class_tag:
+        meta_tags.append({"label": class_tag, "value": class_tag})
+
+    if meta_tags:
         any_section = True
-        render_copy_buttons("", [{"label": class_tag, "value": class_tag}], section_style="meta", show_title=False)
+        render_copy_buttons(
+            "",
+            meta_tags,
+            section_style="meta",
+            columns=3,
+            show_title=False,
+            show_last_copied=False,
+        )
 
     if not any_section:
         st.info("Keine Tags für den aktuellen Heat verfügbar.")
