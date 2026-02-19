@@ -863,6 +863,40 @@ def render_copy_buttons(title: str, tags: List[Dict[str, str]], section_style: s
             setTimeout(() => toast.classList.remove("show"), 750);
           }};
 
+          const fallbackCopy = (text) => {{
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.setAttribute("readonly", "");
+            ta.style.position = "fixed";
+            ta.style.top = "-1000px";
+            ta.style.left = "-1000px";
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            ta.setSelectionRange(0, ta.value.length);
+            let ok = false;
+            try {{
+              ok = document.execCommand("copy");
+            }} catch (e) {{
+              ok = false;
+            }}
+            document.body.removeChild(ta);
+            return ok;
+          }};
+
+          const copyText = async (text) => {{
+            if (!text) return false;
+            if (navigator.clipboard && window.isSecureContext) {{
+              try {{
+                await navigator.clipboard.writeText(text);
+                return true;
+              }} catch (e) {{
+                // fallback below
+              }}
+            }}
+            return fallbackCopy(text);
+          }};
+
           tags.forEach((t) => {{
             const b = document.createElement("button");
             b.className = "tagbtn";
@@ -871,11 +905,11 @@ def render_copy_buttons(title: str, tags: List[Dict[str, str]], section_style: s
             b.onclick = async () => {{
               const val = t.value || "";
               if (!val) return;
-              try {{
-                await navigator.clipboard.writeText(val);
+              const ok = await copyText(val);
+              if (ok) {{
                 lastCopied.textContent = "Last copied: " + val;
                 showToast("Copied");
-              }} catch (e) {{
+              }} else {{
                 showToast("Copy failed");
               }}
             }};
