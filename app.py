@@ -858,17 +858,48 @@ def round_tag_from_title(round_title: Optional[str]) -> Optional[str]:
     return rt.replace(" ", "")
 
 
-def render_copy_buttons(title: str, tags: List[Dict[str, str]], section_style: str = "default") -> None:
+def heat_tag_from_context(heat_title: Optional[str], heat_id: Optional[int]) -> Tuple[Optional[str], Optional[str]]:
+    """Return (label, copy_value) as Heat N / HeatN."""
+    title = str(heat_title or "").strip()
+    n = None
+    if title:
+        m = re.search(r"(\d+)", title)
+        if m:
+            try:
+                n = int(m.group(1))
+            except Exception:
+                n = None
+    # Fallback only for small explicit IDs (avoid values like 910102)
+    if n is None and heat_id is not None:
+        try:
+            hid_int = int(heat_id)
+            if 1 <= hid_int <= 64:
+                n = hid_int
+        except Exception:
+            n = None
+    if n is None:
+        return None, None
+    return f"Heat {n}", f"Heat{n}"
+
+
+def render_copy_buttons(
+    title: str,
+    tags: List[Dict[str, str]],
+    section_style: str = "default",
+    columns: int = 1,
+    show_title: bool = True,
+) -> None:
     if not tags:
         return
     payload_json = json.dumps(tags, ensure_ascii=False)
     title_html = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     section_class = "athlete" if section_style == "athlete" else "meta"
+    columns = max(1, int(columns))
     comp_height = max(130, 70 + len(tags) * 56)
     components.html(
         f"""
         <div class="tag-section {section_class}">
-          <div class="tag-title">{title_html}</div>
+          {"<div class='tag-title'>" + title_html + "</div>" if show_title else ""}
           <div class="last-copied" id="lastcopied">Last copied: -</div>
           <div class="tag-grid" id="grid"></div>
           <div class="toast" id="toast"></div>
@@ -953,7 +984,7 @@ def render_copy_buttons(title: str, tags: List[Dict[str, str]], section_style: s
           }}
           .tag-grid {{
             display: grid;
-            grid-template-columns: 1fr;
+            grid-template-columns: repeat({columns}, minmax(0, 1fr));
             gap: 8px;
           }}
           .tagbtn {{
@@ -1501,15 +1532,7 @@ if not df_heat_ctx.empty and "name" in df_heat_ctx.columns:
         athlete_tags.append({"label": tag_val, "value": tag_val})
 
 round_tag = round_tag_from_title(chosen_round_title)
-heat_tag_label = None
-heat_tag_value = None
-if pd.notna(chosen.get("heat_id")):
-    try:
-        heat_num = int(chosen.get("heat_id"))
-        heat_tag_label = f"Heat {heat_num}"
-        heat_tag_value = f"Heat{heat_num}"
-    except Exception:
-        pass
+heat_tag_label, heat_tag_value = heat_tag_from_context(chosen_heat_title, hid)
 class_tag = class_tag_from_group_id(gid)
 
 # Startlist (PickOrder / Lane)
@@ -2292,24 +2315,24 @@ with tab_tagging:
     # 1) Athleten
     if athlete_tags:
         any_section = True
-        render_copy_buttons("Athleten", athlete_tags, section_style="athlete")
+        render_copy_buttons("Athleten", athlete_tags, section_style="athlete", columns=2)
     else:
         st.info("No startlist loaded für den gewählten Heat.")
 
     # 2) Round
     if round_tag:
         any_section = True
-        render_copy_buttons("Round", [{"label": round_tag, "value": round_tag}], section_style="meta")
+        render_copy_buttons("", [{"label": round_tag, "value": round_tag}], section_style="meta", show_title=False)
 
     # 3) Heat
     if heat_tag_value:
         any_section = True
-        render_copy_buttons("Heat", [{"label": heat_tag_label, "value": heat_tag_value}], section_style="meta")
+        render_copy_buttons("", [{"label": heat_tag_label, "value": heat_tag_value}], section_style="meta", show_title=False)
 
     # 4) Class
     if class_tag:
         any_section = True
-        render_copy_buttons("Class", [{"label": class_tag, "value": class_tag}], section_style="meta")
+        render_copy_buttons("", [{"label": class_tag, "value": class_tag}], section_style="meta", show_title=False)
 
     if not any_section:
         st.info("Keine Tags für den aktuellen Heat verfügbar.")
