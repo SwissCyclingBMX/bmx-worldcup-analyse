@@ -4,6 +4,7 @@ import zipfile
 import requests
 import unicodedata
 import datetime
+import json
 import re
 from typing import List, Optional, Tuple, Dict, Any
 
@@ -792,6 +793,164 @@ def heat_label_row(r: pd.Series) -> str:
     return f"{cat} | {rt} | {ht}{time_part}{sui_part}"
 
 
+def class_tag_from_group_id(group_id: Optional[int]) -> Optional[str]:
+    mapping = {
+        91: "ME",
+        92: "WE",
+        93: "MU",
+        94: "WU",
+        95: "MJ",
+        96: "WJ",
+    }
+    if group_id is None:
+        return None
+    try:
+        return mapping.get(int(group_id))
+    except Exception:
+        return None
+
+
+def round_tag_from_title(round_title: Optional[str]) -> Optional[str]:
+    if not isinstance(round_title, str):
+        return None
+    rt = round_title.strip()
+    if not rt:
+        return None
+    rt_lower = rt.lower()
+    if rt_lower in {"lcq", "last chance", "last chance qualifier"}:
+        return "LCQ"
+    if "1/16" in rt_lower:
+        return "1/16"
+    if "1/8" in rt_lower:
+        return "1/8"
+    if "1/4" in rt_lower:
+        return "1/4"
+    if "1/2" in rt_lower:
+        return "1/2"
+    if rt_lower == "final" or rt_lower.endswith(" final") or rt_lower.endswith(" finale"):
+        return "Final"
+    m = re.search(r"\b(?:round|runde)\s*(\d+)\b", rt_lower)
+    if m:
+        return f"Round{m.group(1)}"
+    return rt.replace(" ", "")
+
+
+def render_copy_buttons(title: str, tags: List[Dict[str, str]], section_style: str = "default") -> None:
+    if not tags:
+        return
+    payload_json = json.dumps(tags, ensure_ascii=False)
+    title_html = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    section_class = "athlete" if section_style == "athlete" else "meta"
+    comp_height = max(130, 70 + len(tags) * 56)
+    components.html(
+        f"""
+        <div class="tag-section {section_class}">
+          <div class="tag-title">{title_html}</div>
+          <div class="last-copied" id="lastcopied">Last copied: -</div>
+          <div class="tag-grid" id="grid"></div>
+          <div class="toast" id="toast"></div>
+        </div>
+        <script>
+          const tags = {payload_json};
+          const root = document.currentScript.previousElementSibling;
+          const grid = root.querySelector("#grid");
+          const toast = root.querySelector("#toast");
+          const lastCopied = root.querySelector("#lastcopied");
+
+          const showToast = (txt) => {{
+            toast.textContent = txt;
+            toast.classList.add("show");
+            setTimeout(() => toast.classList.remove("show"), 750);
+          }};
+
+          tags.forEach((t) => {{
+            const b = document.createElement("button");
+            b.className = "tagbtn";
+            b.type = "button";
+            b.textContent = t.label || t.value || "";
+            b.onclick = async () => {{
+              const val = t.value || "";
+              if (!val) return;
+              try {{
+                await navigator.clipboard.writeText(val);
+                lastCopied.textContent = "Last copied: " + val;
+                showToast("Copied");
+              }} catch (e) {{
+                showToast("Copy failed");
+              }}
+            }};
+            grid.appendChild(b);
+          }});
+        </script>
+        <style>
+          .tag-section {{ width: 100%; }}
+          .tag-title {{
+            font-size: 18px;
+            font-weight: 700;
+            margin: 0 0 6px 0;
+          }}
+          .last-copied {{
+            font-size: 13px;
+            opacity: 0.85;
+            margin: 0 0 8px 0;
+          }}
+          .tag-grid {{
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+          }}
+          .tagbtn {{
+            min-height: 48px;
+            width: 100%;
+            border: 1px solid rgba(120, 120, 120, 0.35);
+            border-radius: 10px;
+            font-size: 18px;
+            font-weight: 600;
+            padding: 10px 14px;
+            text-align: left;
+            background: #fff;
+            color: #111;
+            cursor: pointer;
+          }}
+          .meta .tagbtn {{
+            font-size: 17px;
+            text-align: center;
+          }}
+          .tagbtn:active {{
+            transform: scale(0.995);
+          }}
+          .toast {{
+            position: fixed;
+            bottom: 18px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.86);
+            color: #fff;
+            padding: 9px 14px;
+            border-radius: 9px;
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 120ms ease;
+            pointer-events: none;
+            z-index: 9999;
+          }}
+          .toast.show {{
+            opacity: 1;
+          }}
+          @media (prefers-color-scheme: dark) {{
+            .tagbtn {{
+              background: #1f2329;
+              color: #f2f4f8;
+              border-color: #3a3f46;
+            }}
+          }}
+        </style>
+        """,
+        height=comp_height,
+        scrolling=False,
+    )
+
+
 # ----------------------------
 # Analysis
 # ----------------------------
@@ -1241,19 +1400,51 @@ gid = int(chosen["group_id"]) if pd.notna(chosen.get("group_id")) else None
 chosen_round_title = chosen.get("round_title")
 chosen_heat_title = chosen.get("heat_title")
 
+# Selected-heat base dataframe (single source of truth for Startliste + Tagging)
+df_heat_ctx = df_event[(df_event["round_key"] == rk) & (df_event["heat_id"] == hid)].copy()
+if gid is not None:
+    df_heat_ctx = df_heat_ctx[df_heat_ctx["group_id"] == gid].copy()
+if chosen_round_title:
+    df_heat_ctx = df_heat_ctx[df_heat_ctx["round_title"] == chosen_round_title].copy()
+if chosen_heat_title:
+    df_heat_ctx = df_heat_ctx[df_heat_ctx["heat_title"] == chosen_heat_title].copy()
+
+if "pick_order" in df_heat_ctx.columns:
+    df_heat_ctx = df_heat_ctx.sort_values(["pick_order"], na_position="last", kind="stable")
+
+# Tagging payload from current heat only (no archive/analysis event merge)
+athlete_tags: List[Dict[str, str]] = []
+if not df_heat_ctx.empty and "name" in df_heat_ctx.columns:
+    names = (
+        df_heat_ctx["name"]
+        .dropna()
+        .astype(str)
+        .map(str.strip)
+        .loc[lambda s: s != ""]
+        .drop_duplicates()
+        .tolist()
+    )
+    athlete_tags = [{"label": n, "value": re.sub(r"\\s+", "", n)} for n in names]
+
+round_tag = round_tag_from_title(chosen_round_title)
+heat_tag_label = None
+heat_tag_value = None
+if pd.notna(chosen.get("heat_id")):
+    try:
+        heat_num = int(chosen.get("heat_id"))
+        heat_tag_label = f"Heat {heat_num}"
+        heat_tag_value = f"Heat{heat_num}"
+    except Exception:
+        pass
+class_tag = class_tag_from_group_id(gid)
+
 # Startlist (PickOrder / Lane)
-tab_start, tab_rounds = st.tabs(["Startliste - Gate Pick", "Time Analyse"])
+tab_start, tab_rounds, tab_tagging = st.tabs(["Startliste - Gate Pick", "Time Analyse", "Tagging"])
 
 with tab_start:
     st.subheader("Startliste - Lane Pick")
 
-    df_heat = df_event[(df_event["round_key"] == rk) & (df_event["heat_id"] == hid)].copy()
-    if gid is not None:
-        df_heat = df_heat[df_heat["group_id"] == gid].copy()
-    if chosen_round_title:
-        df_heat = df_heat[df_heat["round_title"] == chosen_round_title].copy()
-    if chosen_heat_title:
-        df_heat = df_heat[df_heat["heat_title"] == chosen_heat_title].copy()
+    df_heat = df_heat_ctx.copy()
     df_heat["name_norm"] = df_heat["name"].apply(norm_name)
     df_heat["name_key"] = df_heat["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
 
@@ -2017,3 +2208,34 @@ with tab_rounds:
                     rs_view = fmt_table(rs_view, time_cols=["Best S", "Best T1", "Ø3 S", "Ø3 T1"], score_cols=["Score"])
                     st.dataframe(rs_view, use_container_width=True, height=auto_height(rs_view), hide_index=True)
                     st.caption("Race-Zeiten: ausgewählte Analyse-Events")
+
+with tab_tagging:
+    st.subheader("Tagging")
+    st.caption("One-Tap Copy für CoachNow (pro Tap genau ein Tag ins Clipboard).")
+
+    any_section = False
+
+    # 1) Athleten
+    if athlete_tags:
+        any_section = True
+        render_copy_buttons("Athleten", athlete_tags, section_style="athlete")
+    else:
+        st.info("No startlist loaded für den gewählten Heat.")
+
+    # 2) Round
+    if round_tag:
+        any_section = True
+        render_copy_buttons("Round", [{"label": round_tag, "value": round_tag}], section_style="meta")
+
+    # 3) Heat
+    if heat_tag_value:
+        any_section = True
+        render_copy_buttons("Heat", [{"label": heat_tag_label, "value": heat_tag_value}], section_style="meta")
+
+    # 4) Class
+    if class_tag:
+        any_section = True
+        render_copy_buttons("Class", [{"label": class_tag, "value": class_tag}], section_style="meta")
+
+    if not any_section:
+        st.info("Keine Tags für den aktuellen Heat verfügbar.")
