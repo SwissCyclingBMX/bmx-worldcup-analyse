@@ -489,7 +489,7 @@ def short_name(name: str) -> str:
 
 
 def coachnow_athlete_tag(name: str) -> str:
-    """Format athlete name for one-tag copy: VornameNachname (ASCII, no spaces)."""
+    """Format athlete name for one-tag copy: first name + last name (ASCII, no spaces)."""
     if not isinstance(name, str):
         return ""
     s = name.strip()
@@ -504,11 +504,9 @@ def coachnow_athlete_tag(name: str) -> str:
     def _cap(tok: str) -> str:
         return tok[:1].upper() + tok[1:].lower() if tok else ""
 
-    first = _cap(tokens[0])
-    tail = [_cap(t) for t in tokens[1:] if len(t) > 1]
-    if not tail and len(tokens) > 1:
-        tail = [_cap(tokens[-1])]
-    return first + "".join(tail)
+    if len(tokens) == 1:
+        return _cap(tokens[0])
+    return _cap(tokens[0]) + _cap(tokens[-1])
 
 
 def normalize_picks_df(df: pd.DataFrame) -> pd.DataFrame:
