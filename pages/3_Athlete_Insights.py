@@ -2844,18 +2844,43 @@ with tabs[2]:
 
         scat = rider_scope.dropna(subset=["pos_start", "pos_finish"]).copy()
         if not scat.empty:
+            scat["pos_start"] = pd.to_numeric(scat["pos_start"], errors="coerce")
+            scat["pos_finish"] = pd.to_numeric(scat["pos_finish"], errors="coerce")
+            scat = scat.dropna(subset=["pos_start", "pos_finish"]).copy()
+            total_points = len(scat)
+            # BMX gates are 1..8; hide out-of-range points from this view.
+            scat = scat[
+                (scat["pos_start"] >= 1)
+                & (scat["pos_start"] <= 8)
+                & (scat["pos_finish"] >= 1)
+                & (scat["pos_finish"] <= 8)
+            ].copy()
+            removed_points = total_points - len(scat)
+        if not scat.empty:
             scat_chart = (
                 alt.Chart(scat)
                 .mark_circle(opacity=0.8)
                 .encode(
-                    x=alt.X("pos_start:Q", title="Position Start"),
-                    y=alt.Y("pos_finish:Q", title="Position Finish"),
+                    x=alt.X(
+                        "pos_start:Q",
+                        title="Position Start",
+                        scale=alt.Scale(domain=[1, 8], clamp=True),
+                        axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
+                    ),
+                    y=alt.Y(
+                        "pos_finish:Q",
+                        title="Position Finish",
+                        scale=alt.Scale(domain=[1, 8], clamp=True),
+                        axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
+                    ),
                     color=alt.Color("round_title:N"),
                     tooltip=["event_id:N", "round_title:N", "heat_title:N", "pos_start:Q", "pos_finish:Q", "start:Q", "t1:Q", "finish:Q"],
                 )
                 .properties(height=300)
             )
             st.altair_chart(scat_chart, use_container_width=True)
+            if removed_points > 0:
+                st.caption(f"Hinweis: {removed_points} Punkte ausserhalb Gate-Range 1-8 wurden im Scatter ausgeblendet.")
 
             mat = pd.crosstab(scat["pos_start"].apply(bin_pos), scat["pos_finish"].apply(bin_pos)).reset_index().melt(
                 id_vars="pos_start", var_name="finish_bin", value_name="count"
