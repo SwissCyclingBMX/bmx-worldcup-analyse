@@ -2847,6 +2847,12 @@ with tabs[2]:
             scat["pos_start"] = pd.to_numeric(scat["pos_start"], errors="coerce")
             scat["pos_finish"] = pd.to_numeric(scat["pos_finish"], errors="coerce")
             scat = scat.dropna(subset=["pos_start", "pos_finish"]).copy()
+            scat["delta_start_to_finish"] = pd.to_numeric(scat["delta_start_to_finish"], errors="coerce")
+            scat["move_state"] = np.where(
+                scat["delta_start_to_finish"] > 0,
+                "Plätze gewonnen",
+                np.where(scat["delta_start_to_finish"] < 0, "Plätze verloren", "Neutral"),
+            )
             total_points = len(scat)
             # BMX gates are 1..8; hide out-of-range points from this view.
             scat = scat[
@@ -2857,25 +2863,49 @@ with tabs[2]:
             ].copy()
             removed_points = total_points - len(scat)
         if not scat.empty:
+            enc = {
+                "x": alt.X(
+                    "pos_start:Q",
+                    title="Position Start",
+                    scale=alt.Scale(domain=[1, 8], clamp=True),
+                    axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
+                ),
+                "y": alt.Y(
+                    "pos_finish:Q",
+                    title="Position Finish",
+                    scale=alt.Scale(domain=[1, 8], clamp=True),
+                    axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
+                ),
+                "color": alt.Color(
+                    "move_state:N",
+                    title="Bewegung",
+                    sort=["Plätze gewonnen", "Neutral", "Plätze verloren"],
+                    scale=alt.Scale(
+                        domain=["Plätze gewonnen", "Neutral", "Plätze verloren"],
+                        range=["#2ca02c", "#9e9e9e", "#d62728"],
+                    ),
+                ),
+                "tooltip": [
+                    "rider_short:N",
+                    "event_id:N",
+                    "round_title:N",
+                    "heat_title:N",
+                    "pos_start:Q",
+                    "pos_finish:Q",
+                    "delta_start_to_finish:Q",
+                    "move_state:N",
+                    "start:Q",
+                    "t1:Q",
+                    "finish:Q",
+                ],
+            }
+            if scat["rider_short"].nunique() > 1:
+                enc["shape"] = alt.Shape("rider_short:N", title="Rider")
+
             scat_chart = (
                 alt.Chart(scat)
-                .mark_circle(opacity=0.8)
-                .encode(
-                    x=alt.X(
-                        "pos_start:Q",
-                        title="Position Start",
-                        scale=alt.Scale(domain=[1, 8], clamp=True),
-                        axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
-                    ),
-                    y=alt.Y(
-                        "pos_finish:Q",
-                        title="Position Finish",
-                        scale=alt.Scale(domain=[1, 8], clamp=True),
-                        axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
-                    ),
-                    color=alt.Color("round_title:N"),
-                    tooltip=["event_id:N", "round_title:N", "heat_title:N", "pos_start:Q", "pos_finish:Q", "start:Q", "t1:Q", "finish:Q"],
-                )
+                .mark_point(opacity=0.85, filled=True, size=95)
+                .encode(**enc)
                 .properties(height=300)
             )
             st.altair_chart(scat_chart, use_container_width=True)
