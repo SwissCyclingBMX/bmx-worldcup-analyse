@@ -2863,61 +2863,58 @@ with tabs[2]:
             ].copy()
             removed_points = total_points - len(scat)
         if not scat.empty:
-            move_domain = ["Plätze gewonnen", "Neutral", "Plätze verloren"]
-            enc = {
-                "x": alt.X(
-                    "pos_start:Q",
-                    title="Position Start",
-                    scale=alt.Scale(domain=[1, 8], clamp=True),
-                    axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
-                ),
-                "y": alt.Y(
-                    "pos_finish:Q",
-                    title="Position Finish",
-                    scale=alt.Scale(domain=[1, 8], clamp=True),
-                    axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
-                ),
-                "shape": alt.Shape(
-                    "move_state:N",
-                    title="Bewegung",
-                    sort=move_domain,
-                    scale=alt.Scale(
-                        domain=move_domain,
-                        range=["triangle-down", "stroke", "triangle-up"],
-                    ),
-                ),
-                "fill": alt.Fill(
-                    "move_state:N",
-                    title="Bewegung",
-                    sort=move_domain,
-                    scale=alt.Scale(
-                        domain=move_domain,
-                        range=["#74c476", "#cfcfcf", "#ef8a8a"],
-                    ),
-                ),
-                "tooltip": [
-                    "rider_short:N",
-                    "event_id:N",
-                    "round_title:N",
-                    "heat_title:N",
-                    "pos_start:Q",
-                    "pos_finish:Q",
-                    "delta_start_to_finish:Q",
-                    "move_state:N",
-                    "start:Q",
-                    "t1:Q",
-                    "finish:Q",
-                ],
-            }
-            enc["stroke"] = alt.Stroke("rider_short:N", title="Rider")
-
-            scat_chart = (
+            axis_x = alt.X(
+                "pos_start:Q",
+                title="Position Start",
+                scale=alt.Scale(domain=[1, 8], clamp=True),
+                axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
+            )
+            axis_y = alt.Y(
+                "pos_finish:Q",
+                title="Position Finish",
+                scale=alt.Scale(domain=[1, 8], clamp=True),
+                axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
+            )
+            bg_df = pd.DataFrame({"x": [1, 8], "diag": [1, 8], "top": [8, 8], "bottom": [1, 1]})
+            red_upper = (
+                alt.Chart(bg_df)
+                .mark_area(opacity=0.12, color="#ef8a8a")
+                .encode(x="x:Q", y="top:Q", y2="diag:Q")
+            )
+            green_lower = (
+                alt.Chart(bg_df)
+                .mark_area(opacity=0.12, color="#74c476")
+                .encode(x="x:Q", y="diag:Q", y2="bottom:Q")
+            )
+            diag_line = (
+                alt.Chart(pd.DataFrame({"x": [1, 8], "y": [1, 8]}))
+                .mark_line(color="#808080", strokeWidth=2)
+                .encode(x="x:Q", y="y:Q")
+            )
+            points = (
                 alt.Chart(scat)
-                .mark_point(opacity=0.9, filled=True, size=120, strokeWidth=1.8)
-                .encode(**enc)
+                .mark_circle(opacity=0.9, size=110)
+                .encode(
+                    x=axis_x,
+                    y=axis_y,
+                    color=alt.Color("rider_short:N", title="Rider"),
+                    tooltip=[
+                        "rider_short:N",
+                        "event_id:N",
+                        "round_title:N",
+                        "heat_title:N",
+                        "pos_start:Q",
+                        "pos_finish:Q",
+                        "delta_start_to_finish:Q",
+                        "move_state:N",
+                        "start:Q",
+                        "t1:Q",
+                        "finish:Q",
+                    ],
+                )
                 .properties(height=300)
             )
-            st.altair_chart(scat_chart, use_container_width=True)
+            st.altair_chart(green_lower + red_upper + diag_line + points, use_container_width=True)
             if removed_points > 0:
                 st.caption(f"Hinweis: {removed_points} Punkte ausserhalb Gate-Range 1-8 wurden im Scatter ausgeblendet.")
 
