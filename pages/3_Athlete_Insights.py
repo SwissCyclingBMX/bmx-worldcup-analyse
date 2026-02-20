@@ -2863,6 +2863,7 @@ with tabs[2]:
             ].copy()
             removed_points = total_points - len(scat)
         if not scat.empty:
+            move_domain = ["Plätze gewonnen", "Neutral", "Plätze verloren"]
             enc = {
                 "x": alt.X(
                     "pos_start:Q",
@@ -2876,13 +2877,22 @@ with tabs[2]:
                     scale=alt.Scale(domain=[1, 8], clamp=True),
                     axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
                 ),
-                "color": alt.Color(
+                "shape": alt.Shape(
                     "move_state:N",
                     title="Bewegung",
-                    sort=["Plätze gewonnen", "Neutral", "Plätze verloren"],
+                    sort=move_domain,
                     scale=alt.Scale(
-                        domain=["Plätze gewonnen", "Neutral", "Plätze verloren"],
-                        range=["#2ca02c", "#9e9e9e", "#d62728"],
+                        domain=move_domain,
+                        range=["triangle-down", "stroke", "triangle-up"],
+                    ),
+                ),
+                "fill": alt.Fill(
+                    "move_state:N",
+                    title="Bewegung",
+                    sort=move_domain,
+                    scale=alt.Scale(
+                        domain=move_domain,
+                        range=["#74c476", "#cfcfcf", "#ef8a8a"],
                     ),
                 ),
                 "tooltip": [
@@ -2899,12 +2909,11 @@ with tabs[2]:
                     "finish:Q",
                 ],
             }
-            if scat["rider_short"].nunique() > 1:
-                enc["shape"] = alt.Shape("rider_short:N", title="Rider")
+            enc["stroke"] = alt.Stroke("rider_short:N", title="Rider")
 
             scat_chart = (
                 alt.Chart(scat)
-                .mark_point(opacity=0.85, filled=True, size=95)
+                .mark_point(opacity=0.9, filled=True, size=120, strokeWidth=1.8)
                 .encode(**enc)
                 .properties(height=300)
             )
