@@ -963,20 +963,25 @@ with nf2:
     rider_opts = sorted([x for x in rider_pool_for_select["rider_label"].dropna().unique().tolist() if x])
     sel_riders = st.multiselect("Athlete (leer = keinen anzeigen)", rider_opts, default=[], key="insight_riders")
 
-if not sel_riders:
-    st.info("Bitte mindestens einen Athleten auswaehlen.")
+rider_mode = "athlete" if sel_riders else ("nation" if sel_nations else "none")
+if rider_mode == "none":
+    st.info("Bitte mindestens eine Nation oder einen Athleten auswaehlen.")
     st.stop()
 
 rider_scope = all_runs.copy()
-if sel_nations:
+if rider_mode == "athlete":
+    selected_ids_seed = (
+        all_runs.loc[all_runs["rider_label"].isin(sel_riders), "rider_id"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    rider_scope = rider_scope[rider_scope["rider_id"].isin(selected_ids_seed)].copy()
+else:
     rider_scope = rider_scope[rider_scope["nation"].isin(sel_nations)].copy()
-selected_ids_seed = (
-    rider_scope.loc[rider_scope["rider_label"].isin(sel_riders), "rider_id"]
-    .dropna()
-    .unique()
-    .tolist()
-)
-rider_scope = rider_scope[rider_scope["rider_id"].isin(selected_ids_seed)].copy()
+    selected_ids_seed = (
+        rider_scope["rider_id"].dropna().unique().tolist()
+    )
 
 if rider_scope.empty:
     st.warning("Keine Daten fuer die aktuelle Athleten-Auswahl.")
@@ -996,18 +1001,30 @@ with f1:
 with f2:
     sel_event_types = st.multiselect("Event Type", event_type_opts, default=event_type_opts)
 with f3:
-    sel_categories = st.multiselect("Kategorie", cat_opts, default=cat_opts)
+    if rider_mode == "nation":
+        sel_categories = st.multiselect("Kategorie", cat_opts, default=[])
+    else:
+        sel_categories = cat_opts
+        st.multiselect("Kategorie", cat_opts, default=cat_opts, disabled=True, key="ai_cat_disabled")
 with f4:
-    sel_gender = st.multiselect("Geschlecht", gender_opts, default=gender_opts)
+    if rider_mode == "nation":
+        sel_gender = st.multiselect("Geschlecht", gender_opts, default=[])
+    else:
+        sel_gender = gender_opts
+        st.multiselect("Geschlecht", gender_opts, default=gender_opts, disabled=True, key="ai_gender_disabled")
+
+if rider_mode == "nation" and (not sel_categories or not sel_gender):
+    st.info("Bei Nation-Auswahl bitte Kategorie und Geschlecht angeben.")
+    st.stop()
 
 loc_scope = rider_scope.copy()
 if sel_years:
     loc_scope = loc_scope[loc_scope["year"].isin(sel_years)]
 if sel_event_types:
     loc_scope = loc_scope[loc_scope["event_type"].isin(sel_event_types)]
-if sel_categories:
+if rider_mode == "nation" and sel_categories:
     loc_scope = loc_scope[loc_scope["category"].isin(sel_categories)]
-if sel_gender:
+if rider_mode == "nation" and sel_gender:
     loc_scope = loc_scope[loc_scope["gender"].isin(sel_gender)]
 loc_opts = sorted([x for x in loc_scope["location"].dropna().unique().tolist() if x])
 
@@ -1024,7 +1041,7 @@ with g2:
 
 # Comparison/reference pool must stay on full field for selected filters.
 base_scope = all_runs.copy()
-if sel_nations:
+if rider_mode == "nation" and sel_nations:
     base_scope = base_scope[base_scope["nation"].isin(sel_nations)]
 if sel_years:
     base_scope = base_scope[base_scope["year"].isin(sel_years)]
@@ -1039,7 +1056,7 @@ if sel_locations:
 if sel_rounds:
     base_scope = base_scope[base_scope["round_short"].isin(sel_rounds)]
 
-if sel_riders:
+if rider_mode == "athlete":
     selected_ids = (
         all_runs.loc[all_runs["rider_label"].isin(sel_riders), "rider_id"]
         .dropna()
@@ -1047,7 +1064,12 @@ if sel_riders:
         .tolist()
     )
 else:
-    selected_ids = []
+    selected_ids = (
+        rider_scope["rider_id"]
+        .dropna()
+        .unique()
+        .tolist()
+    )
 
 if not selected_ids:
     st.warning("Keine Rider fuer die aktuelle Auswahl.")
