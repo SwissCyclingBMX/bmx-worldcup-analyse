@@ -919,6 +919,8 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
 
 st.sidebar.page_link("app.py", label="Heat Analyser")
 st.sidebar.page_link("pages/3_Athlete_Insights.py", label="Athlete Insights")
+st.sidebar.page_link("pages/4_Live_Polling.py", label="Live Polling")
+st.sidebar.page_link("pages/9_CoachNow_Automation.py", label="CoachNow Automation")
 st.sidebar.divider()
 
 st.title("Athlete Insights")
