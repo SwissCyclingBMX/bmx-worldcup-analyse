@@ -1,5 +1,7 @@
 import sqlite3
 import os
+import subprocess
+import shutil
 import zipfile
 import requests
 import unicodedata
@@ -219,6 +221,144 @@ def safe_in_clause(values: List[str]) -> Tuple[str, List[str]]:
         # caller should handle empty
         return "(NULL)", []
     return "(" + ",".join(["?"] * len(values)) + ")", values
+
+
+# ----------------------------
+# Poller service helpers
+# ----------------------------
+POLLER_ENV_DIR = "/etc/bmx-pollers"
+POLLER_UNIT_TEMPLATE = "/etc/systemd/system/bmx-poller@.service"
+
+
+def running_on_systemd_host() -> bool:
+    return os.path.isdir("/run/systemd/system")
+
+
+def systemctl_available() -> bool:
+    return os.path.exists("/bin/systemctl") or os.path.exists("/usr/bin/systemctl")
+
+
+def systemctl_bin() -> str:
+    return "/bin/systemctl" if os.path.exists("/bin/systemctl") else "/usr/bin/systemctl"
+
+
+def journalctl_bin() -> str:
+    return "/bin/journalctl" if os.path.exists("/bin/journalctl") else "/usr/bin/journalctl"
+
+
+def poller_instance_slug(raw: str) -> str:
+    s = (raw or "").strip().lower()
+    s = re.sub(r"[^a-z0-9._-]+", "-", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s[:64]
+
+
+def sqorz_event_id_from_url(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return ""
+    m = re.search(r"/event/([a-f0-9]{24})", u, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"/json/event/([a-f0-9]{24})", u, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def run_cmd(args: List[str]) -> Tuple[int, str, str]:
+    proc = subprocess.run(args, capture_output=True, text=True, check=False)
+    return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+
+
+def write_poller_env(instance: str, values: Dict[str, str]) -> str:
+    os.makedirs(POLLER_ENV_DIR, mode=0o700, exist_ok=True)
+    path = os.path.join(POLLER_ENV_DIR, f"{instance}.env")
+    lines = []
+    for k, v in values.items():
+        val = str(v if v is not None else "")
+        val = val.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'{k}="{val}"')
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+    return path
+
+
+def poller_service_name(instance: str) -> str:
+    return f"bmx-poller@{instance}.service"
+
+
+def poller_status(instance: str) -> Dict[str, str]:
+    unit = poller_service_name(instance)
+    rc, out, err = run_cmd(
+        [
+            systemctl_bin(),
+            "show",
+            unit,
+            "--property=ActiveState,SubState,Result,ExecMainStartTimestamp",
+            "--value",
+        ]
+    )
+    if rc != 0:
+        return {"unit": unit, "active": "unknown", "sub": "", "result": err or "not found", "started": ""}
+    vals = out.splitlines()
+    while len(vals) < 4:
+        vals.append("")
+    return {
+        "unit": unit,
+        "active": vals[0],
+        "sub": vals[1],
+        "result": vals[2],
+        "started": vals[3],
+    }
+
+
+def list_poller_units() -> List[Dict[str, str]]:
+    cmd = [systemctl_bin()]
+    rc, out, _ = run_cmd(cmd + ["list-units", "--type=service", "--all", "bmx-poller@*.service", "--no-legend"])
+    rows: List[Dict[str, str]] = []
+    if rc != 0 or not out:
+        return rows
+    for ln in out.splitlines():
+        parts = ln.split()
+        if not parts:
+            continue
+        unit = parts[0]
+        load = parts[1] if len(parts) > 1 else ""
+        active = parts[2] if len(parts) > 2 else ""
+        sub = parts[3] if len(parts) > 3 else ""
+        rows.append({"unit": unit, "load": load, "active": active, "sub": sub})
+    return rows
+
+
+def tail_poller_logs(instance: str, lines: int = 30) -> str:
+    unit = poller_service_name(instance)
+    cmd = [journalctl_bin()]
+    rc, out, err = run_cmd(cmd + ["-u", unit, "-n", str(lines), "--no-pager"])
+    if rc != 0:
+        return err or "Keine Logs verfügbar."
+    return out or "Keine Logs verfügbar."
+
+
+def ensure_poller_template_installed() -> Tuple[bool, str]:
+    if os.path.exists(POLLER_UNIT_TEMPLATE):
+        return True, "Service-Template vorhanden."
+
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    src = os.path.join(app_dir, "deploy", "bmx-poller@.service.example")
+    if not os.path.exists(src):
+        return False, f"Template-Datei fehlt: {src}"
+
+    try:
+        shutil.copyfile(src, POLLER_UNIT_TEMPLATE)
+        run_cmd([systemctl_bin(), "daemon-reload"])
+        return True, f"Template installiert: {POLLER_UNIT_TEMPLATE}"
+    except Exception as e:
+        return False, f"Template konnte nicht installiert werden: {e}"
 
 
 # ----------------------------
@@ -1193,6 +1333,174 @@ st.sidebar.page_link("app.py", label="Heat Analyser")
 st.sidebar.page_link("pages/3_Athlete_Insights.py", label="Athlete Insights")
 st.sidebar.divider()
 st.sidebar.header("Event Auswahl")
+
+with st.sidebar.expander("Live Polling (Service)", expanded=False):
+    if not running_on_systemd_host() or not systemctl_available():
+        st.caption("Nur auf dem VPS verfügbar (systemd benötigt).")
+    else:
+        source_label = st.selectbox(
+            "Quelle",
+            options=["Sqorz/USABMX", "JSTiming", "Chronorace"],
+            key="poll_source_label",
+        )
+        source_key = {"Sqorz/USABMX": "sqorz", "JSTiming": "jstiming", "Chronorace": "chronorace"}[source_label]
+        raw_instance = st.text_input(
+            "Service Name",
+            value=st.session_state.get("poll_instance_raw", source_key),
+            help="Beliebiger Name. Beispiel: caen-u13 oder jst-wk10",
+            key="poll_instance_raw",
+        )
+        instance = poller_instance_slug(raw_instance)
+        st.caption(f"systemd unit: {poller_service_name(instance) if instance else '–'}")
+
+        poll_interval = int(
+            st.number_input("Intervall (Sekunden)", min_value=5, max_value=600, value=15, step=5, key="poll_interval")
+        )
+        poll_db_path = st.text_input("DB Pfad", value="bmx.db", key="poll_db_path")
+
+        env_values: Dict[str, str] = {
+            "POLLER_KIND": source_key,
+            "POLL_INTERVAL": str(poll_interval),
+            "DB_PATH": poll_db_path,
+        }
+        form_errors: List[str] = []
+
+        if source_key == "sqorz":
+            sqorz_url = st.text_input(
+                "Event URL",
+                value=st.session_state.get("poll_sqorz_url", ""),
+                key="poll_sqorz_url",
+                placeholder="https://our.sqorz.com/org/.../event/<id>/classes",
+            ).strip()
+            parsed_sqorz_id = sqorz_event_id_from_url(sqorz_url)
+            if parsed_sqorz_id:
+                st.caption(f"SQORZ event id erkannt: {parsed_sqorz_id}")
+
+            sqorz_event_target = st.text_input(
+                "Ziel event_id in DB (optional)",
+                value=st.session_state.get("poll_sqorz_event_id", ""),
+                key="poll_sqorz_event_id",
+                placeholder="z.B. 20260228_ffc_caen_j1_bmx",
+            ).strip()
+            if not sqorz_event_target and parsed_sqorz_id:
+                today = datetime.date.today().strftime("%Y%m%d")
+                sqorz_event_target = f"{today}_sqorz_{parsed_sqorz_id[:8]}_bmx"
+
+            all_classes = st.checkbox("Alle Klassen ingestieren", value=False, key="poll_sqorz_all_classes")
+            class_filters_raw = st.text_area(
+                "Class Filter (eine pro Zeile, falls nicht 'Alle Klassen')",
+                value="Men Pro\nWomen Pro",
+                key="poll_sqorz_classes",
+                height=80,
+            )
+
+            if not sqorz_url:
+                form_errors.append("Event URL fehlt.")
+            if not sqorz_event_target:
+                form_errors.append("Ziel event_id fehlt.")
+
+            env_values["EVENT_URL"] = sqorz_url
+            env_values["EVENT_ID"] = sqorz_event_target
+            env_values["ALL_CLASSES"] = "1" if all_classes else "0"
+            if not all_classes:
+                env_values["CLASS_FILTERS"] = class_filters_raw
+
+        elif source_key == "jstiming":
+            race_urls_raw = st.text_area(
+                "Race URLs (eine pro Zeile)",
+                value=st.session_state.get("poll_jst_race_urls", ""),
+                key="poll_jst_race_urls",
+                height=80,
+            )
+            training_urls_raw = st.text_area(
+                "Training URLs (eine pro Zeile)",
+                value=st.session_state.get("poll_jst_training_urls", ""),
+                key="poll_jst_training_urls",
+                height=80,
+            )
+            verbose_jst = st.checkbox("Verbose Logs", value=False, key="poll_jst_verbose")
+
+            if not race_urls_raw.strip() and not training_urls_raw.strip():
+                form_errors.append("Mindestens eine Race- oder Training-URL ist nötig.")
+
+            env_values["RACE_URLS"] = race_urls_raw
+            env_values["TRAINING_URLS"] = training_urls_raw
+            env_values["VERBOSE"] = "1" if verbose_jst else "0"
+
+        else:  # chronorace
+            events_raw = st.text_area(
+                "Events (slug/event-id, eine pro Zeile)",
+                value=st.session_state.get("poll_chrono_events", ""),
+                key="poll_chrono_events",
+                height=80,
+            )
+            workers = int(st.number_input("Workers", min_value=1, max_value=24, value=6, step=1, key="poll_chrono_workers"))
+            if not events_raw.strip():
+                form_errors.append("Mindestens ein Event ist nötig.")
+            env_values["EVENTS"] = events_raw
+            env_values["WORKERS"] = str(workers)
+
+        col_start, col_stop = st.columns(2)
+        with col_start:
+            if st.button("Start/Update", use_container_width=True, key="poll_start_btn"):
+                if not instance:
+                    st.error("Service Name fehlt.")
+                elif form_errors:
+                    st.error(" ".join(form_errors))
+                else:
+                    ok_template, msg_template = ensure_poller_template_installed()
+                    if not ok_template:
+                        st.error(msg_template)
+                    else:
+                        try:
+                            env_path = write_poller_env(instance, env_values)
+                            run_cmd([systemctl_bin(), "daemon-reload"])
+                            rc_enable, out_enable, err_enable = run_cmd(
+                                [systemctl_bin(), "enable", "--now", poller_service_name(instance)]
+                            )
+                            if rc_enable == 0:
+                                st.success(f"Poller gestartet. Env: {env_path}")
+                            else:
+                                st.error(err_enable or out_enable or "Start fehlgeschlagen.")
+                        except Exception as e:
+                            st.error(f"Fehler beim Starten: {e}")
+        with col_stop:
+            if st.button("Stop", use_container_width=True, key="poll_stop_btn"):
+                if not instance:
+                    st.error("Service Name fehlt.")
+                else:
+                    rc_stop, out_stop, err_stop = run_cmd(
+                        [systemctl_bin(), "disable", "--now", poller_service_name(instance)]
+                    )
+                    if rc_stop == 0:
+                        st.success("Poller gestoppt.")
+                    else:
+                        st.error(err_stop or out_stop or "Stop fehlgeschlagen.")
+
+        if instance:
+            st_info = poller_status(instance)
+            st.caption(
+                f"Status: {st_info.get('active','?')} / {st_info.get('sub','?')} "
+                f"(Result: {st_info.get('result','')})"
+            )
+
+        units = list_poller_units()
+        if units:
+            st.markdown("**Services**")
+            st.dataframe(pd.DataFrame(units), use_container_width=True, hide_index=True)
+
+        logs_target = st.text_input(
+            "Logs für Service",
+            value=instance or "",
+            key="poll_logs_instance",
+            placeholder="instance name",
+        )
+        if st.button("Logs laden", use_container_width=True, key="poll_logs_btn"):
+            log_instance = poller_instance_slug(logs_target)
+            if not log_instance:
+                st.info("Bitte Service Name angeben.")
+            else:
+                st.code(tail_poller_logs(log_instance, lines=60))
 
 # Live only if there is actually something live today (event_date == today) in the latest year
 latest_year = events["year"].iloc[0]
@@ -2318,6 +2626,7 @@ with tab_tagging:
     st.caption("One-Tap Copy für CoachNow (pro Tap genau ein Tag ins Clipboard).")
 
     any_section = False
+    meta_tags: List[Dict[str, str]] = []
 
     # 1) Athleten
     if athlete_tags:
@@ -2327,7 +2636,6 @@ with tab_tagging:
         st.info("No startlist loaded für den gewählten Heat.")
 
     # 2) Round, 3) Heat, 4) Class (direkt unter Athleten)
-    meta_tags: List[Dict[str, str]] = []
     if round_tag:
         meta_tags.append({"label": round_tag, "value": round_tag})
 
@@ -2344,6 +2652,27 @@ with tab_tagging:
             meta_tags,
             section_style="meta",
             columns=3,
+            show_title=False,
+            show_last_copied=False,
+        )
+
+    # 5) Sammel-Tag (alle sichtbaren Begriffe kommasepariert)
+    combined_values: List[str] = []
+    seen_combined = set()
+    for t in athlete_tags + meta_tags:
+        val = str(t.get("value", "")).strip()
+        if not val or val in seen_combined:
+            continue
+        seen_combined.add(val)
+        combined_values.append(val)
+
+    if combined_values:
+        combined_csv = ", ".join(combined_values)
+        render_copy_buttons(
+            "",
+            [{"label": "Alle Begriffe (CSV)", "value": combined_csv}],
+            section_style="meta",
+            columns=1,
             show_title=False,
             show_last_copied=False,
         )
