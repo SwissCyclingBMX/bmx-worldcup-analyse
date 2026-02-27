@@ -4,6 +4,7 @@ from typing import Optional
 import re
 import json
 import textwrap
+import os
 from io import BytesIO
 from datetime import datetime
 
@@ -917,10 +918,15 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
     return out
 
 
-st.sidebar.page_link("app.py", label="Heat Analyser")
-st.sidebar.page_link("pages/3_Athlete_Insights.py", label="Athlete Insights")
-st.sidebar.page_link("pages/4_Live_Polling.py", label="Live Polling")
-st.sidebar.page_link("pages/9_CoachNow_Automation.py", label="CoachNow Automation")
+def safe_sidebar_page_link(script_path: str, label: str) -> None:
+    if os.path.exists(script_path):
+        st.sidebar.page_link(script_path, label=label)
+
+
+safe_sidebar_page_link("app.py", "Heat Analyser")
+safe_sidebar_page_link("pages/3_Athlete_Insights.py", "Athlete Insights")
+safe_sidebar_page_link("pages/4_Live_Polling.py", "Live Polling")
+safe_sidebar_page_link("pages/9_CoachNow_Automation.py", "CoachNow Automation")
 st.sidebar.divider()
 
 st.title("Athlete Insights")

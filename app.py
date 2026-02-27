@@ -1329,10 +1329,15 @@ else:
 events_work["_series_code"] = pd.Series(series_code, index=events_work.index)
 
 # Sidebar: Event Auswahl
-st.sidebar.page_link("app.py", label="Heat Analyser")
-st.sidebar.page_link("pages/3_Athlete_Insights.py", label="Athlete Insights")
-st.sidebar.page_link("pages/4_Live_Polling.py", label="Live Polling")
-st.sidebar.page_link("pages/9_CoachNow_Automation.py", label="CoachNow Automation")
+def safe_sidebar_page_link(script_path: str, label: str) -> None:
+    if os.path.exists(script_path):
+        st.sidebar.page_link(script_path, label=label)
+
+
+safe_sidebar_page_link("app.py", "Heat Analyser")
+safe_sidebar_page_link("pages/3_Athlete_Insights.py", "Athlete Insights")
+safe_sidebar_page_link("pages/4_Live_Polling.py", "Live Polling")
+safe_sidebar_page_link("pages/9_CoachNow_Automation.py", "CoachNow Automation")
 st.sidebar.divider()
 st.sidebar.header("Event Auswahl")
 
