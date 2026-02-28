@@ -1617,7 +1617,7 @@ if allowed_group_ids:
 if st.sidebar.button("Cache leeren"):
     st.cache_data.clear()
     st.session_state["cache_bust"] += 1
-    st.experimental_rerun()
+    st.rerun()
 
 # (Rider filter moved above)
 
@@ -2300,7 +2300,7 @@ with tab_rounds:
             st.cache_data.clear()
             st.session_state["cache_bust"] += 1
             st.session_state["scroll_to_time_tab"] = True
-            st.experimental_rerun()
+            st.rerun()
 
     if st.session_state.get("scroll_to_time_tab", False):
         components.html(
