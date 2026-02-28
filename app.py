@@ -1011,7 +1011,7 @@ def add_heat_result_flags(heats: pd.DataFrame, df_rows: pd.DataFrame) -> pd.Data
 
 def heat_label_row(r: pd.Series) -> str:
     cat = r.get("category", "")
-    rt = r.get("round_title", "")
+    rt = r.get("round_filter_label", r.get("round_title", ""))
     ht = r.get("heat_title", "")
     stt = r.get("start_time_string", "")
     sui = r.get("SUI", "")
@@ -1084,7 +1084,14 @@ def canonical_round_label(round_title: Optional[str]) -> str:
         return "1/2 Finals"
     if tl == "final" or " final" in tl or "finale" in tl or "main" in tl:
         return "Final"
-    if tl.startswith("round 1") or tl.startswith("runde 1") or "moto" in tl or "manche" in tl:
+    if (
+        tl.startswith("round 1")
+        or tl.startswith("runde 1")
+        or re.match(r"^round\s*1\b", tl)
+        or re.match(r"^r\s*1\b", tl)
+        or "moto" in tl
+        or "manche" in tl
+    ):
         return "Round 1"
     return rt
 
@@ -1729,15 +1736,57 @@ if allowed_group_ids:
     heats_f = heats_f[heats_f["group_id"].isin(allowed_group_ids)].copy()
 
 heats_f["round_filter_label"] = heats_f["round_title"].apply(canonical_round_label)
+round_expected_key = {
+    "Round 1": 1,
+    "LCQ": 2,
+    "1/32 Finals": 3,
+    "1/16 Finals": 4,
+    "1/8 Finals": 5,
+    "1/4 Finals": 6,
+    "1/2 Finals": 7,
+    "Final": 8,
+}
+heats_f["_rk_num"] = pd.to_numeric(heats_f["round_key"], errors="coerce")
+heats_f["_rk_expected"] = heats_f["round_filter_label"].map(round_expected_key)
+heats_f["_rk_mismatch"] = np.where(
+    heats_f["_rk_expected"].notna() & heats_f["_rk_num"].notna(),
+    (heats_f["_rk_num"] - heats_f["_rk_expected"]).abs(),
+    999.0,
+)
+
+# Deduplicate same displayed heat when multiple poll snapshots/mappings coexist.
+dedup_cols = [c for c in ["group_id", "round_filter_label", "heat_title"] if c in heats_f.columns]
+if dedup_cols:
+    heats_f = (
+        heats_f.sort_values(
+            ["_rk_mismatch", "_rk_num", "start_dt", "round_key", "heat_id"],
+            na_position="last",
+            kind="stable",
+        )
+        .drop_duplicates(subset=dedup_cols, keep="first")
+        .copy()
+    )
 
 # Header + live controls
 if mode == "Live":
     round_titles = (
-        heats_f[["round_key", "round_filter_label"]]
+        heats_f[["round_filter_label", "_rk_expected", "_rk_num"]]
+        .dropna(subset=["round_filter_label"])
         .drop_duplicates()
-        .sort_values(["round_key", "round_filter_label"], na_position="last", kind="stable")
+        .sort_values(["_rk_expected", "_rk_num", "round_filter_label"], na_position="last", kind="stable")
     )
-    round_opts = ["Alle"] + [str(x) for x in round_titles["round_filter_label"].fillna("").tolist() if str(x).strip()]
+    round_seen = set()
+    round_values = []
+    for raw_label in round_titles["round_filter_label"].fillna("").tolist():
+        label = canonical_round_label(raw_label)
+        if not label:
+            continue
+        key = re.sub(r"\s+", " ", str(label)).strip().lower()
+        if not key or key in round_seen:
+            continue
+        round_seen.add(key)
+        round_values.append(label)
+    round_opts = ["Alle"] + round_values
     if not round_opts:
         round_opts = ["Alle"]
 
@@ -1760,6 +1809,8 @@ if selected_round != "Alle":
 # Upcoming filter
 if only_upcoming:
     heats_f = filter_upcoming_heats(heats_f)
+
+heats_f = heats_f.drop(columns=["_rk_num", "_rk_expected", "_rk_mismatch"], errors="ignore")
 
 # Heat selectbox with Swiss names embedded
 if heats_f.empty:
