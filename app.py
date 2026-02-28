@@ -2144,7 +2144,7 @@ with tab_start:
 
         if "name_short" in view.columns:
             view["Rider"] = view["name_short"]
-        view["Best Start"] = view.apply(
+        view["prev. Best Start"] = view.apply(
             lambda r: combined_cell(
                 r.get("race_best_start"),
                 r.get("train_best_start"),
@@ -2188,7 +2188,7 @@ with tab_start:
             "Plate",
             "Rider",
             "pick_order",
-            "Best Start",
+            "prev. Best Start",
             "Ø3 Start",
             "Best T1",
             "Ø3 T1",
