@@ -1064,6 +1064,31 @@ def round_tag_from_title(round_title: Optional[str]) -> Optional[str]:
     return rt.replace(" ", "")
 
 
+def canonical_round_label(round_title: Optional[str]) -> str:
+    """Normalize noisy/duplicated round labels for filters (e.g. multilingual variants)."""
+    rt = clean_spaces(str(round_title or ""))
+    tl = rt.lower()
+    if not tl:
+        return ""
+    if "lcq" in tl or "last chance" in tl:
+        return "LCQ"
+    if "1/32" in tl:
+        return "1/32 Finals"
+    if "1/16" in tl:
+        return "1/16 Finals"
+    if "1/8" in tl:
+        return "1/8 Finals"
+    if "1/4" in tl or "quarter" in tl:
+        return "1/4 Finals"
+    if "1/2" in tl or "semi" in tl:
+        return "1/2 Finals"
+    if tl == "final" or " final" in tl or "finale" in tl or "main" in tl:
+        return "Final"
+    if tl.startswith("round 1") or tl.startswith("runde 1") or "moto" in tl or "manche" in tl:
+        return "Round 1"
+    return rt
+
+
 def heat_tag_from_context(heat_title: Optional[str], heat_id: Optional[int]) -> Tuple[Optional[str], Optional[str]]:
     """Return (label, copy_value) as Heat N / HeatN."""
     title = str(heat_title or "").strip()
@@ -1703,14 +1728,16 @@ if rider_selected_list:
 if allowed_group_ids:
     heats_f = heats_f[heats_f["group_id"].isin(allowed_group_ids)].copy()
 
+heats_f["round_filter_label"] = heats_f["round_title"].apply(canonical_round_label)
+
 # Header + live controls
 if mode == "Live":
     round_titles = (
-        heats_f[["round_key", "round_title"]]
+        heats_f[["round_key", "round_filter_label"]]
         .drop_duplicates()
-        .sort_values(["round_key", "round_title"], na_position="last", kind="stable")
+        .sort_values(["round_key", "round_filter_label"], na_position="last", kind="stable")
     )
-    round_opts = ["Alle"] + [str(x) for x in round_titles["round_title"].fillna("").tolist() if str(x).strip()]
+    round_opts = ["Alle"] + [str(x) for x in round_titles["round_filter_label"].fillna("").tolist() if str(x).strip()]
     if not round_opts:
         round_opts = ["Alle"]
 
@@ -1728,7 +1755,7 @@ else:
 
 # Round filter (for live mode)
 if selected_round != "Alle":
-    heats_f = heats_f[heats_f["round_title"].fillna("").astype(str) == selected_round].copy()
+    heats_f = heats_f[heats_f["round_filter_label"].fillna("").astype(str) == selected_round].copy()
 
 # Upcoming filter
 if only_upcoming:
@@ -2263,7 +2290,33 @@ with tab_start:
             st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
 
 with tab_rounds:
-    mode_time = st.radio("Modus", ["Heat", "Athleten"], index=0, horizontal=True)
+    st.markdown("<div id='time-analyse-anchor'></div>", unsafe_allow_html=True)
+    col_m1, col_m2 = st.columns([5, 1])
+    with col_m1:
+        mode_time = st.radio("Modus", ["Heat", "Athleten"], index=0, horizontal=True)
+    with col_m2:
+        st.markdown("&nbsp;", unsafe_allow_html=True)
+        if st.button("Refresh", key="time_analyse_refresh_btn", use_container_width=True):
+            st.cache_data.clear()
+            st.session_state["cache_bust"] += 1
+            st.session_state["scroll_to_time_tab"] = True
+            st.experimental_rerun()
+
+    if st.session_state.get("scroll_to_time_tab", False):
+        components.html(
+            """
+            <script>
+            const doc = window.parent.document;
+            const el = doc.getElementById("time-analyse-anchor");
+            if (el) {
+              el.scrollIntoView({behavior: "instant", block: "start"});
+            }
+            </script>
+            """,
+            height=0,
+        )
+        st.session_state["scroll_to_time_tab"] = False
+
     if mode_time == "Athleten":
         # Use sidebar filters (Nation + Rider) instead of a separate filter
         base_df = df_event.copy()
