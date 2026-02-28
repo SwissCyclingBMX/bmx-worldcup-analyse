@@ -1943,26 +1943,55 @@ with tab_start:
         if "name" in view.columns:
             view["name_full"] = view["name"]
         view["is_baseline"] = view["name"] == rider_selected
+
+        # Heat Rank logic:
+        # - if timing exists in selected heat: compute rank locally by time (1..8)
+        # - if no timing: only show provided rank when heat is finished/official (and in 1..8)
+        view["heat_rank_display"] = pd.NA
+        try:
+            tmp_rank = df_heat.copy()
+            tmp_rank["time_s"] = tmp_rank["time"].apply(parse_time_to_seconds)
+            has_timed_rows = tmp_rank["time_s"].notna().any()
+
+            if has_timed_rows:
+                tmp_rank = tmp_rank[tmp_rank["time_s"].notna()].copy()
+                sort_cols = [c for c in ["time_s", "pick_order", "lane_idx", "name"] if c in tmp_rank.columns]
+                tmp_rank = tmp_rank.sort_values(sort_cols, na_position="last", kind="stable")
+                tmp_rank["heat_rank_calc"] = range(1, len(tmp_rank) + 1)
+                tmp_rank["heat_rank_calc"] = pd.to_numeric(tmp_rank["heat_rank_calc"], errors="coerce")
+                tmp_rank.loc[(tmp_rank["heat_rank_calc"] < 1) | (tmp_rank["heat_rank_calc"] > 8), "heat_rank_calc"] = pd.NA
+
+                if "bib" in view.columns and "bib" in tmp_rank.columns:
+                    view["_rk_key"] = view["bib"].fillna("").astype(str).str.strip()
+                    tmp_rank["_rk_key"] = tmp_rank["bib"].fillna("").astype(str).str.strip()
+                else:
+                    view["_rk_key"] = view["name_full"].fillna("").astype(str).str.strip()
+                    tmp_rank["_rk_key"] = tmp_rank["name"].fillna("").astype(str).str.strip()
+
+                rank_map = tmp_rank.drop_duplicates("_rk_key").set_index("_rk_key")["heat_rank_calc"].to_dict()
+                view["heat_rank_display"] = view["_rk_key"].map(rank_map)
+                view = view.drop(columns=["_rk_key"], errors="ignore")
+            else:
+                heat_status = str(chosen.get("heat_status") or "").strip().lower()
+                is_finished_heat = heat_status in NOT_UPCOMING_STATUS
+                if is_finished_heat and "rank" in view.columns:
+                    view["heat_rank_display"] = pd.to_numeric(view["rank"], errors="coerce")
+                    view.loc[
+                        (view["heat_rank_display"] < 1) | (view["heat_rank_display"] > 8),
+                        "heat_rank_display",
+                    ] = pd.NA
+                else:
+                    view["heat_rank_display"] = pd.NA
+        except Exception:
+            view["heat_rank_display"] = pd.NA
+
         # Avoid duplicate Rider column
         if "name" in view.columns and "Rider" in view.columns:
             view = view.drop(columns=["name"])
-        view = view.rename(columns={"bib": "Plate", "name": "Rider", "rank": "Heat Rank"})
-        if "Heat Rank" in view.columns:
-            view["Heat Rank"] = pd.to_numeric(view["Heat Rank"], errors="coerce").astype("Int64")
-        # Fallback: compute heat rank from time if missing
-        if "Heat Rank" in view.columns and view["Heat Rank"].isna().all():
-            try:
-                tmp = df_heat.copy()
-                tmp["time_s"] = tmp["time"].apply(parse_time_to_seconds)
-                tmp = tmp.sort_values("time_s", na_position="last")
-                tmp["Heat Rank"] = range(1, len(tmp) + 1)
-                rank_map = tmp.set_index("name")["Heat Rank"].to_dict()
-                if "name_full" in view.columns:
-                    view["Heat Rank"] = view["name_full"].map(rank_map)
-                else:
-                    view["Heat Rank"] = view["Rider"].map(rank_map)
-            except Exception:
-                pass
+        view = view.rename(columns={"bib": "Plate", "name": "Rider"})
+        view["Heat Rank"] = pd.to_numeric(view["heat_rank_display"], errors="coerce").astype("Int64")
+        view = view.drop(columns=["heat_rank_display"], errors="ignore")
+
         if "name_short" in view.columns:
             view["Rider"] = view["name_short"]
         view["Best Start"] = view.apply(

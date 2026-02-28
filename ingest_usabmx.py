@@ -104,6 +104,18 @@ def parse_event_date(s: Optional[str]) -> Tuple[str, str]:
 
 def map_category_gender(class_name: str, competitor_gender: Any) -> Tuple[str, str]:
     n = (class_name or "").lower()
+    n_norm = re.sub(r"[^a-z0-9]+", " ", n).strip()
+
+    female_tokens = {
+        "women", "woman", "female", "femme", "femmes", "fille", "filles",
+        "girl", "girls", "lady", "ladies", "damen", "dame", "feminin",
+    }
+    male_tokens = {
+        "men", "man", "male", "homme", "hommes", "garcon", "garcons",
+        "boy", "boys", "masculin",
+    }
+
+    tokens = set(n_norm.split()) if n_norm else set()
     if "junior" in n:
         category = "Junior"
     elif "u23" in n:
@@ -113,10 +125,10 @@ def map_category_gender(class_name: str, competitor_gender: Any) -> Tuple[str, s
     else:
         category = "Elite"
 
-    g = str(competitor_gender or "").strip()
-    if g == "2" or "women" in n or "female" in n:
+    g = str(competitor_gender or "").strip().upper()
+    if g in {"2", "F", "W"} or bool(tokens & female_tokens):
         gender = "W"
-    elif g == "1" or "men" in n or "male" in n:
+    elif g in {"1", "M"} or bool(tokens & male_tokens):
         gender = "M"
     else:
         gender = "M"
