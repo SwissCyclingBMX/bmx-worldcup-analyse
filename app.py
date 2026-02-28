@@ -411,8 +411,15 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Derive year from event_id (YYYYMMDD_...)
-    df["year"] = df["event_id"].astype(str).str.slice(0, 4)
+    # Derive year:
+    # 1) from event_id prefix (YYYY....) when valid
+    # 2) fallback from event_date
+    year_from_id = pd.to_numeric(
+        df["event_id"].astype(str).str.extract(r"^(\d{4})", expand=False),
+        errors="coerce",
+    ).astype("Int64")
+    year_from_date = pd.to_datetime(df["event_date"], errors="coerce").dt.year.astype("Int64")
+    df["year"] = year_from_id.fillna(year_from_date).astype("Int64").astype(str)
 
     # Create labels:
     # - label_short: "ROUND X - Location"
@@ -585,6 +592,27 @@ def load_picks_for_events(event_ids: List[str]) -> pd.DataFrame:
     finally:
         conn.close()
     return normalize_picks_df(df)
+
+
+@st.cache_data(ttl=10)
+def load_event_pick_counts(event_ids: List[str]) -> Dict[str, int]:
+    db_path = DB_PATH if os.path.exists(DB_PATH) else DB_PATH_CLOUD
+    if not os.path.exists(db_path):
+        return {}
+    event_ids = [e for e in event_ids if e]
+    if not event_ids:
+        return {}
+
+    in_sql, params = safe_in_clause(event_ids)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT event_id, COUNT(*) AS n FROM picks WHERE event_id IN {in_sql} GROUP BY event_id",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    return {str(eid): int(n or 0) for eid, n in rows}
 
 
 @st.cache_data(ttl=60)
@@ -1374,7 +1402,18 @@ if df_current_pool.empty:
     st.warning("Keine Events für die aktuelle Auswahl (Jahr/Wettkampftyp).")
     st.stop()
 
-event_label_current = st.sidebar.selectbox("Event", df_current_pool["label_analysis"].tolist(), index=0)
+event_options = df_current_pool["label_analysis"].tolist()
+default_event_index = 0
+try:
+    pick_counts = load_event_pick_counts(df_current_pool["event_id"].astype(str).tolist())
+    for i, eid in enumerate(df_current_pool["event_id"].astype(str).tolist()):
+        if pick_counts.get(eid, 0) > 0:
+            default_event_index = i
+            break
+except Exception:
+    default_event_index = 0
+
+event_label_current = st.sidebar.selectbox("Event", event_options, index=default_event_index)
 event_id = df_current_pool.loc[df_current_pool["label_analysis"] == event_label_current, "event_id"].iloc[0]
 st.sidebar.caption(f"Aktives Event: {event_id}")
 
