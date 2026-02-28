@@ -965,9 +965,46 @@ def filter_upcoming_heats(heats: pd.DataFrame) -> pd.DataFrame:
 
     # treat these as NOT upcoming
     not_upcoming = status.isin(list(NOT_UPCOMING_STATUS))
+    # also treat heats with already available result/timing as not upcoming
+    if "has_result" in heats.columns:
+        not_upcoming = not_upcoming | heats["has_result"].fillna(False).astype(bool)
 
     # keep "confirmed", "upcoming", "scheduled", plus anything unknown (to not hide data)
     out = heats[~not_upcoming].copy()
+    return out
+
+
+def add_heat_result_flags(heats: pd.DataFrame, df_rows: pd.DataFrame) -> pd.DataFrame:
+    """Annotate each heat with whether any result/timing row already exists."""
+    if heats.empty:
+        return heats
+    out = heats.copy()
+    if df_rows is None or df_rows.empty:
+        out["has_result"] = False
+        return out
+
+    tmp = df_rows.copy()
+    time_cols = [c for c in ["time", "t1", "t2", "t3", "t4"] if c in tmp.columns]
+    has_time = pd.Series(False, index=tmp.index)
+    for c in time_cols:
+        has_time = has_time | pd.to_numeric(tmp[c], errors="coerce").notna()
+
+    if "rank" in tmp.columns:
+        rank_num = pd.to_numeric(tmp["rank"], errors="coerce")
+        has_rank = rank_num.between(1, 8, inclusive="both")
+    else:
+        has_rank = pd.Series(False, index=tmp.index)
+
+    tmp["has_result"] = (has_time | has_rank).astype(bool)
+
+    key_cols = [c for c in ["group_id", "round_key", "round_title", "heat_id", "heat_title"] if c in out.columns and c in tmp.columns]
+    if not key_cols:
+        out["has_result"] = False
+        return out
+
+    flags = tmp.groupby(key_cols, as_index=False)["has_result"].any()
+    out = out.merge(flags, on=key_cols, how="left")
+    out["has_result"] = out["has_result"].fillna(False).astype(bool)
     return out
 
 
@@ -1535,10 +1572,6 @@ if not df_hist_all.empty and allowed_group_ids:
 if allowed_group_ids:
     df_event = df_event[df_event["group_id"].isin(allowed_group_ids)].copy()
 
-only_upcoming = False
-if mode == "Live":
-    only_upcoming = st.sidebar.checkbox("Nur anstehende Heats (Live)", value=True)
-
 # Cache reset (keep at bottom of sidebar)
 if st.sidebar.button("Cache leeren"):
     st.cache_data.clear()
@@ -1626,7 +1659,15 @@ if training_live:
 # ----------------------------
 # Heats table + selection
 # ----------------------------
-st.subheader("Heats (nach Filter)")
+if mode == "Live":
+    col_h1, col_h2 = st.columns([4, 2])
+    with col_h1:
+        st.subheader("Heats (nach Filter)")
+    with col_h2:
+        only_upcoming = st.checkbox("Nur anstehende Heats (Live)", value=True, key="only_upcoming_live_main")
+else:
+    st.subheader("Heats (nach Filter)")
+    only_upcoming = False
 
 heats = build_heats(df_event)
 
@@ -1639,6 +1680,7 @@ if rider_selected_list:
     df_filter = df_filter[df_filter["name"].isin(rider_selected_list)].copy()
 
 heats_f = build_heats(df_filter)
+heats_f = add_heat_result_flags(heats_f, df_filter)
 
 # Add Swiss names column always (independent of nation filter)
 heats_f = add_sui_names_column(heats_f, df_event, nation_filter="SUI")
@@ -1657,11 +1699,7 @@ if allowed_group_ids:
 
 # Upcoming filter
 if only_upcoming:
-    tmp = filter_upcoming_heats(heats_f)
-    if tmp.empty:
-        st.info("Hinweis: Keine 'anstehenden' Heats gefunden (Event vermutlich nicht live). Zeige stattdessen alle Heats.")
-    else:
-        heats_f = tmp
+    heats_f = filter_upcoming_heats(heats_f)
 
 # Heat selectbox with Swiss names embedded
 if heats_f.empty:
