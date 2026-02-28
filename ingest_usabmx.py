@@ -204,6 +204,42 @@ def to_int(v: Any) -> Optional[int]:
         return None
 
 
+def resolve_bib(comp: Dict[str, Any], class_code: str) -> int:
+    """
+    picks.bib is INTEGER NOT NULL.
+    For alphanumeric plates (e.g. 11B), fall back to memberId, then deterministic hash.
+    """
+    plate_raw = str(comp.get("plate") or "").strip()
+    bib = to_int(plate_raw)
+    if bib is not None:
+        return bib
+
+    member_id = to_int(comp.get("memberId"))
+    if member_id is not None:
+        return member_id
+
+    key = f"{class_code}|{plate_raw}|{comp.get('firstName') or ''}|{comp.get('lastName') or ''}"
+    return 700000000 + (zlib.crc32(key.encode("utf-8")) % 200000000)
+
+
+def clean_time(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    return s
+
+
+def first_time(detail: Dict[str, Any], keys: List[str]) -> Optional[str]:
+    for k in keys:
+        if k in detail:
+            val = clean_time(detail.get(k))
+            if val is not None:
+                return val
+    return None
+
+
 def class_allowed(class_name: str, filters: List[str]) -> bool:
     if not class_name:
         return False
@@ -260,10 +296,7 @@ def ingest_payload(conn: sqlite3.Connection, payload: Dict[str, Any], args: argp
             first = str(comp.get("firstName") or "").strip()
             last = str(comp.get("lastName") or "").strip()
             name = f"{first} {last}".strip() or str(comp.get("name") or "").strip()
-            bib = to_int(comp.get("plate"))
-            if bib is None:
-                # no bib -> skip row for picks PK consistency
-                continue
+            bib = resolve_bib(comp, class_code)
             category, gender = map_category_gender(class_name, comp.get("gender"))
             group_id = map_group_id(category, gender, class_code)
             nation = get_nation(comp, group_country, region)
@@ -289,7 +322,30 @@ def ingest_payload(conn: sqlite3.Connection, payload: Dict[str, Any], args: argp
                 )
                 race_pos = to_int(d.get("racePosition"))
                 rank = to_int(d.get("rank"))
-                tval = str(d.get("time") or "").strip() or None
+                # USABMX payloads vary by event:
+                # - some provide hillTime/cornerTime/time
+                # - some only provide time
+                start_val = first_time(
+                    d,
+                    [
+                        "start",
+                        "startTime",
+                        "reactionTime",
+                        "hillTime",
+                    ],
+                )
+                t1_val = first_time(
+                    d,
+                    [
+                        "t1",
+                        "t1Time",
+                        "cornerTime",
+                        "split1",
+                    ],
+                )
+                t2_val = first_time(d, ["t2", "t2Time", "split2"])
+                t3_val = first_time(d, ["t3", "t3Time", "split3"])
+                tval = first_time(d, ["time", "finishTime", "resultTime"])
 
                 rows.append(
                     {
@@ -308,10 +364,10 @@ def ingest_payload(conn: sqlite3.Connection, payload: Dict[str, Any], args: argp
                         "lane": str(race_pos) if race_pos is not None else None,
                         "lane_idx": race_pos,
                         "uci_id": uci_id,
-                        "start": None,
-                        "t1": None,
-                        "t2": None,
-                        "t3": None,
+                        "start": start_val,
+                        "t1": t1_val,
+                        "t2": t2_val,
+                        "t3": t3_val,
                         "t4": None,
                         "time": tval,
                         "rank": rank,
