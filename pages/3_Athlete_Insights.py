@@ -44,6 +44,7 @@ ROUND_ORDER = {
     "seeding": 10,
     "lcq": 20,
     "last chance": 20,
+    "1/32": 25,
     "1/16": 30,
     "1/8": 40,
     "1/4": 50,
@@ -306,7 +307,7 @@ def classify_phase(round_title: str, round_sort_value: int) -> str:
     t = str(round_title or "").lower()
     if "final" in t:
         return "Final"
-    if any(x in t for x in ["1/16", "1/8", "1/4", "1/2", "lcq", "last chance"]):
+    if any(x in t for x in ["1/32", "1/16", "1/8", "1/4", "1/2", "lcq", "last chance"]):
         return "KO"
     if any(x in t for x in ["round 1", "moto", "seeding"]) or round_sort_value <= 12:
         return "Early"
@@ -323,6 +324,8 @@ def round_short_label(round_title: str) -> str:
         return "M3"
     if "lcq" in t or "last chance" in t:
         return "LCQ"
+    if "1/32" in t:
+        return "1/32"
     if "1/16" in t:
         return "1/16"
     if "1/8" in t:
@@ -1040,11 +1043,11 @@ g1, g2 = st.columns(2)
 with g1:
     sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
 with g2:
-    round_order_pref = ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F", "M1", "M2", "M3", "QF", "SF", "F1", "F2", "F3"]
+    round_order_pref = ["R1", "LCQ", "1/32", "1/16", "1/8", "1/4", "1/2", "F", "M1", "M2", "M3", "QF", "SF", "F1", "F2", "F3"]
     round_seen = [x for x in loc_scope["round_short"].dropna().astype(str).unique().tolist() if clean_spaces(x)]
     round_opts = [x for x in round_order_pref if x in set(round_seen)] + [x for x in sorted(round_seen) if x not in round_order_pref]
     # New round families (USABMX etc.) are available but intentionally not default-selected.
-    round_defaults = [x for x in ["R1", "LCQ", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(round_opts)]
+    round_defaults = [x for x in ["R1", "LCQ", "1/32", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(round_opts)]
     sel_rounds = st.multiselect("Runde (optional)", round_opts, default=round_defaults)
 
 # Comparison/reference pool must stay on full field for selected filters.
@@ -1175,8 +1178,8 @@ with tabs[0]:
     plot["round_short"] = plot["round_title"].apply(round_short_label)
     round_order_map = {
         "R1": 1, "M1": 1, "M2": 2, "M3": 3,
-        "LCQ": 4, "1/16": 5, "1/8": 6, "QF": 7, "1/4": 7,
-        "SF": 8, "1/2": 8, "F1": 9, "F2": 10, "F3": 11, "F": 12,
+        "LCQ": 4, "1/32": 5, "1/16": 6, "1/8": 7, "QF": 8, "1/4": 8,
+        "SF": 9, "1/2": 9, "F1": 10, "F2": 11, "F3": 12, "F": 13,
     }
     plot["round_order"] = plot["round_short"].map(round_order_map).fillna(99)
     plot["heat_sort"] = pd.to_numeric(plot["heat_id"], errors="coerce").fillna(99999)

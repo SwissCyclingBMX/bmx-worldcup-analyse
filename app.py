@@ -1046,6 +1046,8 @@ def round_tag_from_title(round_title: Optional[str]) -> Optional[str]:
     rt_lower = rt.lower()
     if rt_lower in {"lcq", "last chance", "last chance qualifier"}:
         return "LCQ"
+    if "1/32" in rt_lower:
+        return "1/32"
     if "1/16" in rt_lower:
         return "1/16"
     if "1/8" in rt_lower:
@@ -2285,16 +2287,22 @@ with tab_rounds:
             "runde 1": 1,
             "lcq": 2,
             "last chance": 2,
-            "1/8 final": 3,
-            "1/8 finals": 3,
-            "1/8 finale": 3,
-            "1/4 final": 4,
-            "1/4 finals": 4,
-            "1/4 finale": 4,
-            "1/2 final": 5,
-            "1/2 finals": 5,
-            "1/2 finale": 5,
-            "final": 6,
+            "1/32 final": 3,
+            "1/32 finals": 3,
+            "1/32 finale": 3,
+            "1/16 final": 4,
+            "1/16 finals": 4,
+            "1/16 finale": 4,
+            "1/8 final": 5,
+            "1/8 finals": 5,
+            "1/8 finale": 5,
+            "1/4 final": 6,
+            "1/4 finals": 6,
+            "1/4 finale": 6,
+            "1/2 final": 7,
+            "1/2 finals": 7,
+            "1/2 finale": 7,
+            "final": 8,
         }
         return title.map(order_map).fillna(df_in["round_key"]).fillna(99)
 
@@ -2440,6 +2448,12 @@ with tab_rounds:
                 "runde 1": "R1",
                 "lcq": "LCQ",
                 "last chance": "LCQ",
+                "1/32 final": "1/32",
+                "1/32 finals": "1/32",
+                "1/32 finale": "1/32",
+                "1/16 final": "1/16",
+                "1/16 finals": "1/16",
+                "1/16 finale": "1/16",
                 "1/8 final": "1/8",
                 "1/8 finals": "1/8",
                 "1/8 finale": "1/8",

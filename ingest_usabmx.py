@@ -162,16 +162,18 @@ def map_round(phase_code: str, phase_name: str) -> Tuple[int, str]:
         return 1, "Round 1"
     if "LCQ" in pc or "LCQ" in pn or "LAST CHANCE" in pn:
         return 2, "LCQ"
+    if "1/32" in pn or ("32" in pc and "F" in pc):
+        return 3, "1/32 Finals"
     if "1/16" in pn or "16" in pc and "F" in pc:
-        return 3, "1/16 Finals"
+        return 4, "1/16 Finals"
     if "1/8" in pn or "8" in pc and "F" in pc:
-        return 4, "1/8 Finals"
+        return 5, "1/8 Finals"
     if pc == "4F" or "QUARTER" in pn:
-        return 5, "1/4 Finals"
+        return 6, "1/4 Finals"
     if pc == "2F" or "SEMI" in pn:
-        return 6, "1/2 Finals"
+        return 7, "1/2 Finals"
     if pc.startswith("1F") or "MAIN" in pn or "FINAL" in pn:
-        return 7, "Final"
+        return 8, "Final"
     return 99, phase_name or phase_code or "Round"
 
 
