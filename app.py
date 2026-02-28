@@ -1066,7 +1066,7 @@ def round_tag_from_title(round_title: Optional[str]) -> Optional[str]:
 
 def canonical_round_label(round_title: Optional[str]) -> str:
     """Normalize noisy/duplicated round labels for filters (e.g. multilingual variants)."""
-    rt = clean_spaces(str(round_title or ""))
+    rt = " ".join(str(round_title or "").strip().split())
     tl = rt.lower()
     if not tl:
         return ""
