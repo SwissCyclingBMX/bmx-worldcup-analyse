@@ -381,8 +381,9 @@ def ingest_payload(conn: sqlite3.Connection, payload: Dict[str, Any], args: argp
                         "name": name,
                         "nation": nation,
                         "pick_order": race_pos,
-                        "lane": str(race_pos) if race_pos is not None else None,
-                        "lane_idx": race_pos,
+                        # Sqorz payload currently has race position but no lane-pick field.
+                        "lane": None,
+                        "lane_idx": None,
                         "uci_id": uci_id,
                         "start": start_val,
                         "t1": t1_val,

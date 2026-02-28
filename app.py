@@ -1088,6 +1088,19 @@ def heat_tag_from_context(heat_title: Optional[str], heat_id: Optional[int]) -> 
     return f"Heat {n}", f"Heat{n}"
 
 
+def has_lane_pick_data(event_id: str) -> bool:
+    """
+    Lane-pick data is currently reliable only for World Cup event feed.
+    SQORZ/USABMX and other series should not show lane-pick metrics.
+    """
+    e = str(event_id or "").lower()
+    if "_euc_" in e or "_em_" in e or "_wch_" in e or "_usap_" in e or "_usabmx_" in e or "_sqorz_" in e:
+        return False
+    if e.endswith("_bmx"):
+        return True
+    return False
+
+
 def render_copy_buttons(
     title: str,
     tags: List[Dict[str, str]],
@@ -1790,7 +1803,8 @@ class_tag = class_tag_from_group_id(gid)
 tab_start, tab_rounds, tab_tagging = st.tabs(["Startliste - Gate Pick", "Time Analyse", "Tagging"])
 
 with tab_start:
-    st.subheader("Startliste - Lane Pick")
+    lane_pick_enabled = has_lane_pick_data(event_id)
+    st.subheader("Startliste - Lane Pick" if lane_pick_enabled else "Startliste")
 
     df_heat = df_heat_ctx.copy()
     df_heat["name_norm"] = df_heat["name"].apply(norm_name)
@@ -2101,9 +2115,10 @@ with tab_start:
             "Best T1",
             "Ø3 T1",
             "Score",
-            "chosen_lane",
             "Heat Rank",
         ]
+        if lane_pick_enabled:
+            show_cols.insert(show_cols.index("Heat Rank"), "chosen_lane")
         show_cols = [c for c in show_cols if c in view.columns]
         view = view[show_cols]
 
@@ -2147,12 +2162,15 @@ with tab_start:
         start_df_simple = start_df_simple.rename(columns={"bib": "Plate"})
         # drop any accidental duplicate columns
         start_df_simple = start_df_simple.loc[:, ~start_df_simple.columns.duplicated()]
-        start_df_simple = start_df_simple[["nation", "Plate", "Rider", "pick_order", "chosen_lane"]]
+        simple_cols = ["nation", "Plate", "Rider", "pick_order"]
+        if lane_pick_enabled and "chosen_lane" in start_df_simple.columns:
+            simple_cols.append("chosen_lane")
+        start_df_simple = start_df_simple[simple_cols]
         st.table(start_df_simple)
 
     # --- startlist tab: analysis tables in requested order ---
     df_hist_heat = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
-    if not df_hist_heat.empty and not df_heat.empty:
+    if lane_pick_enabled and (not df_hist_heat.empty) and (not df_heat.empty):
         heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
         df_hist_heat = df_hist_heat[df_hist_heat["name_norm"].isin(heat_riders_norm)].copy()
 
@@ -2239,7 +2257,10 @@ with tab_start:
             sum_view["name"] = sum_view["name"].apply(short_name)
             render_html_table(sum_view, row_h=32, min_h=200)
     else:
-        st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
+        if not lane_pick_enabled:
+            st.info("Lane-Picks werden für diese Serie aktuell nicht angezeigt (nur World Cup).")
+        else:
+            st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
 
 with tab_rounds:
     mode_time = st.radio("Modus", ["Heat", "Athleten"], index=0, horizontal=True)
