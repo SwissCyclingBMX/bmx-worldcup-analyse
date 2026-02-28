@@ -1369,9 +1369,9 @@ safe_sidebar_page_link("pages/9_CoachNow_Automation.py", "CoachNow Automation")
 st.sidebar.divider()
 st.sidebar.header("Event Auswahl")
 
-# Live only if there is actually something live today (event_date == today) in the latest year
-latest_year = events["year"].iloc[0]
-live_ids = live_event_ids_today(events[events["year"] == latest_year])
+# Live if there is something with event_date == today.
+# Do not restrict by derived year to avoid hiding valid events with legacy IDs.
+live_ids = live_event_ids_today(events)
 
 if live_ids:
     mode = st.sidebar.radio("Modus", ["Live", "Archiv (Jahre)"], horizontal=True)
