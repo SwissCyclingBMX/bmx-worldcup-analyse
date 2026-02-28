@@ -991,11 +991,12 @@ def add_heat_result_flags(heats: pd.DataFrame, df_rows: pd.DataFrame) -> pd.Data
 
     if "rank" in tmp.columns:
         rank_num = pd.to_numeric(tmp["rank"], errors="coerce")
-        has_rank = rank_num.between(1, 8, inclusive="both")
+        # can be nullable boolean depending on dtype; force missing -> False
+        has_rank = rank_num.between(1, 8, inclusive="both").fillna(False)
     else:
-        has_rank = pd.Series(False, index=tmp.index)
+        has_rank = pd.Series(False, index=tmp.index, dtype=bool)
 
-    tmp["has_result"] = (has_time | has_rank).astype(bool)
+    tmp["has_result"] = (has_time.fillna(False) | has_rank.fillna(False)).astype(bool)
 
     key_cols = [c for c in ["group_id", "round_key", "round_title", "heat_id", "heat_title"] if c in out.columns and c in tmp.columns]
     if not key_cols:
