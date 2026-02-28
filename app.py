@@ -987,7 +987,7 @@ def add_heat_result_flags(heats: pd.DataFrame, df_rows: pd.DataFrame) -> pd.Data
     time_cols = [c for c in ["time", "t1", "t2", "t3", "t4"] if c in tmp.columns]
     has_time = pd.Series(False, index=tmp.index)
     for c in time_cols:
-        has_time = has_time | pd.to_numeric(tmp[c], errors="coerce").notna()
+        has_time = has_time | tmp[c].apply(parse_time_to_seconds).notna()
 
     if "rank" in tmp.columns:
         rank_num = pd.to_numeric(tmp["rank"], errors="coerce")
@@ -1660,16 +1660,6 @@ if training_live:
 # ----------------------------
 # Heats table + selection
 # ----------------------------
-if mode == "Live":
-    col_h1, col_h2 = st.columns([4, 2])
-    with col_h1:
-        st.subheader("Heats (nach Filter)")
-    with col_h2:
-        only_upcoming = st.checkbox("Nur anstehende Heats (Live)", value=True, key="only_upcoming_live_main")
-else:
-    st.subheader("Heats (nach Filter)")
-    only_upcoming = False
-
 heats = build_heats(df_event)
 
 # nation filter affects which heats shown (based on startlist membership)
@@ -1697,6 +1687,33 @@ if rider_selected_list:
 # Apply category filter to heats (empty selection = show all)
 if allowed_group_ids:
     heats_f = heats_f[heats_f["group_id"].isin(allowed_group_ids)].copy()
+
+# Header + live controls
+if mode == "Live":
+    round_titles = (
+        heats_f[["round_key", "round_title"]]
+        .drop_duplicates()
+        .sort_values(["round_key", "round_title"], na_position="last", kind="stable")
+    )
+    round_opts = ["Alle"] + [str(x) for x in round_titles["round_title"].fillna("").tolist() if str(x).strip()]
+    if not round_opts:
+        round_opts = ["Alle"]
+
+    col_h1, col_h2, col_h3 = st.columns([3, 2, 3])
+    with col_h1:
+        st.subheader("Heats (nach Filter)")
+    with col_h2:
+        only_upcoming = st.checkbox("Nur anstehende Heats (Live)", value=True, key="only_upcoming_live_main")
+    with col_h3:
+        selected_round = st.selectbox("Runde (Live)", round_opts, index=0, key="live_round_filter")
+else:
+    st.subheader("Heats (nach Filter)")
+    only_upcoming = False
+    selected_round = "Alle"
+
+# Round filter (for live mode)
+if selected_round != "Alle":
+    heats_f = heats_f[heats_f["round_title"].fillna("").astype(str) == selected_round].copy()
 
 # Upcoming filter
 if only_upcoming:
