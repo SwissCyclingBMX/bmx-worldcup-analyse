@@ -140,7 +140,13 @@ def map_group_id(category: str, gender: str, class_code: str) -> int:
 def map_round(phase_code: str, phase_name: str) -> Tuple[int, str]:
     pc = (phase_code or "").upper()
     pn = (phase_name or "").upper()
-    if pc in {"M1", "M2", "M3"} or "MOTO" in pn:
+    # Round 1 / motos can come in multiple variants depending on organizer/language.
+    if (
+        pc in {"M1", "M2", "M3", "R1", "R2", "R3"}
+        or "MOTO" in pn
+        or "MANCHE" in pn
+        or bool(re.search(r"\b(ROUND|RUNDE)\s*[123]\b", pn))
+    ):
         return 1, "Round 1"
     if "LCQ" in pc or "LCQ" in pn or "LAST CHANCE" in pn:
         return 2, "LCQ"
