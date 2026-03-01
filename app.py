@@ -486,6 +486,9 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
     is_usap = (
         df["event_id"].astype(str).str.contains("_usap_", case=False, regex=False)
         | df["event_id"].astype(str).str.contains("_usabmx_", case=False, regex=False)
+        | df["event_id"].astype(str).str.contains("_ffc_", case=False, regex=False)
+        | df["event_id"].astype(str).str.contains("_scc_", case=False, regex=False)
+        | df["event_id"].astype(str).str.contains("_other_", case=False, regex=False)
         | df["display_name"].fillna("").astype(str).str.contains("usa bmx", case=False, regex=False)
         | df["display_name"].fillna("").astype(str).str.contains("pro championship", case=False, regex=False)
     )
@@ -1126,7 +1129,17 @@ def has_lane_pick_data(event_id: str) -> bool:
     SQORZ/USABMX and other series should not show lane-pick metrics.
     """
     e = str(event_id or "").lower()
-    if "_euc_" in e or "_em_" in e or "_wch_" in e or "_usap_" in e or "_usabmx_" in e or "_sqorz_" in e:
+    if (
+        "_euc_" in e
+        or "_em_" in e
+        or "_wch_" in e
+        or "_usap_" in e
+        or "_usabmx_" in e
+        or "_sqorz_" in e
+        or "_ffc_" in e
+        or "_scc_" in e
+        or "_other_" in e
+    ):
         return False
     if e.endswith("_bmx"):
         return True
@@ -1431,6 +1444,9 @@ else:
                 np.where(
                     eid_l.str.contains("_usap_", regex=False)
                     | eid_l.str.contains("_usabmx_", regex=False)
+                    | eid_l.str.contains("_ffc_", regex=False)
+                    | eid_l.str.contains("_scc_", regex=False)
+                    | eid_l.str.contains("_other_", regex=False)
                     | name_l.str.contains("usa bmx", regex=False)
                     | name_l.str.contains("pro championship", regex=False),
                     "usap",

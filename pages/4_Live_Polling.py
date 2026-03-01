@@ -156,7 +156,7 @@ st.sidebar.page_link("pages/9_CoachNow_Automation.py", label="CoachNow Automatio
 st.sidebar.divider()
 
 st.title("Live Polling")
-st.caption("Mehrere Polling-Services parallel starten (Sqorz/USABMX, JSTiming, Chronorace).")
+st.caption("Mehrere Polling-Services parallel starten (Sqorz, JSTiming, Chronorace).")
 
 if not running_on_systemd_host() or not systemctl_available():
     st.error("Diese Seite funktioniert nur auf dem VPS mit systemd.")
@@ -192,8 +192,8 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
     with st.expander(f"Konfiguration {i}", expanded=(i == 1)):
         source_key = f"poll_src_{fid}"
         ensure_state(source_key, "sqorz")
-        source_label = st.selectbox("Quelle", ["Sqorz/USABMX", "JSTiming", "Chronorace"], key=f"poll_src_label_{fid}")
-        source = {"Sqorz/USABMX": "sqorz", "JSTiming": "jstiming", "Chronorace": "chronorace"}[source_label]
+        source_label = st.selectbox("Quelle", ["Sqorz", "JSTiming", "Chronorace"], key=f"poll_src_label_{fid}")
+        source = {"Sqorz": "sqorz", "JSTiming": "jstiming", "Chronorace": "chronorace"}[source_label]
 
         ensure_state(f"poll_name_{fid}", f"{source}-{fid}")
         raw_name = st.text_input("Service Name", key=f"poll_name_{fid}")
@@ -211,6 +211,22 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
         errors: List[str] = []
 
         if source == "sqorz":
+            series_label = st.selectbox(
+                "Rennserie",
+                ["USABMX", "FFC", "SCC", "Other"],
+                key=f"poll_sqorz_series_{fid}",
+            )
+            series_code_map = {"USABMX": "usap", "FFC": "ffc", "SCC": "scc", "Other": "other"}
+            series_code = series_code_map.get(series_label, "other")
+            if series_label == "Other":
+                series_code_custom = st.text_input(
+                    "Rennserie-Code (für event_id, z.B. other/france)",
+                    key=f"poll_sqorz_series_custom_{fid}",
+                    value="other",
+                ).strip().lower()
+                if series_code_custom:
+                    series_code = re.sub(r"[^a-z0-9]+", "", series_code_custom) or "other"
+
             event_url = st.text_input(
                 "Event URL",
                 key=f"poll_sqorz_url_{fid}",
@@ -223,11 +239,11 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
             event_target = st.text_input(
                 "Ziel event_id in DB",
                 key=f"poll_sqorz_eid_{fid}",
-                placeholder="z.B. 20260228_ffc_caen_j1_bmx",
+                placeholder="z.B. 20260228_ffc_6996ddc7_bmx",
             ).strip()
             if not event_target and parsed_id:
                 today = datetime.date.today().strftime("%Y%m%d")
-                event_target = f"{today}_sqorz_{parsed_id[:8]}_bmx"
+                event_target = f"{today}_{series_code}_{parsed_id[:8]}_bmx"
 
             all_classes = st.checkbox("Alle Klassen ingestieren", value=False, key=f"poll_sqorz_all_{fid}")
             class_filters = st.text_area(
@@ -244,6 +260,8 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
 
             env_values["EVENT_URL"] = event_url
             env_values["EVENT_ID"] = event_target
+            env_values["SERIES"] = series_label
+            env_values["SERIES_CODE"] = series_code
             env_values["ALL_CLASSES"] = "1" if all_classes else "0"
             if not all_classes:
                 env_values["CLASS_FILTERS"] = class_filters

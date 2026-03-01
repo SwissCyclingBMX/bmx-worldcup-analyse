@@ -12,6 +12,8 @@ Environment variables:
 sqorz:
   EVENT_URL (required)
   EVENT_ID (required)
+  SERIES (optional: FFC | USABMX | SCC | Other)
+  SERIES_CODE (optional explicit code; overrides SERIES)
   CLASS_FILTERS (optional, newline/comma/semicolon separated)
   ALL_CLASSES=1 (optional)
 
@@ -72,7 +74,7 @@ def build_cmd() -> List[str]:
             raise RuntimeError("sqorz requires EVENT_URL and EVENT_ID")
         cmd = [
             PYTHON_BIN,
-            os.path.join(REPO_DIR, "ingest_usabmx.py"),
+            os.path.join(REPO_DIR, "ingest_sqorz.py"),
             "--url",
             event_url,
             "--event-id",
@@ -80,6 +82,12 @@ def build_cmd() -> List[str]:
             "--db",
             db_path,
         ]
+        series_code = str(os.getenv("SERIES_CODE", "")).strip()
+        series_label = str(os.getenv("SERIES", "")).strip()
+        if series_code:
+            cmd.extend(["--series-code", series_code])
+        elif series_label:
+            cmd.extend(["--series", series_label])
         if str(os.getenv("ALL_CLASSES", "0")).strip() in {"1", "true", "True"}:
             cmd.append("--all-classes")
         else:

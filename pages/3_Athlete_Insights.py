@@ -62,7 +62,13 @@ ROUND_ORDER = {
 
 def infer_event_type(event_id: str) -> str:
     e = str(event_id or "").lower()
-    if "_usap_" in e or "_usabmx_" in e:
+    if (
+        "_usap_" in e
+        or "_usabmx_" in e
+        or "_ffc_" in e
+        or "_scc_" in e
+        or "_other_" in e
+    ):
         return "USABMX"
     if "_euc_" in e:
         return "EC"
