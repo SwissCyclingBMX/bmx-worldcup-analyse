@@ -116,9 +116,16 @@ def map_category_gender(class_name: str, competitor_gender: Any) -> Tuple[str, s
     }
 
     tokens = set(n_norm.split()) if n_norm else set()
-    if "junior" in n:
+    is_junior = (
+        "junior" in n_norm
+        or bool(re.search(r"\bu19\b", n_norm))
+        or bool(re.search(r"\bunder\s*19\b", n_norm))
+    )
+    is_u23 = bool(re.search(r"\bu23\b", n_norm)) or bool(re.search(r"\bunder\s*23\b", n_norm))
+
+    if is_junior:
         category = "Junior"
-    elif "u23" in n:
+    elif is_u23:
         category = "U23"
     elif "pro" in n or "elite" in n:
         category = "Elite"
