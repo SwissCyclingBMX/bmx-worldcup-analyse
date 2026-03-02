@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,6 +19,76 @@ DEFAULT_BASE_URL = os.environ.get("COACHNOW_CONTROL_URL", "http://127.0.0.1:8787
 DEFAULT_TOKEN = os.environ.get("COACHNOW_CONTROL_TOKEN", "").strip()
 
 
+def make_setup_id() -> str:
+    return uuid.uuid4().hex
+
+
+def normalize_setup(raw: Any, fallback_name: str = "Setup") -> Dict[str, str]:
+    data = raw if isinstance(raw, dict) else {}
+    setup_id = str(data.get("id", "")).strip() or make_setup_id()
+    base_url = str(data.get("base_url", DEFAULT_BASE_URL)).strip() or DEFAULT_BASE_URL
+    token = str(data.get("token", DEFAULT_TOKEN)).strip()
+    name = str(data.get("name", "")).strip()
+    if not name:
+        host_hint = base_url.replace("http://", "").replace("https://", "").strip("/")
+        name = host_hint or fallback_name
+    return {
+        "id": setup_id,
+        "name": name,
+        "base_url": base_url,
+        "token": token,
+    }
+
+
+def normalize_profile_payload(raw: Any) -> Dict[str, Any]:
+    data = raw if isinstance(raw, dict) else {}
+
+    # Backward compatibility: old profile format with only base_url/token.
+    if "setups" not in data:
+        setup = normalize_setup(
+            {
+                "id": "default",
+                "name": "Default",
+                "base_url": str(data.get("base_url", DEFAULT_BASE_URL)).strip() or DEFAULT_BASE_URL,
+                "token": str(data.get("token", DEFAULT_TOKEN)).strip(),
+            },
+            fallback_name="Default",
+        )
+        return {
+            "active_setup_id": setup["id"],
+            "setups": [setup],
+        }
+
+    setups_raw = data.get("setups", [])
+    if not isinstance(setups_raw, list):
+        setups_raw = []
+
+    setups: List[Dict[str, str]] = []
+    seen_ids = set()
+    for idx, item in enumerate(setups_raw):
+        setup = normalize_setup(item, fallback_name=f"Setup {idx + 1}")
+        if setup["id"] in seen_ids:
+            setup["id"] = make_setup_id()
+        seen_ids.add(setup["id"])
+        setups.append(setup)
+
+    if not setups:
+        setup = normalize_setup(
+            {"id": "default", "name": "Default", "base_url": DEFAULT_BASE_URL, "token": DEFAULT_TOKEN},
+            fallback_name="Default",
+        )
+        setups = [setup]
+
+    active_setup_id = str(data.get("active_setup_id", "")).strip()
+    if not active_setup_id or all(x["id"] != active_setup_id for x in setups):
+        active_setup_id = setups[0]["id"]
+
+    return {
+        "active_setup_id": active_setup_id,
+        "setups": setups,
+    }
+
+
 def parse_iso(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -31,22 +102,72 @@ def parse_iso(value: Any) -> str:
         return str(value)
 
 
-def load_profile() -> Dict[str, str]:
+def load_profile() -> Dict[str, Any]:
     if not PROFILE_PATH.exists():
-        return {"base_url": DEFAULT_BASE_URL, "token": DEFAULT_TOKEN}
-    try:
-        data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        normalized = normalize_profile_payload({})
+        active = next((x for x in normalized["setups"] if x["id"] == normalized["active_setup_id"]), None)
+        active = active or normalized["setups"][0]
         return {
-            "base_url": str(data.get("base_url", DEFAULT_BASE_URL)).strip() or DEFAULT_BASE_URL,
-            "token": str(data.get("token", DEFAULT_TOKEN)).strip(),
+            "base_url": active["base_url"],
+            "token": active["token"],
+            "setups": normalized["setups"],
+            "active_setup_id": normalized["active_setup_id"],
+        }
+    try:
+        raw_data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        data = normalize_profile_payload(raw_data)
+        active = next((x for x in data["setups"] if x["id"] == data["active_setup_id"]), None)
+        active = active or data["setups"][0]
+        return {
+            "base_url": active["base_url"],
+            "token": active["token"],
+            "setups": data["setups"],
+            "active_setup_id": data["active_setup_id"],
         }
     except Exception:
-        return {"base_url": DEFAULT_BASE_URL, "token": DEFAULT_TOKEN}
+        normalized = normalize_profile_payload({})
+        active = next((x for x in normalized["setups"] if x["id"] == normalized["active_setup_id"]), None)
+        active = active or normalized["setups"][0]
+        return {
+            "base_url": active["base_url"],
+            "token": active["token"],
+            "setups": normalized["setups"],
+            "active_setup_id": normalized["active_setup_id"],
+        }
 
 
-def save_profile(base_url: str, token: str) -> None:
+def save_profile(
+    base_url: str,
+    token: str,
+    setups: Optional[List[Dict[str, str]]] = None,
+    active_setup_id: str = "",
+) -> None:
     PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"base_url": base_url.strip(), "token": token.strip()}
+    if setups is None:
+        normalized = normalize_profile_payload(
+            {
+                "setups": [
+                    {
+                        "id": "default",
+                        "name": "Default",
+                        "base_url": base_url.strip(),
+                        "token": token.strip(),
+                    }
+                ],
+                "active_setup_id": "default",
+            }
+        )
+    else:
+        normalized = normalize_profile_payload(
+            {
+                "setups": setups,
+                "active_setup_id": active_setup_id,
+            }
+        )
+    payload = {
+        "active_setup_id": normalized["active_setup_id"],
+        "setups": normalized["setups"],
+    }
     PROFILE_PATH.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
 
 
@@ -150,10 +271,30 @@ st.title("CoachNow Automation")
 st.caption("Minimal mode: URL, Start/Stop, Status und Logs. Alles weitere unter 'Erweiterte Einstellungen'.")
 
 profile = load_profile()
+if "coachnow_setups" not in st.session_state:
+    st.session_state["coachnow_setups"] = profile.get("setups", [])
+if "coachnow_active_setup_id" not in st.session_state:
+    st.session_state["coachnow_active_setup_id"] = profile.get("active_setup_id", "")
+if "coachnow_selected_setup_id" not in st.session_state:
+    st.session_state["coachnow_selected_setup_id"] = profile.get("active_setup_id", "")
 if "coachnow_base_url" not in st.session_state:
     st.session_state["coachnow_base_url"] = profile["base_url"]
 if "coachnow_token" not in st.session_state:
     st.session_state["coachnow_token"] = profile["token"]
+if "coachnow_setup_name" not in st.session_state:
+    active_profile_setup = next(
+        (
+            x
+            for x in profile.get("setups", [])
+            if str(x.get("id", "")).strip() == str(profile.get("active_setup_id", "")).strip()
+        ),
+        None,
+    )
+    st.session_state["coachnow_setup_name"] = str(
+        (active_profile_setup or {}).get("name", "Default")
+    ).strip() or "Default"
+if "coachnow_loaded_setup_id" not in st.session_state:
+    st.session_state["coachnow_loaded_setup_id"] = st.session_state.get("coachnow_selected_setup_id", "")
 if "coachnow_status_cache" not in st.session_state:
     st.session_state["coachnow_status_cache"] = {}
 if "coachnow_settings_cache" not in st.session_state:
@@ -198,19 +339,135 @@ def refresh_athletes(base_url: str, token: str) -> None:
         st.session_state["coachnow_athletes_cache"] = []
 
 
+def get_normalized_setups_from_state() -> Tuple[List[Dict[str, str]], str]:
+    normalized = normalize_profile_payload(
+        {
+            "setups": st.session_state.get("coachnow_setups", []),
+            "active_setup_id": st.session_state.get("coachnow_active_setup_id", ""),
+        }
+    )
+    return normalized["setups"], normalized["active_setup_id"]
+
+
+def persist_profile_from_state() -> None:
+    setups, active_setup_id = get_normalized_setups_from_state()
+    st.session_state["coachnow_setups"] = setups
+    st.session_state["coachnow_active_setup_id"] = active_setup_id
+    save_profile(
+        st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL),
+        st.session_state.get("coachnow_token", DEFAULT_TOKEN),
+        setups=setups,
+        active_setup_id=active_setup_id,
+    )
+
+
+def find_setup_by_id(setups: List[Dict[str, str]], setup_id: str) -> Optional[Dict[str, str]]:
+    wanted = str(setup_id or "").strip()
+    for item in setups:
+        if str(item.get("id", "")).strip() == wanted:
+            return item
+    return None
+
+
+setups, active_setup_id = get_normalized_setups_from_state()
+st.session_state["coachnow_setups"] = setups
+st.session_state["coachnow_active_setup_id"] = active_setup_id
+if not find_setup_by_id(setups, st.session_state.get("coachnow_selected_setup_id", "")):
+    st.session_state["coachnow_selected_setup_id"] = active_setup_id
+
+setup_ids = [str(x.get("id", "")).strip() for x in setups if str(x.get("id", "")).strip()]
+setup_label_map = {
+    str(item["id"]): f"{item['name']} ({item['base_url']})"
+    for item in setups
+}
+selected_setup_id = st.selectbox(
+    "Saved Setups",
+    options=setup_ids,
+    index=max(0, setup_ids.index(st.session_state.get("coachnow_selected_setup_id", active_setup_id)))
+    if setup_ids
+    else 0,
+    format_func=lambda setup_id: setup_label_map.get(setup_id, setup_id),
+)
+st.session_state["coachnow_selected_setup_id"] = selected_setup_id
+
+selected_setup = find_setup_by_id(setups, selected_setup_id) or setups[0]
+if st.session_state.get("coachnow_loaded_setup_id", "") != selected_setup_id:
+    st.session_state["coachnow_base_url"] = selected_setup["base_url"]
+    st.session_state["coachnow_token"] = selected_setup["token"]
+    st.session_state["coachnow_setup_name"] = selected_setup["name"]
+    st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
+    st.rerun()
+
+st.caption(
+    f"Aktiv: {(find_setup_by_id(setups, active_setup_id) or {}).get('name', 'n/a')} | "
+    f"Ausgewaehlt: {selected_setup.get('name', 'n/a')}"
+)
+
+setup_name = st.text_input("Setup Name", key="coachnow_setup_name", help="Beliebiger Name, z.B. 'M3 Zuhause'")
 base_url = st.text_input("Control URL", key="coachnow_base_url", help="Example: http://127.0.0.1:8787")
 token = st.text_input("API Token (optional)", key="coachnow_token", type="password")
 
-conn_a, conn_b, conn_c = st.columns([1, 1, 2])
-if conn_a.button("Save URL/Token", use_container_width=True):
-    save_profile(base_url, token)
-    st.success("Connection profile saved.")
-if conn_b.button("Connect", use_container_width=True):
+setup_a, setup_b, setup_c = st.columns([1, 1, 1])
+if setup_a.button("Save active setup", use_container_width=True):
+    clean_name = str(setup_name).strip()
+    clean_url = str(base_url).strip()
+    if not clean_name:
+        st.error("Setup Name fehlt.")
+    elif not clean_url:
+        st.error("Control URL fehlt.")
+    else:
+        for item in setups:
+            if item["id"] == selected_setup_id:
+                item["name"] = clean_name
+                item["base_url"] = clean_url
+                item["token"] = str(token).strip()
+                break
+        st.session_state["coachnow_setups"] = setups
+        st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
+        persist_profile_from_state()
+        st.success("Setup gespeichert.")
+
+if setup_b.button("Save as new setup", use_container_width=True):
+    clean_name = str(setup_name).strip()
+    clean_url = str(base_url).strip()
+    if not clean_name:
+        st.error("Setup Name fehlt.")
+    elif not clean_url:
+        st.error("Control URL fehlt.")
+    else:
+        new_setup = normalize_setup(
+            {
+                "id": make_setup_id(),
+                "name": clean_name,
+                "base_url": clean_url,
+                "token": str(token).strip(),
+            },
+            fallback_name="Setup",
+        )
+        setups.append(new_setup)
+        st.session_state["coachnow_setups"] = setups
+        st.session_state["coachnow_selected_setup_id"] = new_setup["id"]
+        st.session_state["coachnow_loaded_setup_id"] = new_setup["id"]
+        persist_profile_from_state()
+        st.success(f"Neues Setup gespeichert: {new_setup['name']}")
+        st.rerun()
+
+if setup_c.button("Activate selected setup", use_container_width=True):
+    st.session_state["coachnow_active_setup_id"] = selected_setup_id
+    st.session_state["coachnow_base_url"] = selected_setup["base_url"]
+    st.session_state["coachnow_token"] = selected_setup["token"]
+    st.session_state["coachnow_setup_name"] = selected_setup["name"]
+    st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
+    persist_profile_from_state()
+    st.success(f"Aktiv gesetzt: {selected_setup['name']}")
+
+conn_a, conn_b = st.columns([1, 2])
+if conn_a.button("Connect", use_container_width=True):
     refresh_status(base_url, token)
     refresh_settings(base_url, token)
     refresh_logs(base_url, token, 200)
     refresh_athletes(base_url, token)
-if conn_c.button("Reload all", use_container_width=True):
+if conn_b.button("Reload all", use_container_width=True):
     refresh_status(base_url, token)
     refresh_settings(base_url, token)
     refresh_logs(base_url, token, 400)
