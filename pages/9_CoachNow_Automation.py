@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 try:
     import requests
@@ -15,7 +16,8 @@ import streamlit as st
 st.set_page_config(page_title="CoachNow Automation", layout="wide")
 
 PROFILE_PATH = Path(".streamlit/coachnow_control_profile.json")
-DEFAULT_BASE_URL = os.environ.get("COACHNOW_CONTROL_URL", "http://127.0.0.1:8787").strip()
+HARD_DEFAULT_BASE_URL = "http://127.0.0.1:8787"
+DEFAULT_BASE_URL = (os.environ.get("COACHNOW_CONTROL_URL") or "").strip() or HARD_DEFAULT_BASE_URL
 DEFAULT_TOKEN = os.environ.get("COACHNOW_CONTROL_TOKEN", "").strip()
 DEFAULT_LIBRARY_URL = "https://app.coachnow.io/resources"
 DEFAULT_PROFILE_DIR = "coachnow_profile"
@@ -38,10 +40,29 @@ def parse_iso(value: Any) -> str:
         return str(value)
 
 
+def normalize_control_base_url(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = DEFAULT_BASE_URL or HARD_DEFAULT_BASE_URL
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return ""
+    if parsed.scheme not in {"http", "https"}:
+        return ""
+    if not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
 def normalize_setup(raw: Any, fallback_name: str = "Setup") -> Dict[str, str]:
     data = raw if isinstance(raw, dict) else {}
     setup_id = str(data.get("id", "")).strip() or make_id()
-    base_url = str(data.get("base_url", DEFAULT_BASE_URL)).strip() or DEFAULT_BASE_URL
+    base_url = normalize_control_base_url(data.get("base_url", DEFAULT_BASE_URL))
+    if not base_url:
+        base_url = HARD_DEFAULT_BASE_URL
     token = str(data.get("token", DEFAULT_TOKEN)).strip()
     name = str(data.get("name", "")).strip()
     if not name:
@@ -421,7 +442,10 @@ def api_call(
     if requests is None:
         return False, "Python package 'requests' is not installed on this host."
 
-    url = f"{base_url.rstrip('/')}{path}"
+    clean_base_url = normalize_control_base_url(base_url)
+    if not clean_base_url:
+        return False, "Control URL fehlt oder ist ungültig. Bitte in Setup Details prüfen."
+    url = f"{clean_base_url.rstrip('/')}{path}"
     headers = {}
     if token.strip():
         headers["x-control-token"] = token.strip()
@@ -601,6 +625,11 @@ if "coachnow_logs_cache" not in st.session_state:
     st.session_state["coachnow_logs_cache"] = []
 if "coachnow_athletes_cache" not in st.session_state:
     st.session_state["coachnow_athletes_cache"] = []
+
+# Sanitize persisted setup URL values to avoid invalid API calls.
+st.session_state["coachnow_base_url"] = (
+    normalize_control_base_url(st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL)) or HARD_DEFAULT_BASE_URL
+)
 
 
 def refresh_status(base_url: str, token: str) -> None:
@@ -794,7 +823,9 @@ selected_library = find_by_id(libraries, selected_library_id) or libraries[0]
 selected_group = find_by_id(groups, selected_group_id) or groups[0]
 
 if st.session_state.get("coachnow_loaded_setup_id", "") != selected_setup_id:
-    st.session_state["coachnow_base_url"] = selected_setup["base_url"]
+    st.session_state["coachnow_base_url"] = (
+        normalize_control_base_url(selected_setup.get("base_url", "")) or HARD_DEFAULT_BASE_URL
+    )
     st.session_state["coachnow_token"] = selected_setup["token"]
     st.session_state["coachnow_setup_name"] = selected_setup["name"]
     st.session_state["coachnow_active_setup_id"] = selected_setup_id
@@ -827,7 +858,7 @@ if st.session_state.get("coachnow_loaded_group_id", "") != selected_group_id:
     st.session_state["coachnow_loaded_group_id"] = selected_group_id
     st.rerun()
 
-base_url = st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL)
+base_url = normalize_control_base_url(st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL)) or HARD_DEFAULT_BASE_URL
 token = st.session_state.get("coachnow_token", DEFAULT_TOKEN)
 
 if not st.session_state["coachnow_status_cache"]:
@@ -962,7 +993,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
             for item in setups:
                 if item["id"] == selected_setup_id:
                     item["name"] = clean_name
-                    item["base_url"] = clean_url
+                    item["base_url"] = normalize_control_base_url(clean_url) or HARD_DEFAULT_BASE_URL
                     item["token"] = str(setup_token).strip()
                     break
             st.session_state["coachnow_setups"] = setups
@@ -997,7 +1028,9 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
 
     if setup_c.button("Activate selected setup", use_container_width=True):
         st.session_state["coachnow_active_setup_id"] = selected_setup_id
-        st.session_state["coachnow_base_url"] = selected_setup["base_url"]
+        st.session_state["coachnow_base_url"] = (
+            normalize_control_base_url(selected_setup.get("base_url", "")) or HARD_DEFAULT_BASE_URL
+        )
         st.session_state["coachnow_token"] = selected_setup["token"]
         st.session_state["coachnow_setup_name"] = selected_setup["name"]
         st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
