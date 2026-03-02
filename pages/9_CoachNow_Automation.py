@@ -369,6 +369,31 @@ def find_setup_by_id(setups: List[Dict[str, str]], setup_id: str) -> Optional[Di
     return None
 
 
+def save_group_url_to_runner_settings(base_url: str, token: str, group_url: str) -> Tuple[bool, str]:
+    clean_group_url = str(group_url or "").strip()
+    if not clean_group_url:
+        return False, "Group URL fehlt."
+
+    current_settings = st.session_state.get("coachnow_settings_cache", {})
+    if not isinstance(current_settings, dict) or not current_settings:
+        ok, data = api_call(base_url, token, "GET", "/api/settings")
+        if not ok:
+            return False, f"Load settings failed: {data}"
+        current_settings = data.get("settings", {})
+        if not isinstance(current_settings, dict):
+            current_settings = {}
+        st.session_state["coachnow_settings_cache"] = current_settings
+
+    payload_settings = dict(current_settings)
+    payload_settings["groupUrl"] = clean_group_url
+    ok, data = api_call(base_url, token, "POST", "/api/settings", payload={"settings": payload_settings})
+    if not ok:
+        return False, f"Save group URL failed: {data}"
+
+    st.session_state["coachnow_settings_cache"] = data.get("settings", payload_settings)
+    return True, "Group URL gespeichert."
+
+
 setups, active_setup_id = get_normalized_setups_from_state()
 st.session_state["coachnow_setups"] = setups
 st.session_state["coachnow_active_setup_id"] = active_setup_id
@@ -398,80 +423,8 @@ if st.session_state.get("coachnow_loaded_setup_id", "") != selected_setup_id:
     st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
     st.rerun()
 
-st.caption(
-    f"Aktiv: {(find_setup_by_id(setups, active_setup_id) or {}).get('name', 'n/a')} | "
-    f"Ausgewaehlt: {selected_setup.get('name', 'n/a')}"
-)
-
-setup_name = st.text_input("Setup Name", key="coachnow_setup_name", help="Beliebiger Name, z.B. 'M3 Zuhause'")
-base_url = st.text_input("Control URL", key="coachnow_base_url", help="Example: http://127.0.0.1:8787")
-token = st.text_input("API Token (optional)", key="coachnow_token", type="password")
-
-setup_a, setup_b, setup_c = st.columns([1, 1, 1])
-if setup_a.button("Save active setup", use_container_width=True):
-    clean_name = str(setup_name).strip()
-    clean_url = str(base_url).strip()
-    if not clean_name:
-        st.error("Setup Name fehlt.")
-    elif not clean_url:
-        st.error("Control URL fehlt.")
-    else:
-        for item in setups:
-            if item["id"] == selected_setup_id:
-                item["name"] = clean_name
-                item["base_url"] = clean_url
-                item["token"] = str(token).strip()
-                break
-        st.session_state["coachnow_setups"] = setups
-        st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
-        persist_profile_from_state()
-        st.success("Setup gespeichert.")
-
-if setup_b.button("Save as new setup", use_container_width=True):
-    clean_name = str(setup_name).strip()
-    clean_url = str(base_url).strip()
-    if not clean_name:
-        st.error("Setup Name fehlt.")
-    elif not clean_url:
-        st.error("Control URL fehlt.")
-    else:
-        new_setup = normalize_setup(
-            {
-                "id": make_setup_id(),
-                "name": clean_name,
-                "base_url": clean_url,
-                "token": str(token).strip(),
-            },
-            fallback_name="Setup",
-        )
-        setups.append(new_setup)
-        st.session_state["coachnow_setups"] = setups
-        st.session_state["coachnow_selected_setup_id"] = new_setup["id"]
-        st.session_state["coachnow_loaded_setup_id"] = new_setup["id"]
-        persist_profile_from_state()
-        st.success(f"Neues Setup gespeichert: {new_setup['name']}")
-        st.rerun()
-
-if setup_c.button("Activate selected setup", use_container_width=True):
-    st.session_state["coachnow_active_setup_id"] = selected_setup_id
-    st.session_state["coachnow_base_url"] = selected_setup["base_url"]
-    st.session_state["coachnow_token"] = selected_setup["token"]
-    st.session_state["coachnow_setup_name"] = selected_setup["name"]
-    st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
-    persist_profile_from_state()
-    st.success(f"Aktiv gesetzt: {selected_setup['name']}")
-
-conn_a, conn_b = st.columns([1, 2])
-if conn_a.button("Connect", use_container_width=True):
-    refresh_status(base_url, token)
-    refresh_settings(base_url, token)
-    refresh_logs(base_url, token, 200)
-    refresh_athletes(base_url, token)
-if conn_b.button("Reload all", use_container_width=True):
-    refresh_status(base_url, token)
-    refresh_settings(base_url, token)
-    refresh_logs(base_url, token, 400)
-    refresh_athletes(base_url, token)
+base_url = st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL)
+token = st.session_state.get("coachnow_token", DEFAULT_TOKEN)
 
 if not st.session_state["coachnow_status_cache"]:
     refresh_status(base_url, token)
@@ -483,6 +436,47 @@ if not st.session_state["coachnow_athletes_cache"]:
 status = st.session_state.get("coachnow_status_cache", {})
 settings = st.session_state.get("coachnow_settings_cache", {})
 is_running = bool(status.get("running", False))
+if "coachnow_run_group_url" not in st.session_state:
+    st.session_state["coachnow_run_group_url"] = string_or_default(settings, "groupUrl", "")
+
+st.subheader("Run Control")
+st.caption(
+    f"Aktiv: {(find_setup_by_id(setups, active_setup_id) or {}).get('name', 'n/a')} | "
+    f"Ausgewaehlt: {selected_setup.get('name', 'n/a')}"
+)
+run_group_url = st.text_input(
+    "Group URL (Posting target)",
+    key="coachnow_run_group_url",
+    placeholder="https://app.coachnow.io/groups/<group-id>",
+)
+
+top_a, top_b, top_c, top_d = st.columns([1, 1, 1, 1])
+if top_a.button("Use selected setup", use_container_width=True):
+    st.session_state["coachnow_active_setup_id"] = selected_setup_id
+    st.session_state["coachnow_base_url"] = selected_setup["base_url"]
+    st.session_state["coachnow_token"] = selected_setup["token"]
+    st.session_state["coachnow_setup_name"] = selected_setup["name"]
+    st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
+    persist_profile_from_state()
+    base_url = st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL)
+    token = st.session_state.get("coachnow_token", DEFAULT_TOKEN)
+    st.success(f"Aktiv gesetzt: {selected_setup['name']}")
+if top_b.button("Save group URL", use_container_width=True):
+    ok_msg, msg = save_group_url_to_runner_settings(base_url, token, run_group_url)
+    if ok_msg:
+        st.success(msg)
+    else:
+        st.error(msg)
+if top_c.button("Connect selected", use_container_width=True):
+    refresh_status(base_url, token)
+    refresh_settings(base_url, token)
+    refresh_logs(base_url, token, 200)
+    refresh_athletes(base_url, token)
+if top_d.button("Reload all", use_container_width=True):
+    refresh_status(base_url, token)
+    refresh_settings(base_url, token)
+    refresh_logs(base_url, token, 400)
+    refresh_athletes(base_url, token)
 
 st.markdown("<div class='cn-box'>", unsafe_allow_html=True)
 render_status_chip(is_running)
@@ -500,11 +494,15 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 ctl1, ctl2, ctl3, ctl4 = st.columns(4)
 if ctl1.button("Start", type="primary", use_container_width=True):
-    ok, data = api_call(base_url, token, "POST", "/api/start")
-    if ok:
-        st.success(data.get("message", "Runner started."))
+    ok_group, group_msg = save_group_url_to_runner_settings(base_url, token, run_group_url)
+    if not ok_group:
+        st.error(group_msg)
     else:
-        st.error(f"Start failed: {data}")
+        ok, data = api_call(base_url, token, "POST", "/api/start")
+        if ok:
+            st.success(data.get("message", "Runner started."))
+        else:
+            st.error(f"Start failed: {data}")
     refresh_status(base_url, token)
     refresh_logs(base_url, token, 200)
 if ctl2.button("Stop", use_container_width=True):
@@ -516,68 +514,144 @@ if ctl2.button("Stop", use_container_width=True):
     refresh_status(base_url, token)
     refresh_logs(base_url, token, 200)
 if ctl3.button("Restart", use_container_width=True):
-    api_call(base_url, token, "POST", "/api/stop")
-    ok, data = api_call(base_url, token, "POST", "/api/start")
-    if ok:
-        st.success(data.get("message", "Runner started."))
+    ok_group, group_msg = save_group_url_to_runner_settings(base_url, token, run_group_url)
+    if not ok_group:
+        st.error(group_msg)
     else:
-        st.error(f"Restart failed: {data}")
+        api_call(base_url, token, "POST", "/api/stop")
+        ok, data = api_call(base_url, token, "POST", "/api/start")
+        if ok:
+            st.success(data.get("message", "Runner started."))
+        else:
+            st.error(f"Restart failed: {data}")
     refresh_status(base_url, token)
     refresh_logs(base_url, token, 250)
 if ctl4.button("Refresh status", use_container_width=True):
     refresh_status(base_url, token)
 
-st.subheader("Session Athletes")
-athletes = st.session_state.get("coachnow_athletes_cache", [])
-athlete_options = []
-for athlete in athletes:
-    if isinstance(athlete, dict):
-        tag = str(athlete.get("tag", "")).strip()
-        if tag:
-            athlete_options.append(tag)
-athlete_options = sorted(set(athlete_options))
-
-additional_env = settings.get("additionalEnv", {})
-if not isinstance(additional_env, dict):
-    additional_env = {}
-default_selected = [x for x in parse_session_tags(additional_env) if x in athlete_options]
-
-sel = st.multiselect(
-    "Athleten dieser Session",
-    options=athlete_options,
-    default=default_selected,
-    help="Optional. Wird als SESSION_ATHLETE_TAGS gespeichert.",
-)
-sa1, sa2 = st.columns([1, 1])
-if sa1.button("Save session athletes", use_container_width=True):
-    payload_settings = dict(settings)
-    payload_env = dict(additional_env)
-    if sel:
-        payload_env["SESSION_ATHLETE_TAGS"] = ",".join(sel)
-    else:
-        payload_env.pop("SESSION_ATHLETE_TAGS", None)
-    payload_settings["additionalEnv"] = payload_env
-    ok, data = api_call(base_url, token, "POST", "/api/settings", payload={"settings": payload_settings})
-    if ok:
-        st.success("Session athletes saved.")
-        st.session_state["coachnow_settings_cache"] = data.get("settings", payload_settings)
-    else:
-        st.error(f"Save failed: {data}")
-if sa2.button("Reload athlete list", use_container_width=True):
-    refresh_athletes(base_url, token)
-
-st.subheader("Logs")
-l1, l2 = st.columns([1, 5])
-log_limit = l1.slider("Lines", min_value=50, max_value=2000, value=350, step=50)
-if l2.button("Refresh logs", use_container_width=True):
-    refresh_logs(base_url, token, log_limit)
-if not st.session_state["coachnow_logs_cache"]:
-    refresh_logs(base_url, token, log_limit)
-logs = st.session_state.get("coachnow_logs_cache", [])
-st.code("\n".join(logs[-log_limit:]) if logs else "(no logs)", language=None)
-
 with st.expander("Erweiterte Einstellungen", expanded=False):
     st.caption("Nur anpassen, wenn nötig.")
+    st.markdown("#### Setup Details")
+    setup_name = st.text_input(
+        "Setup Name",
+        key="coachnow_setup_name",
+        help="Beliebiger Name, z.B. 'MacBook M3 Zuhause'",
+    )
+    base_url = st.text_input(
+        "Control URL",
+        key="coachnow_base_url",
+        help="Example: http://127.0.0.1:8787",
+    )
+    token = st.text_input("API Token (optional)", key="coachnow_token", type="password")
+
+    setup_a, setup_b, setup_c = st.columns([1, 1, 1])
+    if setup_a.button("Save active setup", use_container_width=True):
+        clean_name = str(setup_name).strip()
+        clean_url = str(base_url).strip()
+        if not clean_name:
+            st.error("Setup Name fehlt.")
+        elif not clean_url:
+            st.error("Control URL fehlt.")
+        else:
+            for item in setups:
+                if item["id"] == selected_setup_id:
+                    item["name"] = clean_name
+                    item["base_url"] = clean_url
+                    item["token"] = str(token).strip()
+                    break
+            st.session_state["coachnow_setups"] = setups
+            st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
+            persist_profile_from_state()
+            st.success("Setup gespeichert.")
+
+    if setup_b.button("Save as new setup", use_container_width=True):
+        clean_name = str(setup_name).strip()
+        clean_url = str(base_url).strip()
+        if not clean_name:
+            st.error("Setup Name fehlt.")
+        elif not clean_url:
+            st.error("Control URL fehlt.")
+        else:
+            new_setup = normalize_setup(
+                {
+                    "id": make_setup_id(),
+                    "name": clean_name,
+                    "base_url": clean_url,
+                    "token": str(token).strip(),
+                },
+                fallback_name="Setup",
+            )
+            setups.append(new_setup)
+            st.session_state["coachnow_setups"] = setups
+            st.session_state["coachnow_selected_setup_id"] = new_setup["id"]
+            st.session_state["coachnow_loaded_setup_id"] = new_setup["id"]
+            persist_profile_from_state()
+            st.success(f"Neues Setup gespeichert: {new_setup['name']}")
+            st.rerun()
+
+    if setup_c.button("Activate selected setup", use_container_width=True):
+        st.session_state["coachnow_active_setup_id"] = selected_setup_id
+        st.session_state["coachnow_base_url"] = selected_setup["base_url"]
+        st.session_state["coachnow_token"] = selected_setup["token"]
+        st.session_state["coachnow_setup_name"] = selected_setup["name"]
+        st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
+        persist_profile_from_state()
+        st.success(f"Aktiv gesetzt: {selected_setup['name']}")
+
+    st.divider()
+    st.markdown("#### Session Athletes")
+    athletes = st.session_state.get("coachnow_athletes_cache", [])
+    athlete_options = []
+    for athlete in athletes:
+        if isinstance(athlete, dict):
+            tag = str(athlete.get("tag", "")).strip()
+            if tag:
+                athlete_options.append(tag)
+    athlete_options = sorted(set(athlete_options))
+
+    current_settings = st.session_state.get("coachnow_settings_cache", {})
+    current_env = current_settings.get("additionalEnv", {}) if isinstance(current_settings, dict) else {}
+    if not isinstance(current_env, dict):
+        current_env = {}
+    default_selected = [x for x in parse_session_tags(current_env) if x in athlete_options]
+
+    sel = st.multiselect(
+        "Athleten dieser Session",
+        options=athlete_options,
+        default=default_selected,
+        help="Optional. Wird als SESSION_ATHLETE_TAGS gespeichert.",
+    )
+    sa1, sa2 = st.columns([1, 1])
+    if sa1.button("Save session athletes", use_container_width=True):
+        payload_settings = dict(current_settings) if isinstance(current_settings, dict) else {}
+        payload_env = dict(current_env)
+        if sel:
+            payload_env["SESSION_ATHLETE_TAGS"] = ",".join(sel)
+        else:
+            payload_env.pop("SESSION_ATHLETE_TAGS", None)
+        payload_settings["additionalEnv"] = payload_env
+        ok, data = api_call(base_url, token, "POST", "/api/settings", payload={"settings": payload_settings})
+        if ok:
+            st.success("Session athletes saved.")
+            st.session_state["coachnow_settings_cache"] = data.get("settings", payload_settings)
+        else:
+            st.error(f"Save failed: {data}")
+    if sa2.button("Reload athlete list", use_container_width=True):
+        refresh_athletes(base_url, token)
+
+    st.divider()
+    st.markdown("#### Logs")
+    logs_col1, logs_col2 = st.columns([1, 5])
+    log_limit = logs_col1.slider("Lines", min_value=50, max_value=2000, value=350, step=50)
+    if logs_col2.button("Refresh logs", use_container_width=True):
+        refresh_logs(base_url, token, log_limit)
+    if not st.session_state["coachnow_logs_cache"]:
+        refresh_logs(base_url, token, log_limit)
+    logs = st.session_state.get("coachnow_logs_cache", [])
+    st.code("\n".join(logs[-log_limit:]) if logs else "(no logs)", language=None)
+
+    st.divider()
+    st.markdown("#### Runner Settings")
     cur = st.session_state.get("coachnow_settings_cache", {})
     add_env_raw = json.dumps(cur.get("additionalEnv", {}) if isinstance(cur.get("additionalEnv", {}), dict) else {}, indent=2)
 
