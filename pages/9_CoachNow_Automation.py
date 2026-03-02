@@ -17,6 +17,7 @@ st.set_page_config(page_title="CoachNow Automation", layout="wide")
 PROFILE_PATH = Path(".streamlit/coachnow_control_profile.json")
 DEFAULT_BASE_URL = os.environ.get("COACHNOW_CONTROL_URL", "http://127.0.0.1:8787").strip()
 DEFAULT_TOKEN = os.environ.get("COACHNOW_CONTROL_TOKEN", "").strip()
+DEFAULT_LIBRARY_URL = "https://app.coachnow.io/resources"
 
 
 def make_setup_id() -> str:
@@ -40,6 +41,29 @@ def normalize_setup(raw: Any, fallback_name: str = "Setup") -> Dict[str, str]:
     }
 
 
+def normalize_target(raw: Any, fallback_name: str = "Target") -> Dict[str, str]:
+    data = raw if isinstance(raw, dict) else {}
+    target_id = str(data.get("id", "")).strip() or make_setup_id()
+    library_url = str(data.get("library_url", DEFAULT_LIBRARY_URL)).strip() or DEFAULT_LIBRARY_URL
+    group_url = str(data.get("group_url", "")).strip()
+    account_label = str(data.get("account_label", "")).strip()
+    name = str(data.get("name", "")).strip()
+    if not name:
+        if account_label:
+            name = account_label
+        elif group_url:
+            name = group_url.replace("https://app.coachnow.io/groups/", "group-")
+        else:
+            name = fallback_name
+    return {
+        "id": target_id,
+        "name": name,
+        "library_url": library_url,
+        "group_url": group_url,
+        "account_label": account_label,
+    }
+
+
 def normalize_profile_payload(raw: Any) -> Dict[str, Any]:
     data = raw if isinstance(raw, dict) else {}
 
@@ -54,9 +78,21 @@ def normalize_profile_payload(raw: Any) -> Dict[str, Any]:
             },
             fallback_name="Default",
         )
+        target = normalize_target(
+            {
+                "id": "default-target",
+                "name": "Default Target",
+                "library_url": DEFAULT_LIBRARY_URL,
+                "group_url": "",
+                "account_label": "",
+            },
+            fallback_name="Default Target",
+        )
         return {
             "active_setup_id": setup["id"],
             "setups": [setup],
+            "active_target_id": target["id"],
+            "targets": [target],
         }
 
     setups_raw = data.get("setups", [])
@@ -83,9 +119,39 @@ def normalize_profile_payload(raw: Any) -> Dict[str, Any]:
     if not active_setup_id or all(x["id"] != active_setup_id for x in setups):
         active_setup_id = setups[0]["id"]
 
+    targets_raw = data.get("targets", [])
+    if not isinstance(targets_raw, list):
+        targets_raw = []
+    targets: List[Dict[str, str]] = []
+    seen_target_ids = set()
+    for idx, item in enumerate(targets_raw):
+        target = normalize_target(item, fallback_name=f"Target {idx + 1}")
+        if target["id"] in seen_target_ids:
+            target["id"] = make_setup_id()
+        seen_target_ids.add(target["id"])
+        targets.append(target)
+    if not targets:
+        target = normalize_target(
+            {
+                "id": "default-target",
+                "name": "Default Target",
+                "library_url": DEFAULT_LIBRARY_URL,
+                "group_url": "",
+                "account_label": "",
+            },
+            fallback_name="Default Target",
+        )
+        targets = [target]
+
+    active_target_id = str(data.get("active_target_id", "")).strip()
+    if not active_target_id or all(x["id"] != active_target_id for x in targets):
+        active_target_id = targets[0]["id"]
+
     return {
         "active_setup_id": active_setup_id,
         "setups": setups,
+        "active_target_id": active_target_id,
+        "targets": targets,
     }
 
 
@@ -107,32 +173,59 @@ def load_profile() -> Dict[str, Any]:
         normalized = normalize_profile_payload({})
         active = next((x for x in normalized["setups"] if x["id"] == normalized["active_setup_id"]), None)
         active = active or normalized["setups"][0]
+        active_target = next(
+            (x for x in normalized["targets"] if x["id"] == normalized["active_target_id"]),
+            None,
+        )
+        active_target = active_target or normalized["targets"][0]
         return {
             "base_url": active["base_url"],
             "token": active["token"],
             "setups": normalized["setups"],
             "active_setup_id": normalized["active_setup_id"],
+            "targets": normalized["targets"],
+            "active_target_id": normalized["active_target_id"],
+            "library_url": active_target["library_url"],
+            "group_url": active_target["group_url"],
+            "account_label": active_target["account_label"],
         }
     try:
         raw_data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
         data = normalize_profile_payload(raw_data)
         active = next((x for x in data["setups"] if x["id"] == data["active_setup_id"]), None)
         active = active or data["setups"][0]
+        active_target = next((x for x in data["targets"] if x["id"] == data["active_target_id"]), None)
+        active_target = active_target or data["targets"][0]
         return {
             "base_url": active["base_url"],
             "token": active["token"],
             "setups": data["setups"],
             "active_setup_id": data["active_setup_id"],
+            "targets": data["targets"],
+            "active_target_id": data["active_target_id"],
+            "library_url": active_target["library_url"],
+            "group_url": active_target["group_url"],
+            "account_label": active_target["account_label"],
         }
     except Exception:
         normalized = normalize_profile_payload({})
         active = next((x for x in normalized["setups"] if x["id"] == normalized["active_setup_id"]), None)
         active = active or normalized["setups"][0]
+        active_target = next(
+            (x for x in normalized["targets"] if x["id"] == normalized["active_target_id"]),
+            None,
+        )
+        active_target = active_target or normalized["targets"][0]
         return {
             "base_url": active["base_url"],
             "token": active["token"],
             "setups": normalized["setups"],
             "active_setup_id": normalized["active_setup_id"],
+            "targets": normalized["targets"],
+            "active_target_id": normalized["active_target_id"],
+            "library_url": active_target["library_url"],
+            "group_url": active_target["group_url"],
+            "account_label": active_target["account_label"],
         }
 
 
@@ -141,9 +234,11 @@ def save_profile(
     token: str,
     setups: Optional[List[Dict[str, str]]] = None,
     active_setup_id: str = "",
+    targets: Optional[List[Dict[str, str]]] = None,
+    active_target_id: str = "",
 ) -> None:
     PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if setups is None:
+    if setups is None and targets is None:
         normalized = normalize_profile_payload(
             {
                 "setups": [
@@ -155,6 +250,16 @@ def save_profile(
                     }
                 ],
                 "active_setup_id": "default",
+                "targets": [
+                    {
+                        "id": "default-target",
+                        "name": "Default Target",
+                        "library_url": DEFAULT_LIBRARY_URL,
+                        "group_url": "",
+                        "account_label": "",
+                    }
+                ],
+                "active_target_id": "default-target",
             }
         )
     else:
@@ -162,11 +267,15 @@ def save_profile(
             {
                 "setups": setups,
                 "active_setup_id": active_setup_id,
+                "targets": targets,
+                "active_target_id": active_target_id,
             }
         )
     payload = {
         "active_setup_id": normalized["active_setup_id"],
         "setups": normalized["setups"],
+        "active_target_id": normalized["active_target_id"],
+        "targets": normalized["targets"],
     }
     PROFILE_PATH.write_text(f"{json.dumps(payload, indent=2)}\n", encoding="utf-8")
 
@@ -277,6 +386,12 @@ if "coachnow_active_setup_id" not in st.session_state:
     st.session_state["coachnow_active_setup_id"] = profile.get("active_setup_id", "")
 if "coachnow_selected_setup_id" not in st.session_state:
     st.session_state["coachnow_selected_setup_id"] = profile.get("active_setup_id", "")
+if "coachnow_targets" not in st.session_state:
+    st.session_state["coachnow_targets"] = profile.get("targets", [])
+if "coachnow_active_target_id" not in st.session_state:
+    st.session_state["coachnow_active_target_id"] = profile.get("active_target_id", "")
+if "coachnow_selected_target_id" not in st.session_state:
+    st.session_state["coachnow_selected_target_id"] = profile.get("active_target_id", "")
 if "coachnow_base_url" not in st.session_state:
     st.session_state["coachnow_base_url"] = profile["base_url"]
 if "coachnow_token" not in st.session_state:
@@ -295,6 +410,26 @@ if "coachnow_setup_name" not in st.session_state:
     ).strip() or "Default"
 if "coachnow_loaded_setup_id" not in st.session_state:
     st.session_state["coachnow_loaded_setup_id"] = st.session_state.get("coachnow_selected_setup_id", "")
+if "coachnow_run_library_url" not in st.session_state:
+    st.session_state["coachnow_run_library_url"] = profile.get("library_url", DEFAULT_LIBRARY_URL)
+if "coachnow_run_group_url" not in st.session_state:
+    st.session_state["coachnow_run_group_url"] = profile.get("group_url", "")
+if "coachnow_run_account_label" not in st.session_state:
+    st.session_state["coachnow_run_account_label"] = profile.get("account_label", "")
+if "coachnow_target_name" not in st.session_state:
+    active_profile_target = next(
+        (
+            x
+            for x in profile.get("targets", [])
+            if str(x.get("id", "")).strip() == str(profile.get("active_target_id", "")).strip()
+        ),
+        None,
+    )
+    st.session_state["coachnow_target_name"] = str(
+        (active_profile_target or {}).get("name", "Default Target")
+    ).strip() or "Default Target"
+if "coachnow_loaded_target_id" not in st.session_state:
+    st.session_state["coachnow_loaded_target_id"] = st.session_state.get("coachnow_selected_target_id", "")
 if "coachnow_status_cache" not in st.session_state:
     st.session_state["coachnow_status_cache"] = {}
 if "coachnow_settings_cache" not in st.session_state:
@@ -349,15 +484,32 @@ def get_normalized_setups_from_state() -> Tuple[List[Dict[str, str]], str]:
     return normalized["setups"], normalized["active_setup_id"]
 
 
+def get_normalized_targets_from_state() -> Tuple[List[Dict[str, str]], str]:
+    normalized = normalize_profile_payload(
+        {
+            "targets": st.session_state.get("coachnow_targets", []),
+            "active_target_id": st.session_state.get("coachnow_active_target_id", ""),
+            "setups": st.session_state.get("coachnow_setups", []),
+            "active_setup_id": st.session_state.get("coachnow_active_setup_id", ""),
+        }
+    )
+    return normalized["targets"], normalized["active_target_id"]
+
+
 def persist_profile_from_state() -> None:
     setups, active_setup_id = get_normalized_setups_from_state()
+    targets, active_target_id = get_normalized_targets_from_state()
     st.session_state["coachnow_setups"] = setups
     st.session_state["coachnow_active_setup_id"] = active_setup_id
+    st.session_state["coachnow_targets"] = targets
+    st.session_state["coachnow_active_target_id"] = active_target_id
     save_profile(
         st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL),
         st.session_state.get("coachnow_token", DEFAULT_TOKEN),
         setups=setups,
         active_setup_id=active_setup_id,
+        targets=targets,
+        active_target_id=active_target_id,
     )
 
 
@@ -369,10 +521,26 @@ def find_setup_by_id(setups: List[Dict[str, str]], setup_id: str) -> Optional[Di
     return None
 
 
-def save_group_url_to_runner_settings(base_url: str, token: str, group_url: str) -> Tuple[bool, str]:
+def find_target_by_id(targets: List[Dict[str, str]], target_id: str) -> Optional[Dict[str, str]]:
+    wanted = str(target_id or "").strip()
+    for item in targets:
+        if str(item.get("id", "")).strip() == wanted:
+            return item
+    return None
+
+
+def save_run_urls_to_runner_settings(
+    base_url: str,
+    token: str,
+    group_url: str,
+    library_url: str,
+) -> Tuple[bool, str]:
     clean_group_url = str(group_url or "").strip()
+    clean_library_url = str(library_url or "").strip()
     if not clean_group_url:
         return False, "Group URL fehlt."
+    if not clean_library_url:
+        return False, "Library URL fehlt."
 
     current_settings = st.session_state.get("coachnow_settings_cache", {})
     if not isinstance(current_settings, dict) or not current_settings:
@@ -386,12 +554,13 @@ def save_group_url_to_runner_settings(base_url: str, token: str, group_url: str)
 
     payload_settings = dict(current_settings)
     payload_settings["groupUrl"] = clean_group_url
+    payload_settings["libraryUrl"] = clean_library_url
     ok, data = api_call(base_url, token, "POST", "/api/settings", payload={"settings": payload_settings})
     if not ok:
-        return False, f"Save group URL failed: {data}"
+        return False, f"Save group/library failed: {data}"
 
     st.session_state["coachnow_settings_cache"] = data.get("settings", payload_settings)
-    return True, "Group URL gespeichert."
+    return True, "Library + Group URL gespeichert."
 
 
 setups, active_setup_id = get_normalized_setups_from_state()
@@ -400,12 +569,17 @@ st.session_state["coachnow_active_setup_id"] = active_setup_id
 if not find_setup_by_id(setups, st.session_state.get("coachnow_selected_setup_id", "")):
     st.session_state["coachnow_selected_setup_id"] = active_setup_id
 
+st.subheader("Run Control")
+targets, active_target_id = get_normalized_targets_from_state()
+st.session_state["coachnow_targets"] = targets
+st.session_state["coachnow_active_target_id"] = active_target_id
+if not find_target_by_id(targets, st.session_state.get("coachnow_selected_target_id", "")):
+    st.session_state["coachnow_selected_target_id"] = active_target_id
+
+pick_a, pick_b = st.columns([1, 1])
 setup_ids = [str(x.get("id", "")).strip() for x in setups if str(x.get("id", "")).strip()]
-setup_label_map = {
-    str(item["id"]): f"{item['name']} ({item['base_url']})"
-    for item in setups
-}
-selected_setup_id = st.selectbox(
+setup_label_map = {str(item["id"]): f"{item['name']} ({item['base_url']})" for item in setups}
+selected_setup_id = pick_a.selectbox(
     "Saved Setups",
     options=setup_ids,
     index=max(0, setup_ids.index(st.session_state.get("coachnow_selected_setup_id", active_setup_id)))
@@ -415,12 +589,36 @@ selected_setup_id = st.selectbox(
 )
 st.session_state["coachnow_selected_setup_id"] = selected_setup_id
 
+target_ids = [str(x.get("id", "")).strip() for x in targets if str(x.get("id", "")).strip()]
+target_label_map = {
+    str(item["id"]): f"{item['name']} ({item['library_url']})"
+    for item in targets
+}
+selected_target_id = pick_b.selectbox(
+    "Saved Targets (Library + Group)",
+    options=target_ids,
+    index=max(0, target_ids.index(st.session_state.get("coachnow_selected_target_id", active_target_id)))
+    if target_ids
+    else 0,
+    format_func=lambda target_id: target_label_map.get(target_id, target_id),
+)
+st.session_state["coachnow_selected_target_id"] = selected_target_id
+
 selected_setup = find_setup_by_id(setups, selected_setup_id) or setups[0]
 if st.session_state.get("coachnow_loaded_setup_id", "") != selected_setup_id:
     st.session_state["coachnow_base_url"] = selected_setup["base_url"]
     st.session_state["coachnow_token"] = selected_setup["token"]
     st.session_state["coachnow_setup_name"] = selected_setup["name"]
     st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
+    st.rerun()
+
+selected_target = find_target_by_id(targets, selected_target_id) or targets[0]
+if st.session_state.get("coachnow_loaded_target_id", "") != selected_target_id:
+    st.session_state["coachnow_run_library_url"] = selected_target["library_url"]
+    st.session_state["coachnow_run_group_url"] = selected_target["group_url"]
+    st.session_state["coachnow_run_account_label"] = selected_target["account_label"]
+    st.session_state["coachnow_target_name"] = selected_target["name"]
+    st.session_state["coachnow_loaded_target_id"] = selected_target_id
     st.rerun()
 
 base_url = st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL)
@@ -436,13 +634,28 @@ if not st.session_state["coachnow_athletes_cache"]:
 status = st.session_state.get("coachnow_status_cache", {})
 settings = st.session_state.get("coachnow_settings_cache", {})
 is_running = bool(status.get("running", False))
-if "coachnow_run_group_url" not in st.session_state:
-    st.session_state["coachnow_run_group_url"] = string_or_default(settings, "groupUrl", "")
+if not str(st.session_state.get("coachnow_run_library_url", "")).strip():
+    st.session_state["coachnow_run_library_url"] = string_or_default(
+        settings, "libraryUrl", selected_target.get("library_url", DEFAULT_LIBRARY_URL)
+    )
+if not str(st.session_state.get("coachnow_run_group_url", "")).strip():
+    st.session_state["coachnow_run_group_url"] = string_or_default(
+        settings, "groupUrl", selected_target.get("group_url", "")
+    )
+if not str(st.session_state.get("coachnow_run_account_label", "")).strip():
+    st.session_state["coachnow_run_account_label"] = selected_target.get("account_label", "")
 
-st.subheader("Run Control")
+active_setup = find_setup_by_id(setups, active_setup_id) or {}
+active_target = find_target_by_id(targets, active_target_id) or {}
 st.caption(
-    f"Aktiv: {(find_setup_by_id(setups, active_setup_id) or {}).get('name', 'n/a')} | "
-    f"Ausgewaehlt: {selected_setup.get('name', 'n/a')}"
+    f"Aktiv Setup: {active_setup.get('name', 'n/a')} | Aktiv Target: {active_target.get('name', 'n/a')}"
+)
+
+run_account_label = st.text_input("Library Account (label)", key="coachnow_run_account_label")
+run_library_url = st.text_input(
+    "Library URL",
+    key="coachnow_run_library_url",
+    placeholder="https://app.coachnow.io/resources",
 )
 run_group_url = st.text_input(
     "Group URL (Posting target)",
@@ -460,13 +673,16 @@ if top_a.button("Use selected setup", use_container_width=True):
     persist_profile_from_state()
     base_url = st.session_state.get("coachnow_base_url", DEFAULT_BASE_URL)
     token = st.session_state.get("coachnow_token", DEFAULT_TOKEN)
-    st.success(f"Aktiv gesetzt: {selected_setup['name']}")
-if top_b.button("Save group URL", use_container_width=True):
-    ok_msg, msg = save_group_url_to_runner_settings(base_url, token, run_group_url)
-    if ok_msg:
-        st.success(msg)
-    else:
-        st.error(msg)
+    st.success(f"Aktiv gesetzt (Setup): {selected_setup['name']}")
+if top_b.button("Use selected target", use_container_width=True):
+    st.session_state["coachnow_active_target_id"] = selected_target_id
+    st.session_state["coachnow_run_library_url"] = selected_target["library_url"]
+    st.session_state["coachnow_run_group_url"] = selected_target["group_url"]
+    st.session_state["coachnow_run_account_label"] = selected_target["account_label"]
+    st.session_state["coachnow_target_name"] = selected_target["name"]
+    st.session_state["coachnow_loaded_target_id"] = selected_target_id
+    persist_profile_from_state()
+    st.success(f"Aktiv gesetzt (Target): {selected_target['name']}")
 if top_c.button("Connect selected", use_container_width=True):
     refresh_status(base_url, token)
     refresh_settings(base_url, token)
@@ -494,9 +710,11 @@ st.markdown("</div>", unsafe_allow_html=True)
 
 ctl1, ctl2, ctl3, ctl4 = st.columns(4)
 if ctl1.button("Start", type="primary", use_container_width=True):
-    ok_group, group_msg = save_group_url_to_runner_settings(base_url, token, run_group_url)
-    if not ok_group:
-        st.error(group_msg)
+    ok_urls, urls_msg = save_run_urls_to_runner_settings(
+        base_url, token, run_group_url, run_library_url
+    )
+    if not ok_urls:
+        st.error(urls_msg)
     else:
         ok, data = api_call(base_url, token, "POST", "/api/start")
         if ok:
@@ -514,9 +732,11 @@ if ctl2.button("Stop", use_container_width=True):
     refresh_status(base_url, token)
     refresh_logs(base_url, token, 200)
 if ctl3.button("Restart", use_container_width=True):
-    ok_group, group_msg = save_group_url_to_runner_settings(base_url, token, run_group_url)
-    if not ok_group:
-        st.error(group_msg)
+    ok_urls, urls_msg = save_run_urls_to_runner_settings(
+        base_url, token, run_group_url, run_library_url
+    )
+    if not ok_urls:
+        st.error(urls_msg)
     else:
         api_call(base_url, token, "POST", "/api/stop")
         ok, data = api_call(base_url, token, "POST", "/api/start")
@@ -597,6 +817,84 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
         st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
         persist_profile_from_state()
         st.success(f"Aktiv gesetzt: {selected_setup['name']}")
+
+    st.divider()
+    st.markdown("#### Target Details (Library + Group)")
+    target_name = st.text_input(
+        "Target Name",
+        key="coachnow_target_name",
+        help="Beliebiger Name, z.B. 'Swiss Cycling - Elite'",
+    )
+    st.caption(
+        f"Verwendet aktuelle Run-Werte: account='{st.session_state.get('coachnow_run_account_label', '')}', "
+        f"library='{st.session_state.get('coachnow_run_library_url', '')}', "
+        f"group='{st.session_state.get('coachnow_run_group_url', '')}'"
+    )
+
+    target_a, target_b, target_c = st.columns([1, 1, 1])
+    if target_a.button("Save active target", use_container_width=True):
+        clean_name = str(target_name).strip()
+        clean_library = str(st.session_state.get("coachnow_run_library_url", "")).strip()
+        clean_group = str(st.session_state.get("coachnow_run_group_url", "")).strip()
+        clean_account = str(st.session_state.get("coachnow_run_account_label", "")).strip()
+        if not clean_name:
+            st.error("Target Name fehlt.")
+        elif not clean_library:
+            st.error("Library URL fehlt.")
+        elif not clean_group:
+            st.error("Group URL fehlt.")
+        else:
+            for item in targets:
+                if item["id"] == selected_target_id:
+                    item["name"] = clean_name
+                    item["library_url"] = clean_library
+                    item["group_url"] = clean_group
+                    item["account_label"] = clean_account
+                    break
+            st.session_state["coachnow_targets"] = targets
+            st.session_state["coachnow_loaded_target_id"] = selected_target_id
+            persist_profile_from_state()
+            st.success("Target gespeichert.")
+
+    if target_b.button("Save as new target", use_container_width=True):
+        clean_name = str(target_name).strip()
+        clean_library = str(st.session_state.get("coachnow_run_library_url", "")).strip()
+        clean_group = str(st.session_state.get("coachnow_run_group_url", "")).strip()
+        clean_account = str(st.session_state.get("coachnow_run_account_label", "")).strip()
+        if not clean_name:
+            st.error("Target Name fehlt.")
+        elif not clean_library:
+            st.error("Library URL fehlt.")
+        elif not clean_group:
+            st.error("Group URL fehlt.")
+        else:
+            new_target = normalize_target(
+                {
+                    "id": make_setup_id(),
+                    "name": clean_name,
+                    "library_url": clean_library,
+                    "group_url": clean_group,
+                    "account_label": clean_account,
+                },
+                fallback_name="Target",
+            )
+            targets.append(new_target)
+            st.session_state["coachnow_targets"] = targets
+            st.session_state["coachnow_selected_target_id"] = new_target["id"]
+            st.session_state["coachnow_loaded_target_id"] = new_target["id"]
+            persist_profile_from_state()
+            st.success(f"Neues Target gespeichert: {new_target['name']}")
+            st.rerun()
+
+    if target_c.button("Activate selected target", use_container_width=True):
+        st.session_state["coachnow_active_target_id"] = selected_target_id
+        st.session_state["coachnow_run_library_url"] = selected_target["library_url"]
+        st.session_state["coachnow_run_group_url"] = selected_target["group_url"]
+        st.session_state["coachnow_run_account_label"] = selected_target["account_label"]
+        st.session_state["coachnow_target_name"] = selected_target["name"]
+        st.session_state["coachnow_loaded_target_id"] = selected_target_id
+        persist_profile_from_state()
+        st.success(f"Aktiv gesetzt: {selected_target['name']}")
 
     st.divider()
     st.markdown("#### Session Athletes")
@@ -764,5 +1062,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
                 if ok:
                     st.success("Advanced settings saved.")
                     st.session_state["coachnow_settings_cache"] = data.get("settings", payload_settings)
+                    st.session_state["coachnow_run_library_url"] = payload_settings.get("libraryUrl", "")
+                    st.session_state["coachnow_run_group_url"] = payload_settings.get("groupUrl", "")
                 else:
                     st.error(f"Save failed: {data}")
