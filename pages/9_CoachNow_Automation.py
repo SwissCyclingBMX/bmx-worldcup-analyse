@@ -575,6 +575,8 @@ if "coachnow_run_library_name" not in st.session_state:
     st.session_state["coachnow_run_library_name"] = profile.get("library_name", "")
 if "coachnow_run_library_url" not in st.session_state:
     st.session_state["coachnow_run_library_url"] = profile.get("library_url", DEFAULT_LIBRARY_URL)
+if "coachnow_library_url_editor" not in st.session_state:
+    st.session_state["coachnow_library_url_editor"] = st.session_state["coachnow_run_library_url"]
 if "coachnow_library_name" not in st.session_state:
     st.session_state["coachnow_library_name"] = profile.get("library_name", "") or "Default Library"
 if "coachnow_loaded_library_id" not in st.session_state:
@@ -584,6 +586,8 @@ if "coachnow_run_group_name" not in st.session_state:
     st.session_state["coachnow_run_group_name"] = profile.get("group_name", "")
 if "coachnow_run_group_url" not in st.session_state:
     st.session_state["coachnow_run_group_url"] = profile.get("group_url", "")
+if "coachnow_group_url_editor" not in st.session_state:
+    st.session_state["coachnow_group_url_editor"] = st.session_state["coachnow_run_group_url"]
 if "coachnow_group_name" not in st.session_state:
     st.session_state["coachnow_group_name"] = profile.get("group_name", "") or "Default Group"
 if "coachnow_loaded_group_id" not in st.session_state:
@@ -812,6 +816,7 @@ if st.session_state.get("coachnow_loaded_account_id", "") != selected_account_id
 if st.session_state.get("coachnow_loaded_library_id", "") != selected_library_id:
     st.session_state["coachnow_run_library_name"] = selected_library["name"]
     st.session_state["coachnow_run_library_url"] = selected_library["url"]
+    st.session_state["coachnow_library_url_editor"] = selected_library["url"]
     st.session_state["coachnow_library_name"] = selected_library["name"]
     st.session_state["coachnow_loaded_library_id"] = selected_library_id
     st.rerun()
@@ -819,6 +824,7 @@ if st.session_state.get("coachnow_loaded_library_id", "") != selected_library_id
 if st.session_state.get("coachnow_loaded_group_id", "") != selected_group_id:
     st.session_state["coachnow_run_group_name"] = selected_group["name"]
     st.session_state["coachnow_run_group_url"] = selected_group["url"]
+    st.session_state["coachnow_group_url_editor"] = selected_group["url"]
     st.session_state["coachnow_group_name"] = selected_group["name"]
     st.session_state["coachnow_loaded_group_id"] = selected_group_id
     st.rerun()
@@ -889,6 +895,7 @@ if apply_c.button("Use selected library", use_container_width=True):
     st.session_state["coachnow_active_library_id"] = selected_library_id
     st.session_state["coachnow_run_library_name"] = selected_library["name"]
     st.session_state["coachnow_run_library_url"] = selected_library["url"]
+    st.session_state["coachnow_library_url_editor"] = selected_library["url"]
     st.session_state["coachnow_library_name"] = selected_library["name"]
     st.session_state["coachnow_loaded_library_id"] = selected_library_id
     persist_profile_from_state()
@@ -898,6 +905,7 @@ if apply_d.button("Use selected group", use_container_width=True):
     st.session_state["coachnow_active_group_id"] = selected_group_id
     st.session_state["coachnow_run_group_name"] = selected_group["name"]
     st.session_state["coachnow_run_group_url"] = selected_group["url"]
+    st.session_state["coachnow_group_url_editor"] = selected_group["url"]
     st.session_state["coachnow_group_name"] = selected_group["name"]
     st.session_state["coachnow_loaded_group_id"] = selected_group_id
     persist_profile_from_state()
@@ -1112,7 +1120,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
     st.divider()
     st.markdown("#### Library Details")
     library_name = st.text_input("Library Name", key="coachnow_library_name")
-    library_url = st.text_input("Library URL", key="coachnow_run_library_url")
+    library_url = st.text_input("Library URL", key="coachnow_library_url_editor")
 
     lib_a, lib_b, lib_c = st.columns(3)
     if lib_a.button("Save active library", use_container_width=True):
@@ -1131,6 +1139,8 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
                     break
             st.session_state["coachnow_libraries"] = libraries
             st.session_state["coachnow_run_library_name"] = clean_name
+            st.session_state["coachnow_run_library_url"] = clean_url
+            st.session_state["coachnow_library_url_editor"] = clean_url
             st.session_state["coachnow_loaded_library_id"] = selected_library_id
             persist_profile_from_state()
             st.success("Library gespeichert.")
@@ -1164,6 +1174,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
         st.session_state["coachnow_active_library_id"] = selected_library_id
         st.session_state["coachnow_run_library_name"] = selected_library["name"]
         st.session_state["coachnow_run_library_url"] = selected_library["url"]
+        st.session_state["coachnow_library_url_editor"] = selected_library["url"]
         st.session_state["coachnow_library_name"] = selected_library["name"]
         st.session_state["coachnow_loaded_library_id"] = selected_library_id
         persist_profile_from_state()
@@ -1172,7 +1183,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
     st.divider()
     st.markdown("#### Group Details")
     group_name = st.text_input("Group Name", key="coachnow_group_name")
-    group_url = st.text_input("Group URL", key="coachnow_run_group_url")
+    group_url = st.text_input("Group URL", key="coachnow_group_url_editor")
 
     grp_a, grp_b, grp_c = st.columns(3)
     if grp_a.button("Save active group", use_container_width=True):
@@ -1190,6 +1201,8 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
                     break
             st.session_state["coachnow_groups"] = groups
             st.session_state["coachnow_run_group_name"] = clean_name
+            st.session_state["coachnow_run_group_url"] = clean_url
+            st.session_state["coachnow_group_url_editor"] = clean_url
             st.session_state["coachnow_loaded_group_id"] = selected_group_id
             persist_profile_from_state()
             st.success("Group gespeichert.")
@@ -1222,6 +1235,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
         st.session_state["coachnow_active_group_id"] = selected_group_id
         st.session_state["coachnow_run_group_name"] = selected_group["name"]
         st.session_state["coachnow_run_group_url"] = selected_group["url"]
+        st.session_state["coachnow_group_url_editor"] = selected_group["url"]
         st.session_state["coachnow_group_name"] = selected_group["name"]
         st.session_state["coachnow_loaded_group_id"] = selected_group_id
         persist_profile_from_state()
