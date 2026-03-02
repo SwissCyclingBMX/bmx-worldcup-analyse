@@ -518,7 +518,7 @@ st.sidebar.divider()
 
 st.title("CoachNow Automation")
 st.caption(
-    "Minimal mode: Setup/Account/Library/Group wählen, Start/Stop und Status. Rest unter 'Erweiterte Einstellungen'."
+    "Minimal mode: Setup/Account/Group wählen, Start/Stop und Status. Rest unter 'Erweiterte Einstellungen'."
 )
 
 profile = load_profile()
@@ -797,6 +797,7 @@ if st.session_state.get("coachnow_loaded_setup_id", "") != selected_setup_id:
     st.session_state["coachnow_base_url"] = selected_setup["base_url"]
     st.session_state["coachnow_token"] = selected_setup["token"]
     st.session_state["coachnow_setup_name"] = selected_setup["name"]
+    st.session_state["coachnow_active_setup_id"] = selected_setup_id
     st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
     st.rerun()
 
@@ -805,6 +806,7 @@ if st.session_state.get("coachnow_loaded_account_id", "") != selected_account_id
     st.session_state["coachnow_run_profile_dir"] = selected_account["profile_dir"]
     st.session_state["coachnow_account_profile_dir"] = selected_account["profile_dir"]
     st.session_state["coachnow_account_name"] = selected_account["name"]
+    st.session_state["coachnow_active_account_id"] = selected_account_id
     st.session_state["coachnow_loaded_account_id"] = selected_account_id
     st.rerun()
 
@@ -821,6 +823,7 @@ if st.session_state.get("coachnow_loaded_group_id", "") != selected_group_id:
     st.session_state["coachnow_run_group_url"] = selected_group["url"]
     st.session_state["coachnow_group_url_editor"] = selected_group["url"]
     st.session_state["coachnow_group_name"] = selected_group["name"]
+    st.session_state["coachnow_active_group_id"] = selected_group_id
     st.session_state["coachnow_loaded_group_id"] = selected_group_id
     st.rerun()
 
@@ -838,10 +841,9 @@ status = st.session_state.get("coachnow_status_cache", {})
 settings = st.session_state.get("coachnow_settings_cache", {})
 is_running = bool(status.get("running", False))
 
-active_setup = find_by_id(setups, st.session_state["coachnow_active_setup_id"]) or {}
-active_account = find_by_id(accounts, st.session_state["coachnow_active_account_id"]) or {}
-active_library = find_by_id(libraries, st.session_state["coachnow_active_library_id"]) or {}
-active_group = find_by_id(groups, st.session_state["coachnow_active_group_id"]) or {}
+active_setup = selected_setup
+active_account = selected_account
+active_group = selected_group
 
 st.caption(
     f"Aktiv Setup: {active_setup.get('name', 'n/a')} | "
@@ -849,48 +851,17 @@ st.caption(
     f"Aktiv Group: {active_group.get('name', 'n/a')}"
 )
 
-run_account_name = st.text_input("CoachNow Account (label)", key="coachnow_run_account_name")
 run_library_url = DEFAULT_LIBRARY_URL
 st.session_state["coachnow_run_library_url"] = run_library_url
-run_group_url = st.text_input(
-    "Group URL (Posting target)",
-    key="coachnow_run_group_url",
-    placeholder="https://app.coachnow.io/groups/<group-id>",
-)
-run_profile_dir = st.text_input(
-    "Account Profile Dir",
-    key="coachnow_run_profile_dir",
-    help="Playwright profile folder, bestimmt den eingeloggten CoachNow-Account.",
-)
+run_account_name = selected_account.get("name", "").strip()
+run_group_url = selected_group.get("url", "").strip()
+run_profile_dir = selected_account.get("profile_dir", "").strip()
+st.session_state["coachnow_run_account_name"] = run_account_name
+st.session_state["coachnow_run_group_url"] = run_group_url
+st.session_state["coachnow_run_profile_dir"] = run_profile_dir
 
-apply_a, apply_b, apply_c = st.columns(3)
-if apply_a.button("Use selected setup", use_container_width=True):
-    st.session_state["coachnow_active_setup_id"] = selected_setup_id
-    st.session_state["coachnow_base_url"] = selected_setup["base_url"]
-    st.session_state["coachnow_token"] = selected_setup["token"]
-    st.session_state["coachnow_setup_name"] = selected_setup["name"]
-    st.session_state["coachnow_loaded_setup_id"] = selected_setup_id
-    persist_profile_from_state()
-    st.success(f"Aktiv gesetzt (Setup): {selected_setup['name']}")
-
-if apply_b.button("Use selected account", use_container_width=True):
-    st.session_state["coachnow_active_account_id"] = selected_account_id
-    st.session_state["coachnow_run_account_name"] = selected_account["name"]
-    st.session_state["coachnow_run_profile_dir"] = selected_account["profile_dir"]
-    st.session_state["coachnow_account_name"] = selected_account["name"]
-    st.session_state["coachnow_loaded_account_id"] = selected_account_id
-    persist_profile_from_state()
-    st.success(f"Aktiv gesetzt (Account): {selected_account['name']}")
-
-if apply_c.button("Use selected group", use_container_width=True):
-    st.session_state["coachnow_active_group_id"] = selected_group_id
-    st.session_state["coachnow_run_group_name"] = selected_group["name"]
-    st.session_state["coachnow_run_group_url"] = selected_group["url"]
-    st.session_state["coachnow_group_url_editor"] = selected_group["url"]
-    st.session_state["coachnow_group_name"] = selected_group["name"]
-    st.session_state["coachnow_loaded_group_id"] = selected_group_id
-    persist_profile_from_state()
-    st.success(f"Aktiv gesetzt (Group): {selected_group['name']}")
+st.caption(f"Group URL: {run_group_url or 'n/a'}")
+st.caption(f"Profile Dir: {run_profile_dir or 'n/a'}")
 
 conn_a, conn_b = st.columns([1, 1])
 if conn_a.button("Connect selected", use_container_width=True):
