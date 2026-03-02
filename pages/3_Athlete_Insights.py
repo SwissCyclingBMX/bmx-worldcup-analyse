@@ -62,14 +62,14 @@ ROUND_ORDER = {
 
 def infer_event_type(event_id: str) -> str:
     e = str(event_id or "").lower()
-    if (
-        "_usap_" in e
-        or "_usabmx_" in e
-        or "_ffc_" in e
-        or "_scc_" in e
-        or "_other_" in e
-    ):
+    if "_usap_" in e or "_usabmx_" in e:
         return "USABMX"
+    if "_ffc_" in e:
+        return "FFC"
+    if "_scc_" in e:
+        return "SCC"
+    if "_other_" in e or "_sqorz_" in e:
+        return "Other"
     if "_euc_" in e:
         return "EC"
     if "_em_" in e:
@@ -215,6 +215,10 @@ def parse_round_code(display_name: str) -> str:
 
 def parse_series_code(display_name: str, event_type: str) -> str:
     n = str(display_name or "").upper()
+    if " FFC " in f" {n} ":
+        return "FFC"
+    if " SCC " in f" {n} ":
+        return "SCC"
     if "USA BMX" in n or "PRO CHAMPIONSHIP" in n:
         return "USABMX"
     if "WORLD CHAMPIONSHIP" in n or "WCH" in n:
@@ -225,7 +229,7 @@ def parse_series_code(display_name: str, event_type: str) -> str:
         return "EC"
     if "WORLD CUP" in n or " WC " in f" {n} ":
         return "WC"
-    if event_type in {"WC", "WM", "EC", "EM", "USABMX"}:
+    if event_type in {"WC", "WM", "EC", "EM", "USABMX", "FFC", "SCC", "Other"}:
         return event_type
     return "OTR"
 
