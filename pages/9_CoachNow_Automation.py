@@ -564,6 +564,8 @@ if "coachnow_run_account_name" not in st.session_state:
     st.session_state["coachnow_run_account_name"] = profile.get("account_name", "")
 if "coachnow_run_profile_dir" not in st.session_state:
     st.session_state["coachnow_run_profile_dir"] = profile.get("profile_dir", DEFAULT_PROFILE_DIR)
+if "coachnow_account_profile_dir" not in st.session_state:
+    st.session_state["coachnow_account_profile_dir"] = st.session_state["coachnow_run_profile_dir"]
 if "coachnow_account_name" not in st.session_state:
     st.session_state["coachnow_account_name"] = profile.get("account_name", "") or "Default Account"
 if "coachnow_loaded_account_id" not in st.session_state:
@@ -802,6 +804,7 @@ if st.session_state.get("coachnow_loaded_setup_id", "") != selected_setup_id:
 if st.session_state.get("coachnow_loaded_account_id", "") != selected_account_id:
     st.session_state["coachnow_run_account_name"] = selected_account["name"]
     st.session_state["coachnow_run_profile_dir"] = selected_account["profile_dir"]
+    st.session_state["coachnow_account_profile_dir"] = selected_account["profile_dir"]
     st.session_state["coachnow_account_name"] = selected_account["name"]
     st.session_state["coachnow_loaded_account_id"] = selected_account_id
     st.rerun()
@@ -1046,7 +1049,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
     account_name = st.text_input("Account Name", key="coachnow_account_name")
     account_profile_dir = st.text_input(
         "Account Profile Dir",
-        key="coachnow_run_profile_dir",
+        key="coachnow_account_profile_dir",
         help="Dieser Profilordner steuert den CoachNow-Login.",
     )
 
@@ -1066,6 +1069,8 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
                     break
             st.session_state["coachnow_accounts"] = accounts
             st.session_state["coachnow_run_account_name"] = clean_name
+            st.session_state["coachnow_run_profile_dir"] = clean_profile
+            st.session_state["coachnow_account_profile_dir"] = clean_profile
             st.session_state["coachnow_loaded_account_id"] = selected_account_id
             persist_profile_from_state()
             st.success("Account gespeichert.")
@@ -1098,6 +1103,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
         st.session_state["coachnow_active_account_id"] = selected_account_id
         st.session_state["coachnow_run_account_name"] = selected_account["name"]
         st.session_state["coachnow_run_profile_dir"] = selected_account["profile_dir"]
+        st.session_state["coachnow_account_profile_dir"] = selected_account["profile_dir"]
         st.session_state["coachnow_account_name"] = selected_account["name"]
         st.session_state["coachnow_loaded_account_id"] = selected_account_id
         persist_profile_from_state()
