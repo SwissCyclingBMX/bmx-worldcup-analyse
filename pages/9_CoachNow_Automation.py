@@ -710,7 +710,7 @@ def save_run_settings_to_runner(
         return False, f"Save settings failed: {data}"
 
     st.session_state["coachnow_settings_cache"] = data.get("settings", payload_settings)
-    return True, "Library/Group/Account gespeichert."
+    return True, "Account/Group gespeichert (Library fix auf /resources)."
 
 
 # Normalize all profile lists/ids once per run.
@@ -772,26 +772,21 @@ selected_account_id = pick_row_2.selectbox(
 )
 st.session_state["coachnow_selected_account_id"] = selected_account_id
 
-pick_row_3, pick_row_4 = st.columns(2)
-library_ids = [x["id"] for x in libraries]
-library_label_map = {x["id"]: f"{x['name']} ({x['url']})" for x in libraries}
-selected_library_id = pick_row_3.selectbox(
-    "Saved Libraries",
-    options=library_ids,
-    index=max(0, library_ids.index(st.session_state["coachnow_selected_library_id"])),
-    format_func=lambda lid: library_label_map.get(lid, lid),
-)
-st.session_state["coachnow_selected_library_id"] = selected_library_id
-
+pick_row_3 = st.columns(1)[0]
 group_ids = [x["id"] for x in groups]
 group_label_map = {x["id"]: f"{x['name']} ({x['url']})" for x in groups}
-selected_group_id = pick_row_4.selectbox(
+selected_group_id = pick_row_3.selectbox(
     "Saved Groups",
     options=group_ids,
     index=max(0, group_ids.index(st.session_state["coachnow_selected_group_id"])),
     format_func=lambda gid: group_label_map.get(gid, gid),
 )
 st.session_state["coachnow_selected_group_id"] = selected_group_id
+
+selected_library_id = st.session_state.get("coachnow_active_library_id", "")
+if not find_by_id(libraries, selected_library_id):
+    selected_library_id = libraries[0]["id"]
+st.session_state["coachnow_selected_library_id"] = selected_library_id
 
 selected_setup = find_by_id(setups, selected_setup_id) or setups[0]
 selected_account = find_by_id(accounts, selected_account_id) or accounts[0]
@@ -851,16 +846,12 @@ active_group = find_by_id(groups, st.session_state["coachnow_active_group_id"]) 
 st.caption(
     f"Aktiv Setup: {active_setup.get('name', 'n/a')} | "
     f"Aktiv Account: {active_account.get('name', 'n/a')} | "
-    f"Aktiv Library: {active_library.get('name', 'n/a')} | "
     f"Aktiv Group: {active_group.get('name', 'n/a')}"
 )
 
-run_account_name = st.text_input("Library Account (label)", key="coachnow_run_account_name")
-run_library_url = st.text_input(
-    "Library URL",
-    key="coachnow_run_library_url",
-    placeholder="https://app.coachnow.io/resources",
-)
+run_account_name = st.text_input("CoachNow Account (label)", key="coachnow_run_account_name")
+run_library_url = DEFAULT_LIBRARY_URL
+st.session_state["coachnow_run_library_url"] = run_library_url
 run_group_url = st.text_input(
     "Group URL (Posting target)",
     key="coachnow_run_group_url",
@@ -872,7 +863,7 @@ run_profile_dir = st.text_input(
     help="Playwright profile folder, bestimmt den eingeloggten CoachNow-Account.",
 )
 
-apply_a, apply_b, apply_c, apply_d = st.columns(4)
+apply_a, apply_b, apply_c = st.columns(3)
 if apply_a.button("Use selected setup", use_container_width=True):
     st.session_state["coachnow_active_setup_id"] = selected_setup_id
     st.session_state["coachnow_base_url"] = selected_setup["base_url"]
@@ -891,17 +882,7 @@ if apply_b.button("Use selected account", use_container_width=True):
     persist_profile_from_state()
     st.success(f"Aktiv gesetzt (Account): {selected_account['name']}")
 
-if apply_c.button("Use selected library", use_container_width=True):
-    st.session_state["coachnow_active_library_id"] = selected_library_id
-    st.session_state["coachnow_run_library_name"] = selected_library["name"]
-    st.session_state["coachnow_run_library_url"] = selected_library["url"]
-    st.session_state["coachnow_library_url_editor"] = selected_library["url"]
-    st.session_state["coachnow_library_name"] = selected_library["name"]
-    st.session_state["coachnow_loaded_library_id"] = selected_library_id
-    persist_profile_from_state()
-    st.success(f"Aktiv gesetzt (Library): {selected_library['name']}")
-
-if apply_d.button("Use selected group", use_container_width=True):
+if apply_c.button("Use selected group", use_container_width=True):
     st.session_state["coachnow_active_group_id"] = selected_group_id
     st.session_state["coachnow_run_group_name"] = selected_group["name"]
     st.session_state["coachnow_run_group_url"] = selected_group["url"]
@@ -1116,69 +1097,6 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
         st.session_state["coachnow_loaded_account_id"] = selected_account_id
         persist_profile_from_state()
         st.success(f"Aktiv gesetzt: {selected_account['name']}")
-
-    st.divider()
-    st.markdown("#### Library Details")
-    library_name = st.text_input("Library Name", key="coachnow_library_name")
-    library_url = st.text_input("Library URL", key="coachnow_library_url_editor")
-
-    lib_a, lib_b, lib_c = st.columns(3)
-    if lib_a.button("Save active library", use_container_width=True):
-        clean_name = str(library_name).strip()
-        clean_url = str(library_url).strip()
-        if not clean_name:
-            st.error("Library Name fehlt.")
-        elif not clean_url:
-            st.error("Library URL fehlt.")
-        else:
-            for item in libraries:
-                if item["id"] == selected_library_id:
-                    item["name"] = clean_name
-                    item["url"] = clean_url
-                    item["account_label"] = str(st.session_state.get("coachnow_run_account_name", "")).strip()
-                    break
-            st.session_state["coachnow_libraries"] = libraries
-            st.session_state["coachnow_run_library_name"] = clean_name
-            st.session_state["coachnow_run_library_url"] = clean_url
-            st.session_state["coachnow_library_url_editor"] = clean_url
-            st.session_state["coachnow_loaded_library_id"] = selected_library_id
-            persist_profile_from_state()
-            st.success("Library gespeichert.")
-
-    if lib_b.button("Save as new library", use_container_width=True):
-        clean_name = str(library_name).strip()
-        clean_url = str(library_url).strip()
-        if not clean_name:
-            st.error("Library Name fehlt.")
-        elif not clean_url:
-            st.error("Library URL fehlt.")
-        else:
-            new_library = normalize_library(
-                {
-                    "id": make_id(),
-                    "name": clean_name,
-                    "url": clean_url,
-                    "account_label": str(st.session_state.get("coachnow_run_account_name", "")).strip(),
-                },
-                fallback_name="Library",
-            )
-            libraries.append(new_library)
-            st.session_state["coachnow_libraries"] = libraries
-            st.session_state["coachnow_selected_library_id"] = new_library["id"]
-            st.session_state["coachnow_loaded_library_id"] = new_library["id"]
-            persist_profile_from_state()
-            st.success(f"Neue Library gespeichert: {new_library['name']}")
-            st.rerun()
-
-    if lib_c.button("Activate selected library", use_container_width=True):
-        st.session_state["coachnow_active_library_id"] = selected_library_id
-        st.session_state["coachnow_run_library_name"] = selected_library["name"]
-        st.session_state["coachnow_run_library_url"] = selected_library["url"]
-        st.session_state["coachnow_library_url_editor"] = selected_library["url"]
-        st.session_state["coachnow_library_name"] = selected_library["name"]
-        st.session_state["coachnow_loaded_library_id"] = selected_library_id
-        persist_profile_from_state()
-        st.success(f"Aktiv gesetzt: {selected_library['name']}")
 
     st.divider()
     st.markdown("#### Group Details")
