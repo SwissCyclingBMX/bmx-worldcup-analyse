@@ -1,7 +1,7 @@
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -487,6 +487,16 @@ def string_or_default(settings: Dict[str, Any], key: str, default: str) -> str:
     return str(value).strip() if value is not None else default
 
 
+def parse_iso_date_or_none(value: Any) -> Optional[date]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
 def parse_session_tags(additional_env: Dict[str, Any]) -> List[str]:
     raw = str(additional_env.get("SESSION_ATHLETE_TAGS", "")).strip()
     if not raw:
@@ -894,6 +904,13 @@ st.session_state["coachnow_run_profile_dir"] = run_profile_dir
 st.caption(f"Group URL: {run_group_url or 'n/a'}")
 st.caption(f"Profile Dir: {run_profile_dir or 'n/a'}")
 st.caption(f"Posting Flow: {string_or_default(settings, 'postingFlowMode', 'group_first')}")
+backfill_mode_status = bool_or_default(settings, "backfillMode", False)
+backfill_date_status = string_or_default(settings, "backfillDate", "")
+st.caption(
+    "Backfill: "
+    + ("ON" if backfill_mode_status else "OFF")
+    + (f" ({backfill_date_status})" if backfill_mode_status and backfill_date_status else "")
+)
 
 conn_a, conn_b = st.columns([1, 1])
 if conn_a.button("Connect selected", use_container_width=True):
@@ -1243,6 +1260,20 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
             ),
         )
 
+        bf1, bf2 = st.columns(2)
+        backfill_mode = bf1.checkbox(
+            "BACKFILL_MODE",
+            value=bool_or_default(cur, "backfillMode", False),
+            help="Verarbeitet vorhandene Library-Videos fuer BACKFILL_DATE (Nachposting).",
+        )
+        backfill_default = parse_iso_date_or_none(string_or_default(cur, "backfillDate", "")) or date.today()
+        backfill_date_value = bf2.date_input(
+            "BACKFILL_DATE",
+            value=backfill_default,
+            help="Nur relevant wenn BACKFILL_MODE aktiv ist.",
+        )
+        backfill_date = backfill_date_value.isoformat() if backfill_date_value else ""
+
         d1, d2, d3, d4 = st.columns(4)
         dry_run = d1.checkbox("DRY_RUN", value=bool_or_default(cur, "dryRun", False))
         parallel_pipeline = d2.checkbox("PARALLEL_PIPELINE", value=bool_or_default(cur, "parallelPipeline", True))
@@ -1360,6 +1391,8 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
                     "groupUrl": group_url_adv.strip(),
                     "libraryUrl": library_url_adv.strip(),
                     "postingFlowMode": posting_flow_mode,
+                    "backfillMode": backfill_mode,
+                    "backfillDate": backfill_date,
                     "dryRun": dry_run,
                     "parallelPipeline": parallel_pipeline,
                     "backgroundMode": background_mode,
