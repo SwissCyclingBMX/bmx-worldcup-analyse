@@ -893,6 +893,7 @@ st.session_state["coachnow_run_profile_dir"] = run_profile_dir
 
 st.caption(f"Group URL: {run_group_url or 'n/a'}")
 st.caption(f"Profile Dir: {run_profile_dir or 'n/a'}")
+st.caption(f"Posting Flow: {string_or_default(settings, 'postingFlowMode', 'group_first')}")
 
 conn_a, conn_b = st.columns([1, 1])
 if conn_a.button("Connect selected", use_container_width=True):
@@ -1229,6 +1230,18 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
             "LIBRARY_URL",
             value=string_or_default(cur, "libraryUrl", DEFAULT_LIBRARY_URL),
         )
+        posting_flow_default = string_or_default(cur, "postingFlowMode", "group_first")
+        if posting_flow_default not in {"group_first", "library_detail_first"}:
+            posting_flow_default = "group_first"
+        posting_flow_mode = st.selectbox(
+            "POSTING_FLOW_MODE",
+            options=["group_first", "library_detail_first"],
+            index=0 if posting_flow_default == "group_first" else 1,
+            help=(
+                "group_first = alter Ablauf (Group Composer zuerst). "
+                "library_detail_first = direkter Library-Detail-Flow zuerst (empfohlen)."
+            ),
+        )
 
         d1, d2, d3, d4 = st.columns(4)
         dry_run = d1.checkbox("DRY_RUN", value=bool_or_default(cur, "dryRun", False))
@@ -1346,6 +1359,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
                 payload_settings = {
                     "groupUrl": group_url_adv.strip(),
                     "libraryUrl": library_url_adv.strip(),
+                    "postingFlowMode": posting_flow_mode,
                     "dryRun": dry_run,
                     "parallelPipeline": parallel_pipeline,
                     "backgroundMode": background_mode,
