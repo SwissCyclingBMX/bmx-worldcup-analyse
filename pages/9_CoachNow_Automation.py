@@ -21,6 +21,13 @@ DEFAULT_BASE_URL = (os.environ.get("COACHNOW_CONTROL_URL") or "").strip() or HAR
 DEFAULT_TOKEN = os.environ.get("COACHNOW_CONTROL_TOKEN", "").strip()
 DEFAULT_LIBRARY_URL = "https://app.coachnow.io/resources"
 DEFAULT_PROFILE_DIR = "coachnow_profile"
+SESSION_CLASS_OPTIONS: List[Tuple[str, str]] = [
+    ("elite", "Elite"),
+    ("u23", "U23"),
+    ("u19", "U19 (Junior)"),
+    ("u17", "U17"),
+    ("regional_tsp_de", "Regional TSP DE"),
+]
 
 
 def make_id() -> str:
@@ -502,6 +509,65 @@ def parse_session_tags(additional_env: Dict[str, Any]) -> List[str]:
     if not raw:
         return []
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def parse_csv_tokens(value: Any) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    out: List[str] = []
+    for part in raw.replace("\n", ",").split(","):
+        clean = str(part).strip()
+        if clean:
+            out.append(clean)
+    return out
+
+
+def dedupe_case_insensitive(values: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        clean = str(value or "").strip()
+        if not clean:
+            continue
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+    return out
+
+
+def normalize_session_class_key(value: Any) -> str:
+    clean = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    clean = " ".join(clean.split())
+    if clean == "elite":
+        return "elite"
+    if clean in {"u23", "u 23", "under23", "under 23"}:
+        return "u23"
+    if clean in {"u19", "u 19", "junior", "juniors", "u19 junior", "u19 (junior)"}:
+        return "u19"
+    if clean in {"u17", "u 17", "under17", "under 17"}:
+        return "u17"
+    if clean in {"regional", "regional tsp", "regional tsp de", "regional tspde"}:
+        return "regional_tsp_de"
+    return ""
+
+
+def tier_to_session_class_key(value: Any) -> str:
+    clean = str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+    clean = " ".join(clean.split())
+    if "regional" in clean:
+        return "regional_tsp_de"
+    if "u23" in clean:
+        return "u23"
+    if "u19" in clean or "junior" in clean:
+        return "u19"
+    if "u17" in clean:
+        return "u17"
+    if "elite" in clean:
+        return "elite"
+    return ""
 
 
 def render_status_chip(is_running: bool) -> None:
@@ -1184,31 +1250,101 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
     st.divider()
     st.markdown("#### Session Athletes")
     athletes = st.session_state.get("coachnow_athletes_cache", [])
-    athlete_options = []
+    athlete_rows: List[Dict[str, str]] = []
     for athlete in athletes:
         if isinstance(athlete, dict):
             tag = str(athlete.get("tag", "")).strip()
-            if tag:
-                athlete_options.append(tag)
-    athlete_options = sorted(set(athlete_options))
+            if not tag:
+                continue
+            class_key = normalize_session_class_key(athlete.get("classKey", "")) or tier_to_session_class_key(
+                athlete.get("tier", "")
+            )
+            first = str(athlete.get("first", "")).strip()
+            last = str(athlete.get("last", "")).strip()
+            full_name = f"{first} {last}".strip()
+            athlete_rows.append(
+                {
+                    "tag": tag,
+                    "class_key": class_key,
+                    "label_name": full_name,
+                }
+            )
+
+    athlete_by_tag: Dict[str, Dict[str, str]] = {}
+    for row in athlete_rows:
+        key = row["tag"].lower()
+        if key in athlete_by_tag:
+            continue
+        athlete_by_tag[key] = row
+    athlete_tags = sorted(x["tag"] for x in athlete_by_tag.values())
+
+    class_label_map: Dict[str, str] = {key: label for key, label in SESSION_CLASS_OPTIONS}
+    all_class_keys = [key for key, _ in SESSION_CLASS_OPTIONS]
+    class_to_tags: Dict[str, List[str]] = {key: [] for key in all_class_keys}
+    for row in athlete_by_tag.values():
+        class_key = row.get("class_key", "")
+        if class_key in class_to_tags:
+            class_to_tags[class_key].append(row["tag"])
+    for key in class_to_tags:
+        class_to_tags[key] = sorted(set(class_to_tags[key]))
 
     additional_env = settings.get("additionalEnv", {})
     if not isinstance(additional_env, dict):
         additional_env = {}
-    default_selected = [x for x in parse_session_tags(additional_env) if x in athlete_options]
 
-    sel = st.multiselect(
-        "Athleten dieser Session",
-        options=athlete_options,
-        default=default_selected,
-        help="Optional. Wird als SESSION_ATHLETE_TAGS gespeichert.",
+    saved_classes = [
+        key
+        for key in [normalize_session_class_key(x) for x in parse_csv_tokens(settings.get("sessionAthleteClasses", ""))]
+        if key in all_class_keys
+    ]
+    saved_manual_tags = dedupe_case_insensitive(parse_csv_tokens(settings.get("sessionAthleteManualTags", "")))
+    if not saved_manual_tags:
+        saved_manual_tags = [x for x in parse_session_tags(additional_env) if x in athlete_tags]
+
+    selected_classes = st.multiselect(
+        "Klassen (waehlt automatisch alle Athleten der Klasse)",
+        options=all_class_keys,
+        default=[x for x in saved_classes if x in all_class_keys],
+        format_func=lambda key: class_label_map.get(key, key),
     )
+    auto_tags = set()
+    for class_key in selected_classes:
+        auto_tags.update(class_to_tags.get(class_key, []))
+
+    tag_label_map: Dict[str, str] = {}
+    for row in athlete_by_tag.values():
+        tag = row["tag"]
+        class_label = class_label_map.get(row.get("class_key", ""), row.get("class_key", "n/a") or "n/a")
+        if row.get("label_name"):
+            tag_label_map[tag] = f"{tag} ({row['label_name']} | {class_label})"
+        else:
+            tag_label_map[tag] = f"{tag} ({class_label})"
+
+    default_manual_selected = [
+        tag for tag in saved_manual_tags if tag in athlete_tags and tag not in auto_tags
+    ]
+    selected_manual = st.multiselect(
+        "Zusaetzliche Athleten (auch aus anderen Klassen)",
+        options=athlete_tags,
+        default=default_manual_selected,
+        format_func=lambda tag: tag_label_map.get(tag, tag),
+        help="Union aus Klassen + manueller Auswahl wird als SESSION_ATHLETE_TAGS verwendet.",
+    )
+    effective_tags = sorted(set(auto_tags).union(selected_manual))
+    manual_tags_to_store = sorted(set(selected_manual) - set(auto_tags))
+    st.caption(
+        f"Effektiv ausgewaehlt: {len(effective_tags)} Tags "
+        f"(Klassen: {len(selected_classes)}, manuell: {len(manual_tags_to_store)})."
+    )
+
     sa1, sa2 = st.columns([1, 1])
     if sa1.button("Save session athletes", use_container_width=True):
         payload_settings = dict(settings)
         payload_env = dict(additional_env)
-        if sel:
-            payload_env["SESSION_ATHLETE_TAGS"] = ",".join(sel)
+        payload_settings["sessionAthleteClasses"] = ",".join(selected_classes)
+        payload_settings["sessionAthleteManualTags"] = ",".join(manual_tags_to_store)
+        if effective_tags:
+            payload_env["SESSION_ATHLETE_TAGS"] = ",".join(effective_tags)
         else:
             payload_env.pop("SESSION_ATHLETE_TAGS", None)
         payload_settings["additionalEnv"] = payload_env
