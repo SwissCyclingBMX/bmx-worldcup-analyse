@@ -3348,53 +3348,67 @@ with tabs[7]:
 
             if show_boxplot:
                 box_df = plot_df.dropna(subset=["final_rank_raw", "rider_short"]).copy()
-                rider_order = summary_order = sorted(box_df["rider_short"].dropna().unique().tolist())
-                rng = np.random.default_rng(42)
-                box_df["jitter_px"] = rng.uniform(-1.0, 1.0, size=len(box_df))
-                box_df["rank_display"] = box_df["final_rank_raw"].round(1)
-                box_y = alt.Y(
-                    "final_rank_raw:Q",
-                    title="Final Rank",
-                    scale=alt.Scale(domain=[65, 1], nice=False),
-                    axis=alt.Axis(values=[1, 4, 8, 16, 32, 65]),
-                )
-                box_x = alt.X(
-                    "rider_short:N",
-                    title="Rider",
-                    sort=rider_order,
-                    axis=alt.Axis(labelAngle=-90, labelLimit=180),
-                )
-                point_tooltip = [
-                    alt.Tooltip("event_label:N", title="Event label"),
-                    alt.Tooltip("event_dt:T", title="Date"),
-                    alt.Tooltip("location:N", title="Location"),
-                    alt.Tooltip("rider_short:N", title="Rider"),
-                    alt.Tooltip("reached_phase:N", title="Phase"),
-                    alt.Tooltip("rank_display:Q", title="Final Rank"),
-                    alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
-                ]
-                boxplot = alt.Chart(box_df).mark_boxplot(
-                    extent="min-max",
-                    size=26,
-                    median={"color": "black", "strokeWidth": 2},
-                    box={"stroke": "black", "strokeWidth": 1.5, "fillOpacity": 0},
-                    rule={"stroke": "black", "strokeWidth": 1.2},
-                    ticks={"stroke": "black", "strokeWidth": 1.2},
-                ).encode(
-                    x=box_x,
-                    y=box_y,
-                )
-                jitter_points = alt.Chart(box_df).mark_circle(size=60, opacity=0.6).encode(
-                    x=box_x,
-                    xOffset=alt.XOffset("jitter_px:Q", scale=alt.Scale(domain=[-1, 1], range=[-8, 8])),
-                    y=box_y,
-                    color=alt.Color("rider_short:N", title="Rider", sort=rider_order, legend=None),
-                    tooltip=point_tooltip,
-                )
-                trend_chart = alt.layer(*zone_layers, boxplot, jitter_points).properties(
-                    height=460, padding={"bottom": 40, "left": 5, "right": 5, "top": 10}
-                )
-                st.altair_chart(trend_chart, use_container_width=True)
+                rider_order = sorted(box_df["rider_short"].dropna().unique().tolist())
+                if go is None:
+                    st.warning("Plotly ist fuer den Boxplot nicht verfuegbar.")
+                else:
+                    rider_colors = [
+                        "#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c",
+                        "#98df8a", "#d62728", "#ff9896", "#9467bd", "#c5b0d5",
+                    ]
+                    color_map = {r: rider_colors[i % len(rider_colors)] for i, r in enumerate(rider_order)}
+                    fig = go.Figure()
+                    for rider in rider_order:
+                        rdf = box_df[box_df["rider_short"] == rider].copy()
+                        customdata = np.column_stack([
+                            rdf["event_label"].fillna("").to_numpy(),
+                            rdf["event_dt"].dt.strftime("%Y-%m-%d").fillna("").to_numpy(),
+                            rdf["location"].fillna("").to_numpy(),
+                            rdf["reached_phase"].fillna("").to_numpy(),
+                            rdf["overflow_clamped"].fillna("no").to_numpy(),
+                        ])
+                        fig.add_trace(
+                            go.Box(
+                                y=rdf["final_rank_raw"],
+                                x=[rider] * len(rdf),
+                                name=rider,
+                                boxpoints="all",
+                                jitter=0.45,
+                                pointpos=0,
+                                whiskerwidth=0.8,
+                                marker=dict(size=11, color=color_map[rider], opacity=0.55),
+                                line=dict(color="black", width=1.4),
+                                fillcolor="rgba(0,0,0,0)",
+                                showlegend=False,
+                                customdata=customdata,
+                                hovertemplate=(
+                                    "Rider: %{x}<br>"
+                                    "Final Rank: %{y}<br>"
+                                    "Event label: %{customdata[0]}<br>"
+                                    "Date: %{customdata[1]}<br>"
+                                    "Location: %{customdata[2]}<br>"
+                                    "Phase: %{customdata[3]}<br>"
+                                    "Overflow clamped: %{customdata[4]}<extra></extra>"
+                                ),
+                            )
+                        )
+                    for y0, y1, color in [
+                        (1, 3, "rgba(44,160,44,0.12)"),
+                        (4, 8, "rgba(241,196,15,0.12)"),
+                        (9, 16, "rgba(230,126,34,0.12)"),
+                        (17, 32, "rgba(231,76,60,0.12)"),
+                    ]:
+                        fig.add_hrect(y0=y0, y1=y1, fillcolor=color, line_width=0, layer="below")
+                    fig.update_layout(
+                        height=520,
+                        margin=dict(l=40, r=20, t=10, b=40),
+                        plot_bgcolor="white",
+                        paper_bgcolor="white",
+                        boxmode="group",
+                        xaxis=dict(title="Rider", tickangle=-90, categoryorder="array", categoryarray=rider_order),
+                        yaxis=dict(title="Final Rank", range=[65, 1], tickmode="array", tickvals=[1, 4, 8, 16, 32, 65], gridcolor="#e5e7eb"),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
             else:
                 line = base_line.mark_line()
                 points = base_line.transform_filter("datum.is_overflow == false").mark_point(size=65)
