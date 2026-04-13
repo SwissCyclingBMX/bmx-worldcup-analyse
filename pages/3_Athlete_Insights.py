@@ -3200,6 +3200,7 @@ with tabs[6]:
 
 with tabs[7]:
     st.subheader("Results Trend")
+    show_boxplot = st.toggle("Boxplot statt Liniengrafik", value=False, key="results_trend_show_boxplot")
     show_dnq_labels = st.toggle("Show DNQ labels (>32)", value=True, key="results_trend_show_dnq_labels")
     rr = runs_sel.copy().sort_values(["rider_id", "event_dt", "event_id", "round_sort", "heat_id"])
 
@@ -3345,40 +3346,89 @@ with tabs[7]:
                 ],
             )
 
-            line = base_line.mark_line()
-            points = base_line.transform_filter("datum.is_overflow == false").mark_point(size=65)
-
-            overflow_base = alt.Chart(overflow_df).encode(
-                x=x_axis,
-                y=alt.Y(
-                    "final_rank_plot:Q",
-                    scale=alt.Scale(domain=[1, 33.5], domainMin=1, domainMax=33.5, reverse=True, nice=False),
+            if show_boxplot:
+                box_df = plot_df.dropna(subset=["final_rank_raw", "rider_short"]).copy()
+                rider_order = summary_order = sorted(box_df["rider_short"].dropna().unique().tolist())
+                rng = np.random.default_rng(42)
+                box_df["jitter"] = rng.uniform(-0.22, 0.22, size=len(box_df))
+                box_df["rank_display"] = box_df["final_rank_raw"].round(1)
+                box_y = alt.Y(
+                    "final_rank_raw:Q",
                     title="Final Rank",
-                ),
-                color=alt.Color("rider_short:N", title="Rider"),
-                detail="rider_short:N",
-                tooltip=[
+                    scale=alt.Scale(domain=[1, 33.5], domainMin=1, domainMax=33.5, reverse=True, nice=False),
+                    axis=alt.Axis(values=[1, 4, 8, 16, 32]),
+                )
+                box_x = alt.X(
+                    "rider_short:N",
+                    title="Rider",
+                    sort=rider_order,
+                    axis=alt.Axis(labelAngle=-90, labelLimit=180),
+                )
+                point_tooltip = [
                     alt.Tooltip("event_label:N", title="Event label"),
                     alt.Tooltip("event_dt:T", title="Date"),
                     alt.Tooltip("location:N", title="Location"),
                     alt.Tooltip("rider_short:N", title="Rider"),
                     alt.Tooltip("reached_phase:N", title="Phase"),
-                    alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
+                    alt.Tooltip("rank_display:Q", title="Final Rank"),
                     alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
-                ],
-            )
-            overflow_points = overflow_base.mark_point(shape="triangle-up", size=45, opacity=0.95)
-            layers = [*zone_layers, line, points, overflow_points]
-            if show_dnq_labels:
-                over32_text = (
-                    overflow_base.mark_text(dy=-8, fontSize=10)
-                    .encode(text="final_rank_over32_label:N")
+                ]
+                boxplot = alt.Chart(box_df).mark_boxplot(
+                    extent="min-max",
+                    size=34,
+                    median={"color": "black", "strokeWidth": 2},
+                    ticks=True,
+                ).encode(
+                    x=box_x,
+                    y=box_y,
+                    color=alt.Color("rider_short:N", title="Rider", sort=rider_order),
                 )
-                layers.append(over32_text)
-            trend_chart = alt.layer(*layers).properties(
-                height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
-            )
-            st.altair_chart(trend_chart, use_container_width=True)
+                jitter_points = alt.Chart(box_df).mark_circle(size=55, opacity=0.55).encode(
+                    x=box_x,
+                    xOffset=alt.XOffset("jitter:Q"),
+                    y=box_y,
+                    color=alt.Color("rider_short:N", title="Rider", sort=rider_order, legend=None),
+                    tooltip=point_tooltip,
+                )
+                trend_chart = alt.layer(*zone_layers, boxplot, jitter_points).properties(
+                    height=460, padding={"bottom": 40, "left": 5, "right": 5, "top": 10}
+                )
+                st.altair_chart(trend_chart, use_container_width=True)
+            else:
+                line = base_line.mark_line()
+                points = base_line.transform_filter("datum.is_overflow == false").mark_point(size=65)
+
+                overflow_base = alt.Chart(overflow_df).encode(
+                    x=x_axis,
+                    y=alt.Y(
+                        "final_rank_plot:Q",
+                        scale=alt.Scale(domain=[1, 33.5], domainMin=1, domainMax=33.5, reverse=True, nice=False),
+                        title="Final Rank",
+                    ),
+                    color=alt.Color("rider_short:N", title="Rider"),
+                    detail="rider_short:N",
+                    tooltip=[
+                        alt.Tooltip("event_label:N", title="Event label"),
+                        alt.Tooltip("event_dt:T", title="Date"),
+                        alt.Tooltip("location:N", title="Location"),
+                        alt.Tooltip("rider_short:N", title="Rider"),
+                        alt.Tooltip("reached_phase:N", title="Phase"),
+                        alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
+                        alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
+                    ],
+                )
+                overflow_points = overflow_base.mark_point(shape="triangle-up", size=45, opacity=0.95)
+                layers = [*zone_layers, line, points, overflow_points]
+                if show_dnq_labels:
+                    over32_text = (
+                        overflow_base.mark_text(dy=-8, fontSize=10)
+                        .encode(text="final_rank_over32_label:N")
+                    )
+                    layers.append(over32_text)
+                trend_chart = alt.layer(*layers).properties(
+                    height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
+                )
+                st.altair_chart(trend_chart, use_container_width=True)
 
         st.markdown("**Final Rank pro Event (master_results)**")
         final_rank_tbl = rider_event.copy()
