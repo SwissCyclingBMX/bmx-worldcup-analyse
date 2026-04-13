@@ -3350,13 +3350,13 @@ with tabs[7]:
                 box_df = plot_df.dropna(subset=["final_rank_raw", "rider_short"]).copy()
                 rider_order = summary_order = sorted(box_df["rider_short"].dropna().unique().tolist())
                 rng = np.random.default_rng(42)
-                box_df["jitter"] = rng.uniform(-0.22, 0.22, size=len(box_df))
+                box_df["jitter_px"] = rng.uniform(-1.0, 1.0, size=len(box_df))
                 box_df["rank_display"] = box_df["final_rank_raw"].round(1)
                 box_y = alt.Y(
                     "final_rank_raw:Q",
                     title="Final Rank",
-                    scale=alt.Scale(domain=[33.5, 1], nice=False),
-                    axis=alt.Axis(values=[1, 4, 8, 16, 32]),
+                    scale=alt.Scale(domain=[65, 1], nice=False),
+                    axis=alt.Axis(values=[1, 4, 8, 16, 32, 65]),
                 )
                 box_x = alt.X(
                     "rider_short:N",
@@ -3385,7 +3385,7 @@ with tabs[7]:
                 )
                 jitter_points = alt.Chart(box_df).mark_circle(size=55, opacity=0.55).encode(
                     x=box_x,
-                    xOffset=alt.XOffset("jitter:Q"),
+                    xOffset=alt.XOffset("jitter_px:Q", scale=alt.Scale(domain=[-1, 1], range=[-12, 12])),
                     y=box_y,
                     color=alt.Color("rider_short:N", title="Rider", sort=rider_order, legend=None),
                     tooltip=point_tooltip,
