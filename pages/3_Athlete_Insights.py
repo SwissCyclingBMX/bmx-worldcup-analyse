@@ -3355,7 +3355,7 @@ with tabs[7]:
                 box_y = alt.Y(
                     "final_rank_raw:Q",
                     title="Final Rank",
-                    scale=alt.Scale(domain=[1, 33.5], domainMin=1, domainMax=33.5, reverse=True, nice=False),
+                    scale=alt.Scale(domain=[33.5, 1], nice=False),
                     axis=alt.Axis(values=[1, 4, 8, 16, 32]),
                 )
                 box_x = alt.X(
