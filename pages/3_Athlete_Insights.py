@@ -3375,17 +3375,18 @@ with tabs[7]:
                 ]
                 boxplot = alt.Chart(box_df).mark_boxplot(
                     extent="min-max",
-                    size=34,
+                    size=26,
                     median={"color": "black", "strokeWidth": 2},
-                    ticks=True,
+                    box={"stroke": "black", "strokeWidth": 1.5, "fillOpacity": 0},
+                    rule={"stroke": "black", "strokeWidth": 1.2},
+                    ticks={"stroke": "black", "strokeWidth": 1.2},
                 ).encode(
                     x=box_x,
                     y=box_y,
-                    color=alt.Color("rider_short:N", title="Rider", sort=rider_order),
                 )
-                jitter_points = alt.Chart(box_df).mark_circle(size=55, opacity=0.55).encode(
+                jitter_points = alt.Chart(box_df).mark_circle(size=60, opacity=0.6).encode(
                     x=box_x,
-                    xOffset=alt.XOffset("jitter_px:Q", scale=alt.Scale(domain=[-1, 1], range=[-12, 12])),
+                    xOffset=alt.XOffset("jitter_px:Q", scale=alt.Scale(domain=[-1, 1], range=[-8, 8])),
                     y=box_y,
                     color=alt.Color("rider_short:N", title="Rider", sort=rider_order, legend=None),
                     tooltip=point_tooltip,
