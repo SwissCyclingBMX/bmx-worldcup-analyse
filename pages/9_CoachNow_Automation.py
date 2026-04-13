@@ -11,9 +11,11 @@ try:
 except Exception:  # pragma: no cover - optional runtime dependency
     requests = None
 import streamlit as st
+from access_control import render_sidebar_nav, require_page_access
 
 
 st.set_page_config(page_title="CoachNow Automation", layout="wide")
+require_page_access(["admin"], "CoachNow Automation")
 
 PROFILE_PATH = Path(".streamlit/coachnow_control_profile.json")
 HARD_DEFAULT_BASE_URL = "http://127.0.0.1:8787"
@@ -589,11 +591,6 @@ def find_by_id(items: List[Dict[str, str]], item_id: str) -> Optional[Dict[str, 
     return None
 
 
-def safe_sidebar_page_link(script_path: str, label: str) -> None:
-    if Path(script_path).exists():
-        st.sidebar.page_link(script_path, label=label)
-
-
 st.markdown(
     """
     <style>
@@ -610,11 +607,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-safe_sidebar_page_link("app.py", "Heat Analyser")
-safe_sidebar_page_link("pages/3_Athlete_Insights.py", "Athlete Insights")
-safe_sidebar_page_link("pages/4_Live_Polling.py", "Live Polling")
-safe_sidebar_page_link("pages/9_CoachNow_Automation.py", "CoachNow Automation")
-st.sidebar.divider()
+render_sidebar_nav()
 
 st.title("CoachNow Automation")
 st.caption(
@@ -969,7 +962,7 @@ st.session_state["coachnow_run_profile_dir"] = run_profile_dir
 
 st.caption(f"Group URL: {run_group_url or 'n/a'}")
 st.caption(f"Profile Dir: {run_profile_dir or 'n/a'}")
-st.caption(f"Posting Flow: {string_or_default(settings, 'postingFlowMode', 'group_first')}")
+st.caption(f"Posting Flow: {string_or_default(settings, 'postingFlowMode', 'library_detail_first')}")
 backfill_mode_status = bool_or_default(settings, "backfillMode", False)
 backfill_date_status = string_or_default(settings, "backfillDate", "")
 st.caption(
@@ -1191,7 +1184,7 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
     group_name = st.text_input("Group Name", key="coachnow_group_name")
     group_url = st.text_input("Group URL", key="coachnow_group_url_editor")
 
-    grp_a, grp_b, grp_c = st.columns(3)
+    grp_a, grp_b, grp_c, grp_d = st.columns(4)
     if grp_a.button("Save active group", use_container_width=True):
         clean_name = str(group_name).strip()
         clean_url = str(group_url).strip()
@@ -1246,6 +1239,35 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
         st.session_state["coachnow_loaded_group_id"] = selected_group_id
         persist_profile_from_state()
         st.success(f"Aktiv gesetzt: {selected_group['name']}")
+
+    if grp_d.button("Delete selected group", use_container_width=True):
+        remaining_groups = [item for item in groups if item["id"] != selected_group_id]
+        if len(remaining_groups) == len(groups):
+            st.error("Die ausgewaehlte Group wurde nicht gefunden.")
+        else:
+            if not remaining_groups:
+                fallback_group = normalize_group(
+                    {
+                        "id": "default-group",
+                        "name": "Default Group",
+                        "url": "",
+                    },
+                    fallback_name="Default Group",
+                )
+                remaining_groups = [fallback_group]
+
+            next_group = remaining_groups[0]
+            st.session_state["coachnow_groups"] = remaining_groups
+            st.session_state["coachnow_selected_group_id"] = next_group["id"]
+            st.session_state["coachnow_active_group_id"] = next_group["id"]
+            st.session_state["coachnow_run_group_name"] = next_group["name"]
+            st.session_state["coachnow_run_group_url"] = next_group["url"]
+            st.session_state["coachnow_group_url_editor"] = next_group["url"]
+            st.session_state["coachnow_group_name"] = next_group["name"]
+            st.session_state["coachnow_loaded_group_id"] = next_group["id"]
+            persist_profile_from_state()
+            st.success(f"Group geloescht: {selected_group['name']}")
+            st.rerun()
 
     st.divider()
     st.markdown("#### Session Athletes")
@@ -1383,9 +1405,9 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
             "LIBRARY_URL",
             value=string_or_default(cur, "libraryUrl", DEFAULT_LIBRARY_URL),
         )
-        posting_flow_default = string_or_default(cur, "postingFlowMode", "group_first")
+        posting_flow_default = string_or_default(cur, "postingFlowMode", "library_detail_first")
         if posting_flow_default not in {"group_first", "library_detail_first"}:
-            posting_flow_default = "group_first"
+            posting_flow_default = "library_detail_first"
         posting_flow_mode = st.selectbox(
             "POSTING_FLOW_MODE",
             options=["group_first", "library_detail_first"],
@@ -1412,14 +1434,18 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
 
         d1, d2, d3, d4 = st.columns(4)
         dry_run = d1.checkbox("DRY_RUN", value=bool_or_default(cur, "dryRun", False))
-        parallel_pipeline = d2.checkbox("PARALLEL_PIPELINE", value=bool_or_default(cur, "parallelPipeline", True))
+        parallel_pipeline = d2.checkbox("PARALLEL_PIPELINE", value=bool_or_default(cur, "parallelPipeline", False))
         background_mode = d3.checkbox("BACKGROUND_MODE", value=bool_or_default(cur, "backgroundMode", True))
         headless = d4.checkbox("HEADLESS", value=bool_or_default(cur, "headless", False))
 
-        e1, e2, e3 = st.columns(3)
-        model_size = e1.text_input("MODEL_SIZE", value=string_or_default(cur, "modelSize", "medium"))
-        whisper_lang = e2.text_input("WHISPER_LANGUAGE", value=string_or_default(cur, "whisperLanguage", "de"))
-        ambiguous_mode = e3.selectbox(
+        e1, e2, e3, e4 = st.columns(4)
+        speech_enabled = e1.checkbox("SPEECH_ENABLED", value=bool_or_default(cur, "speechEnabled", True))
+        created_time_tag_enabled = e2.checkbox("CREATED_TIME_TAG_ENABLED", value=bool_or_default(cur, "createdTimeTagEnabled", True))
+        model_size = e3.text_input("MODEL_SIZE", value=string_or_default(cur, "modelSize", "medium"))
+        whisper_lang = e4.text_input("WHISPER_LANGUAGE", value=string_or_default(cur, "whisperLanguage", "de"))
+
+        f1, f2, f3 = st.columns(3)
+        ambiguous_mode = f1.selectbox(
             "AMBIGUOUS_MODE",
             options=["skip", "lastname", "priority"],
             index=["skip", "lastname", "priority"].index(
@@ -1429,22 +1455,22 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
             ),
         )
 
-        f1, f2, f3 = st.columns(3)
-        clip_start = f1.number_input(
+        g1, g2, g3 = st.columns(3)
+        clip_start = g1.number_input(
             "CLIP_START_SECONDS",
             min_value=0.0,
             max_value=600.0,
             value=float(number_or_default(cur, "clipStartSeconds", 0)),
             step=0.5,
         )
-        clip_seconds = f2.number_input(
+        clip_seconds = g2.number_input(
             "CLIP_SECONDS",
             min_value=1.0,
             max_value=600.0,
             value=float(number_or_default(cur, "clipSeconds", 60)),
             step=1.0,
         )
-        whisper_beam = f3.number_input(
+        whisper_beam = g3.number_input(
             "WHISPER_BEAM",
             min_value=1,
             max_value=5,
@@ -1533,8 +1559,10 @@ with st.expander("Erweiterte Einstellungen", expanded=False):
                     "parallelPipeline": parallel_pipeline,
                     "backgroundMode": background_mode,
                     "headless": headless,
+                    "speechEnabled": speech_enabled,
                     "modelSize": model_size.strip(),
                     "whisperLanguage": whisper_lang.strip(),
+                    "createdTimeTagEnabled": created_time_tag_enabled,
                     "clipStartSeconds": clip_start,
                     "clipSeconds": clip_seconds,
                     "multiTranscribe": multi_transcribe,

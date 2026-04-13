@@ -12,6 +12,8 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from access_control import render_sidebar_nav, require_page_access
+from ui_prefs import load_page_prefs, update_page_prefs
 try:
     import plotly.graph_objects as go
 except ImportError:
@@ -24,7 +26,8 @@ except ImportError:
     PdfPages = None
 
 
-DB_PATH = "bmx.db"
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(os.path.dirname(APP_DIR), "bmx.db")
 
 GROUP_MAP = {
     91: ("Elite", "Men"),
@@ -924,23 +927,19 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
             ["event_id", "event_type", "year", "event_day", "location_norm", "category", "gender", "uci_norm", "name_key"]
         ].to_dict("records")
     ]
-    out["final_rank_event"] = pd.to_numeric(pd.Series(ranks), errors="coerce")
+    # Preserve the filtered frame's index; otherwise pandas aligns the default
+    # RangeIndex from pd.Series(ranks) onto scattered row indices and mixes
+    # final-event ranks between riders in multi-athlete views.
+    out["final_rank_event"] = pd.to_numeric(pd.Series(ranks, index=out.index), errors="coerce")
     out["final_rank_event_display"] = np.where(
         out["final_rank_event"].notna(), out["final_rank_event"].astype("Int64").astype(str), "NA"
     )
     return out
 
 
-def safe_sidebar_page_link(script_path: str, label: str) -> None:
-    if os.path.exists(script_path):
-        st.sidebar.page_link(script_path, label=label)
-
-
-safe_sidebar_page_link("app.py", "Heat Analyser")
-safe_sidebar_page_link("pages/3_Athlete_Insights.py", "Athlete Insights")
-safe_sidebar_page_link("pages/4_Live_Polling.py", "Live Polling")
-safe_sidebar_page_link("pages/9_CoachNow_Automation.py", "CoachNow Automation")
-st.sidebar.divider()
+require_page_access(["admin", "coach"], "Athlete Insights")
+render_sidebar_nav()
+page_prefs = load_page_prefs("athlete_insights")
 
 st.title("Athlete Insights")
 st.caption("Trend, Segmente, Positionen, Druck, Track-Profile, Benchmark, Fatigue und Result-Trend.")
@@ -976,13 +975,23 @@ rider_nation_opts = sorted([x for x in all_runs["nation"].dropna().unique().toli
 
 nf1, nf2 = st.columns([1, 3])
 with nf1:
-    sel_nations = st.multiselect("Nation (Rider) – leer = alle", rider_nation_opts, default=[])
+    sel_nations = st.multiselect(
+        "Nation (Rider) – leer = alle",
+        rider_nation_opts,
+        default=[x for x in page_prefs.get("sel_nations", []) if x in rider_nation_opts],
+        key="ai_sel_nations",
+    )
 with nf2:
     rider_pool_for_select = all_runs.copy()
     if sel_nations:
         rider_pool_for_select = rider_pool_for_select[rider_pool_for_select["nation"].isin(sel_nations)].copy()
     rider_opts = sorted([x for x in rider_pool_for_select["rider_label"].dropna().unique().tolist() if x])
-    sel_riders = st.multiselect("Athlete (leer = keinen anzeigen)", rider_opts, default=[], key="insight_riders")
+    sel_riders = st.multiselect(
+        "Athlete (leer = keinen anzeigen)",
+        rider_opts,
+        default=[x for x in page_prefs.get("sel_riders", []) if x in rider_opts],
+        key="insight_riders",
+    )
 
 rider_mode = "athlete" if sel_riders else ("nation" if sel_nations else "none")
 if rider_mode == "none":
@@ -1018,18 +1027,18 @@ if not default_years:
 
 f1, f2, f3, f4 = st.columns(4)
 with f1:
-    sel_years = st.multiselect("Jahr", year_opts, default=default_years)
+    sel_years = st.multiselect("Jahr", year_opts, default=[x for x in page_prefs.get("sel_years", default_years) if x in year_opts] or default_years, key="ai_sel_years")
 with f2:
-    sel_event_types = st.multiselect("Event Type", event_type_opts, default=event_type_opts)
+    sel_event_types = st.multiselect("Event Type", event_type_opts, default=[x for x in page_prefs.get("sel_event_types", event_type_opts) if x in event_type_opts] or event_type_opts, key="ai_sel_event_types")
 with f3:
     if rider_mode == "nation":
-        sel_categories = st.multiselect("Kategorie", cat_opts, default=[])
+        sel_categories = st.multiselect("Kategorie", cat_opts, default=[x for x in page_prefs.get("sel_categories", []) if x in cat_opts], key="ai_sel_categories")
     else:
         sel_categories = cat_opts
         st.multiselect("Kategorie", cat_opts, default=cat_opts, disabled=True, key="ai_cat_disabled")
 with f4:
     if rider_mode == "nation":
-        sel_gender = st.multiselect("Geschlecht", gender_opts, default=[])
+        sel_gender = st.multiselect("Geschlecht", gender_opts, default=[x for x in page_prefs.get("sel_gender", []) if x in gender_opts], key="ai_sel_gender")
     else:
         sel_gender = gender_opts
         st.multiselect("Geschlecht", gender_opts, default=gender_opts, disabled=True, key="ai_gender_disabled")
@@ -1051,14 +1060,14 @@ loc_opts = sorted([x for x in loc_scope["location"].dropna().unique().tolist() i
 
 g1, g2 = st.columns(2)
 with g1:
-    sel_locations = st.multiselect("Location (optional)", loc_opts, default=[])
+    sel_locations = st.multiselect("Location (optional)", loc_opts, default=[x for x in page_prefs.get("sel_locations", []) if x in loc_opts], key="ai_sel_locations")
 with g2:
     round_order_pref = ["R1", "LCQ", "1/32", "1/16", "1/8", "1/4", "1/2", "F", "M1", "M2", "M3", "QF", "SF", "F1", "F2", "F3"]
     round_seen = [x for x in loc_scope["round_short"].dropna().astype(str).unique().tolist() if clean_spaces(x)]
     round_opts = [x for x in round_order_pref if x in set(round_seen)] + [x for x in sorted(round_seen) if x not in round_order_pref]
     # New round families (USABMX etc.) are available but intentionally not default-selected.
     round_defaults = [x for x in ["R1", "LCQ", "1/32", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(round_opts)]
-    sel_rounds = st.multiselect("Runde (optional)", round_opts, default=round_defaults)
+    sel_rounds = st.multiselect("Runde (optional)", round_opts, default=[x for x in page_prefs.get("sel_rounds", round_defaults) if x in round_opts] or round_defaults, key="ai_sel_rounds")
 
 # Comparison/reference pool must stay on full field for selected filters.
 base_scope = all_runs.copy()
@@ -1100,7 +1109,8 @@ ref_label = st.radio(
     "Referenz",
     ["Event Top N (robust)", "Heat Rank 4 (Qualification Cut)", "Heat Rank 1 (Winner)"],
     horizontal=True,
-    index=0,
+    index=(["Event Top N (robust)", "Heat Rank 4 (Qualification Cut)", "Heat Rank 1 (Winner)"].index(page_prefs.get("ref_label")) if page_prefs.get("ref_label") in ["Event Top N (robust)", "Heat Rank 4 (Qualification Cut)", "Heat Rank 1 (Winner)"] else 0),
+    key="ai_ref_label",
 )
 event_top_n = 1
 event_ko_final_only = False
@@ -1108,7 +1118,20 @@ if ref_label == "Event Top N (robust)":
     with st.container():
         if "event_top_n" in st.session_state and st.session_state["event_top_n"] not in [1, 3, 8]:
             st.session_state["event_top_n"] = 1
-        event_top_n = st.selectbox("Event Top N", [1, 3, 8], index=0, key="event_top_n")
+        event_top_n = st.selectbox("Event Top N", [1, 3, 8], index=([1, 3, 8].index(page_prefs.get("event_top_n")) if page_prefs.get("event_top_n") in [1, 3, 8] else 0), key="event_top_n")
+
+update_page_prefs("athlete_insights", {
+    "sel_nations": sel_nations,
+    "sel_riders": sel_riders,
+    "sel_years": sel_years,
+    "sel_event_types": sel_event_types,
+    "sel_categories": sel_categories if rider_mode == "nation" else [],
+    "sel_gender": sel_gender if rider_mode == "nation" else [],
+    "sel_locations": sel_locations,
+    "sel_rounds": sel_rounds,
+    "ref_label": ref_label,
+    "event_top_n": event_top_n,
+})
 
 ref_key = "rank4"
 if ref_label == "Event Top N (robust)":
@@ -3177,11 +3200,6 @@ with tabs[6]:
 
 with tabs[7]:
     st.subheader("Results Trend")
-    trend_chart_mode = st.toggle(
-        "Boxplot statt Liniengrafik",
-        value=False,
-        key="results_trend_boxplot_mode",
-    )
     show_dnq_labels = st.toggle("Show DNQ labels (>32)", value=True, key="results_trend_show_dnq_labels")
     rr = runs_sel.copy().sort_values(["rider_id", "event_dt", "event_id", "round_sort", "heat_id"])
 
@@ -3263,7 +3281,6 @@ with tabs[7]:
                 + " | "
                 + plot_df["rider_short"]
             )
-            max_rank = max(32.0, float(plot_df["final_rank_raw"].max()) if plot_df["final_rank_raw"].notna().any() else 32.0)
             y_axis = alt.Y(
                 "line_rank_plot:Q",
                 title="Final Rank",
@@ -3284,122 +3301,84 @@ with tabs[7]:
                     y2="y1:Q",
                 )
                 zone_layers.append(zlayer)
-
-            if trend_chart_mode:
-                box_y = alt.Y(
-                    "final_rank_raw:Q",
-                    title="Final Rank",
-                    scale=alt.Scale(domain=[1, max_rank], reverse=True, nice=False),
-                    axis=alt.Axis(values=[1, 4, 8, 16, 32] + ([int(max_rank)] if max_rank > 32 else [])),
-                )
-                box_base = alt.Chart(plot_df)
-                box = box_base.mark_boxplot(extent="min-max").encode(
-                    x=alt.X("rider_short:N", title="Rider"),
-                    y=box_y,
-                    color=alt.Color("rider_short:N", title="Rider", legend=None),
-                    tooltip=[
-                        alt.Tooltip("rider_short:N", title="Rider"),
-                        alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
-                        alt.Tooltip("event_label:N", title="Event label"),
-                        alt.Tooltip("event_dt:T", title="Date"),
-                        alt.Tooltip("location:N", title="Location"),
-                        alt.Tooltip("reached_phase:N", title="Phase"),
-                    ],
-                )
-                points = box_base.mark_point(size=60, opacity=0.55, filled=True).encode(
-                    x=alt.X("rider_short:N", title="Rider"),
-                    y=box_y,
-                    color=alt.Color("rider_short:N", title="Rider"),
-                    tooltip=[
-                        alt.Tooltip("rider_short:N", title="Rider"),
-                        alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
-                        alt.Tooltip("event_label:N", title="Event label"),
-                        alt.Tooltip("event_dt:T", title="Date"),
-                        alt.Tooltip("location:N", title="Location"),
-                        alt.Tooltip("reached_phase:N", title="Phase"),
-                    ],
-                )
-                trend_chart = alt.layer(box, points).properties(height=460)
-                st.altair_chart(trend_chart, use_container_width=True)
+            line_df = plot_df.dropna(subset=["line_rank_plot", "x_index"]).copy()
+            line_df = line_df.sort_values(["rider_short", "x_order"])
+            line_df["x_plot"] = line_df["x_index"]
+            overflow_df = plot_df[plot_df["is_overflow"]].copy()
+            overflow_df = overflow_df.sort_values(["x_order", "final_rank_raw", "rider_short"])
+            if not overflow_df.empty:
+                overflow_df["overflow_pos"] = overflow_df.groupby("x_order").cumcount().astype(float)
+                overflow_df["overflow_n"] = overflow_df.groupby("x_order")["rider_short"].transform("size").astype(float)
+                overflow_df["overflow_offset"] = (overflow_df["overflow_pos"] - (overflow_df["overflow_n"] - 1.0) / 2.0) * 0.08
+                overflow_df["x_plot"] = overflow_df["x_index"] + overflow_df["overflow_offset"]
             else:
-                line_df = plot_df.dropna(subset=["line_rank_plot", "x_index"]).copy()
-                line_df = line_df.sort_values(["rider_short", "x_order"])
-                line_df["x_plot"] = line_df["x_index"]
-                overflow_df = plot_df[plot_df["is_overflow"]].copy()
-                overflow_df = overflow_df.sort_values(["x_order", "final_rank_raw", "rider_short"])
-                if not overflow_df.empty:
-                    overflow_df["overflow_pos"] = overflow_df.groupby("x_order").cumcount().astype(float)
-                    overflow_df["overflow_n"] = overflow_df.groupby("x_order")["rider_short"].transform("size").astype(float)
-                    overflow_df["overflow_offset"] = (overflow_df["overflow_pos"] - (overflow_df["overflow_n"] - 1.0) / 2.0) * 0.08
-                    overflow_df["x_plot"] = overflow_df["x_index"] + overflow_df["overflow_offset"]
-                else:
-                    overflow_df["x_plot"] = overflow_df["x_index"]
+                overflow_df["x_plot"] = overflow_df["x_index"]
 
-                axis_labels_json = json.dumps(x_order, ensure_ascii=False)
-                x_axis = alt.X(
-                    "x_plot:Q",
-                    title="Event",
-                    scale=alt.Scale(domain=[-0.5, max(len(x_order) - 0.5, 0.5)]),
-                    axis=alt.Axis(
-                        values=list(range(len(x_order))),
-                        labelExpr=f"{axis_labels_json}[datum.value]",
-                        labelAngle=-55,
-                        labelLimit=280,
-                        labelOverlap=False,
-                    ),
-                )
+            axis_labels_json = json.dumps(x_order, ensure_ascii=False)
+            x_axis = alt.X(
+                "x_plot:Q",
+                title="Event",
+                scale=alt.Scale(domain=[-0.5, max(len(x_order) - 0.5, 0.5)]),
+                axis=alt.Axis(
+                    values=list(range(len(x_order))),
+                    labelExpr=f"{axis_labels_json}[datum.value]",
+                    labelAngle=-55,
+                    labelLimit=280,
+                    labelOverlap=False,
+                ),
+            )
 
-                base_line = alt.Chart(line_df).encode(
-                    x=x_axis,
-                    y=y_axis,
-                    color=alt.Color("rider_short:N", title="Rider"),
-                    detail="rider_short:N",
-                    order=alt.Order("x_order:Q", sort="ascending"),
-                    tooltip=[
-                        alt.Tooltip("event_label:N", title="Event label"),
-                        alt.Tooltip("event_dt:T", title="Date"),
-                        alt.Tooltip("location:N", title="Location"),
-                        alt.Tooltip("rider_short:N", title="Rider"),
-                        alt.Tooltip("reached_phase:N", title="Phase"),
-                        alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
-                        alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
-                    ],
-                )
+            base_line = alt.Chart(line_df).encode(
+                x=x_axis,
+                y=y_axis,
+                color=alt.Color("rider_short:N", title="Rider"),
+                detail="rider_short:N",
+                order=alt.Order("x_order:Q", sort="ascending"),
+                tooltip=[
+                    alt.Tooltip("event_label:N", title="Event label"),
+                    alt.Tooltip("event_dt:T", title="Date"),
+                    alt.Tooltip("location:N", title="Location"),
+                    alt.Tooltip("rider_short:N", title="Rider"),
+                    alt.Tooltip("reached_phase:N", title="Phase"),
+                    alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
+                    alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
+                ],
+            )
 
-                line = base_line.mark_line()
-                points = base_line.transform_filter("datum.is_overflow == false").mark_point(size=65)
+            line = base_line.mark_line()
+            points = base_line.transform_filter("datum.is_overflow == false").mark_point(size=65)
 
-                overflow_base = alt.Chart(overflow_df).encode(
-                    x=x_axis,
-                    y=alt.Y(
-                        "final_rank_plot:Q",
-                        scale=alt.Scale(domain=[1, 33.5], domainMin=1, domainMax=33.5, reverse=True, nice=False),
-                        title="Final Rank",
-                    ),
-                    color=alt.Color("rider_short:N", title="Rider"),
-                    detail="rider_short:N",
-                    tooltip=[
-                        alt.Tooltip("event_label:N", title="Event label"),
-                        alt.Tooltip("event_dt:T", title="Date"),
-                        alt.Tooltip("location:N", title="Location"),
-                        alt.Tooltip("rider_short:N", title="Rider"),
-                        alt.Tooltip("reached_phase:N", title="Phase"),
-                        alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
-                        alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
-                    ],
+            overflow_base = alt.Chart(overflow_df).encode(
+                x=x_axis,
+                y=alt.Y(
+                    "final_rank_plot:Q",
+                    scale=alt.Scale(domain=[1, 33.5], domainMin=1, domainMax=33.5, reverse=True, nice=False),
+                    title="Final Rank",
+                ),
+                color=alt.Color("rider_short:N", title="Rider"),
+                detail="rider_short:N",
+                tooltip=[
+                    alt.Tooltip("event_label:N", title="Event label"),
+                    alt.Tooltip("event_dt:T", title="Date"),
+                    alt.Tooltip("location:N", title="Location"),
+                    alt.Tooltip("rider_short:N", title="Rider"),
+                    alt.Tooltip("reached_phase:N", title="Phase"),
+                    alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
+                    alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
+                ],
+            )
+            overflow_points = overflow_base.mark_point(shape="triangle-up", size=45, opacity=0.95)
+            layers = [*zone_layers, line, points, overflow_points]
+            if show_dnq_labels:
+                over32_text = (
+                    overflow_base.mark_text(dy=-8, fontSize=10)
+                    .encode(text="final_rank_over32_label:N")
                 )
-                overflow_points = overflow_base.mark_point(shape="triangle-up", size=45, opacity=0.95)
-                layers = [*zone_layers, line, points, overflow_points]
-                if show_dnq_labels:
-                    over32_text = (
-                        overflow_base.mark_text(dy=-8, fontSize=10)
-                        .encode(text="final_rank_over32_label:N")
-                    )
-                    layers.append(over32_text)
-                trend_chart = alt.layer(*layers).properties(
-                    height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
-                )
-                st.altair_chart(trend_chart, use_container_width=True)
+                layers.append(over32_text)
+            trend_chart = alt.layer(*layers).properties(
+                height=460, padding={"bottom": 110, "left": 5, "right": 5, "top": 10}
+            )
+            st.altair_chart(trend_chart, use_container_width=True)
 
         st.markdown("**Final Rank pro Event (master_results)**")
         final_rank_tbl = rider_event.copy()

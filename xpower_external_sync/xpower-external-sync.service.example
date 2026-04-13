@@ -1,0 +1,13 @@
+[Unit]
+Description=xPower external backend sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/bmx/bmx-worldcup-analyse
+EnvironmentFile=/opt/bmx/xpower-sync/.env
+ExecStart=/opt/bmx/xpower-sync/.venv/bin/python /opt/bmx/bmx-worldcup-analyse/xpower_external_sync/sync_external_xpower.py --env /opt/bmx/xpower-sync/.env sync-meta
+ExecStartPost=/opt/bmx/xpower-sync/.venv/bin/python /opt/bmx/bmx-worldcup-analyse/xpower_external_sync/sync_external_xpower.py --env /opt/bmx/xpower-sync/.env download-files
+ExecStartPost=/opt/bmx/xpower-sync/.venv/bin/python /opt/bmx/bmx-worldcup-analyse/xpower_external_sync/sync_external_xpower.py --env /opt/bmx/xpower-sync/.env import-archive
+User=root

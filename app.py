@@ -7,6 +7,7 @@ import requests
 import unicodedata
 import datetime
 import json
+import html as html_lib
 import re
 from typing import List, Optional, Tuple, Dict, Any
 
@@ -15,7 +16,11 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-DB_PATH = "bmx.db"
+from access_control import render_sidebar_nav, require_page_access
+from ui_prefs import load_page_prefs, update_page_prefs
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(APP_DIR, "bmx.db")
 DB_URL_ZIP = "https://github.com/SwissCyclingBMX/bmx-worldcup-analyse/releases/download/db-latest/bmx_db.zip"
 DB_PATH_CLOUD = "/tmp/bmx.db"
 
@@ -397,7 +402,7 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
         try:
             df = pd.read_sql_query(
                 """
-                SELECT event_id, display_name, location, country, event_date
+                SELECT event_id, display_name, location, country, event_date, last_seen
                 FROM events
                 ORDER BY event_id DESC
                 """,
@@ -653,7 +658,18 @@ def live_event_ids_today(events_df: pd.DataFrame) -> List[str]:
 
     dates = pd.to_datetime(events_df["event_date"], errors="coerce").dt.date
     today = datetime.date.today()
-    live_ids = events_df.loc[dates == today, "event_id"].dropna().unique().tolist()
+    near_days = {today, today - datetime.timedelta(days=1), today + datetime.timedelta(days=1)}
+    date_mask = dates.isin(near_days)
+
+    # Fallback for timezone drift or late-night sessions:
+    # treat events seen in the last 10 hours as live, even if event_date differs by one day.
+    recent_mask = pd.Series(False, index=events_df.index)
+    if "last_seen" in events_df.columns:
+        last_seen_ts = pd.to_datetime(events_df["last_seen"], errors="coerce")
+        cutoff = datetime.datetime.now() - datetime.timedelta(hours=10)
+        recent_mask = last_seen_ts >= cutoff
+
+    live_ids = events_df.loc[date_mask | recent_mask, "event_id"].dropna().unique().tolist()
     return sorted(live_ids)
 
 
@@ -780,6 +796,143 @@ def parse_time_to_seconds(val) -> float:
             return float("nan")
 
 
+def format_seconds_3(val: Any) -> str:
+    try:
+        num = float(val)
+    except Exception:
+        return ""
+    if pd.isna(num):
+        return ""
+    return f"{num:.3f}"
+
+
+def format_rank_tag(rank: Any) -> str:
+    try:
+        rank_i = int(rank)
+    except Exception:
+        return ""
+    return f"#{rank_i}"
+
+
+def extract_clock_time(*values: Any) -> str:
+    for value in values:
+        s = str(value or "").strip()
+        if not s:
+            continue
+        m = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b", s)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def training_category_label(category: Any, gate: Any = "") -> str:
+    code = str(category or "").strip().upper()
+    gate_text = str(gate or "").strip()
+    gate_label = re.sub(r"^Race\s+\d+\s+", "", gate_text, flags=re.IGNORECASE).strip()
+    code_map = {
+        "ME": "Elite Men",
+        "WE": "Elite Women",
+        "MU": "U23 Men",
+        "WU": "U23 Women",
+        "MJ": "Junior Men",
+        "WJ": "Junior Women",
+    }
+    if code in code_map:
+        return code_map[code]
+    inferred = infer_training_group_label(category, gate)
+    if inferred:
+        return inferred
+    if gate_label:
+        return gate_label
+    return code
+
+
+def infer_training_group_label(category: Any, gate: Any = "") -> str:
+    code = str(category or "").strip().upper()
+    exact_map = {
+        "ME": "Elite Men",
+        "WE": "Elite Women",
+        "MU": "U23 Men",
+        "WU": "U23 Women",
+        "MJ": "Junior Men",
+        "WJ": "Junior Women",
+        "W00": "Elite Women",
+    }
+    if code in exact_map:
+        return exact_map[code]
+
+    gate_text = str(gate or "").strip().lower()
+    patterns = [
+        ("men elite", "Elite Men"),
+        ("women elite", "Elite Women"),
+        ("women championship", "Elite Women"),
+        ("men u23", "U23 Men"),
+        ("women u23", "U23 Women"),
+        ("men junior", "Junior Men"),
+        ("women junior", "Junior Women"),
+    ]
+    for token, label in patterns:
+        if token in gate_text:
+            return label
+    return ""
+
+
+def filter_training_by_allowed_groups(df_train: pd.DataFrame, allowed_group_ids: List[int]) -> pd.DataFrame:
+    if df_train.empty or not allowed_group_ids:
+        return df_train
+    allowed_labels = {GROUP_MAP.get(int(gid), "") for gid in allowed_group_ids if int(gid) in GROUP_MAP}
+    allowed_labels.discard("")
+    if not allowed_labels or "training_group_label" not in df_train.columns:
+        return df_train
+    return df_train[df_train["training_group_label"].isin(allowed_labels)].copy()
+
+
+def filter_training_metric_outliers(
+    df_train: pd.DataFrame,
+    metric_col: str,
+    category_col: str = "category_label",
+) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
+    if df_train.empty or metric_col not in df_train.columns or category_col not in df_train.columns:
+        return df_train, {}
+
+    keep_mask = pd.Series(True, index=df_train.index)
+    stats: Dict[str, Dict[str, float]] = {}
+
+    for category_label, grp in df_train.groupby(category_col, dropna=False):
+        metric_vals = pd.to_numeric(grp[metric_col], errors="coerce")
+        metric_vals = metric_vals[np.isfinite(metric_vals) & (metric_vals > 0)]
+        unique_vals = np.sort(metric_vals.unique())
+        if unique_vals.size < 5:
+            continue
+
+        q10, q25, q50, q75 = np.percentile(unique_vals, [10, 25, 50, 75])
+        iqr = max(float(q75 - q25), 0.001)
+        dense_gap = max(0.02, min(0.08, 0.75 * max(float(q50 - q25), 0.01)))
+        lower_bound = float(q10 - max(0.12, 1.5 * iqr, 0.06 * max(float(q10), 1.0)))
+
+        cluster_start = None
+        for i in range(max(0, unique_vals.size - 3)):
+            window = unique_vals[i : i + 4]
+            if window.size < 3:
+                break
+            gaps = np.diff(window)
+            if gaps.size >= 2 and float(np.max(gaps)) <= dense_gap:
+                cluster_start = float(window[0])
+                break
+
+        if cluster_start is not None and cluster_start <= float(q50):
+            lower_bound = max(lower_bound, cluster_start)
+
+        grp_keep = grp[metric_col].isna() | (pd.to_numeric(grp[metric_col], errors="coerce") >= lower_bound)
+        keep_mask.loc[grp.index] = grp_keep
+        stats[str(category_label or "")] = {
+            "lower_bound": lower_bound,
+            "removed": float((~grp_keep).sum()),
+        }
+
+    return df_train.loc[keep_mask].copy(), stats
+
+
 def normalize_training_name(name: str) -> str:
     """
     Training files often store names as 'LAST First'. If we detect a token with
@@ -804,22 +957,29 @@ def normalize_training_name(name: str) -> str:
 
 
 @st.cache_data(ttl=10)
-def load_training_for_events(event_ids: List[str]) -> pd.DataFrame:
+def load_training_for_events(event_ids: List[str], rider_names: Optional[List[str]] = None) -> pd.DataFrame:
     db_path = DB_PATH if os.path.exists(DB_PATH) else DB_PATH_CLOUD
     if not os.path.exists(db_path):
         return pd.DataFrame()
     event_ids = [e for e in event_ids if e]
     if not event_ids:
         return pd.DataFrame()
+    rider_names = [n for n in (rider_names or []) if n]
 
     in_sql, params = safe_in_clause(event_ids)
+    where_parts = [f"event_id IN {in_sql}"]
+    if rider_names:
+        rider_in_sql, rider_params = safe_in_clause(rider_names)
+        where_parts.append(f"name IN {rider_in_sql}")
+        params = params + rider_params
+    where_sql = " AND ".join(where_parts)
     conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql_query(
             f"""
-            SELECT event_id, category, bib, name, nation, gate, start, t1
+            SELECT DISTINCT event_id, category, bib, name, nation, gate, start, t1
             FROM training_times
-            WHERE event_id IN {in_sql}
+            WHERE {where_sql}
             """,
             conn,
             params=params,
@@ -836,12 +996,15 @@ def load_training_for_events(event_ids: List[str]) -> pd.DataFrame:
     df["name_key"] = df["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
     df["start_s"] = df["start"].apply(parse_time_to_seconds)
     df["t1_s"] = df["t1"].apply(parse_time_to_seconds)
+    df["category_label"] = df.apply(lambda r: training_category_label(r.get("category"), r.get("gate")), axis=1)
+    df["training_group_label"] = df.apply(lambda r: infer_training_group_label(r.get("category"), r.get("gate")), axis=1)
     return df
 
 
 def training_stats(df_train: pd.DataFrame) -> pd.DataFrame:
+    empty_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "name", "cons_score"]
     if df_train.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=empty_cols)
 
     def avg_top3(series: pd.Series) -> float:
         s = series.dropna().astype(float).sort_values()
@@ -868,6 +1031,8 @@ def training_stats(df_train: pd.DataFrame) -> pd.DataFrame:
         name=("name", canonical_name),
         cons_score=("start_s", consistency_score),
     )
+    if out.empty:
+        return pd.DataFrame(columns=empty_cols)
     # round averages for display
     for c in ["avg_top3_start", "avg_top3_t1", "best_start", "best_t1"]:
         out[c] = out[c].round(3)
@@ -878,8 +1043,9 @@ def race_stats(df_race: pd.DataFrame) -> pd.DataFrame:
     """
     Compute best/avg3/consistency for race data (start/t1 from picks).
     """
+    empty_cols = ["name_norm", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "name", "cons_score"]
     if df_race.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=empty_cols)
 
     tmp = df_race.copy()
     tmp["name_norm"] = tmp["name"].apply(norm_name)
@@ -911,6 +1077,8 @@ def race_stats(df_race: pd.DataFrame) -> pd.DataFrame:
         name=("name", canonical_name),
         cons_score=("start_s", consistency_score),
     )
+    if out.empty:
+        return pd.DataFrame(columns=empty_cols)
     # round averages for display
     for c in ["avg_top3_start", "avg_top3_t1", "best_start", "best_t1"]:
         out[c] = out[c].round(3)
@@ -986,6 +1154,10 @@ def filter_upcoming_heats(heats: pd.DataFrame) -> pd.DataFrame:
 
     # keep "confirmed", "upcoming", "scheduled", plus anything unknown (to not hide data)
     out = heats[~not_upcoming].copy()
+    # JSTiming can expose future-round placeholder heats without riders yet (e.g. empty LCQ shells).
+    # Those are not actionable for the live view and should not replace real upcoming startlists.
+    if "has_named_rows" in out.columns:
+        out = out[out["has_named_rows"].fillna(False).astype(bool)].copy()
     return out
 
 
@@ -996,6 +1168,7 @@ def add_heat_result_flags(heats: pd.DataFrame, df_rows: pd.DataFrame) -> pd.Data
     out = heats.copy()
     if df_rows is None or df_rows.empty:
         out["has_result"] = False
+        out["has_named_rows"] = False
         return out
 
     tmp = df_rows.copy()
@@ -1012,15 +1185,24 @@ def add_heat_result_flags(heats: pd.DataFrame, df_rows: pd.DataFrame) -> pd.Data
         has_rank = pd.Series(False, index=tmp.index, dtype=bool)
 
     tmp["has_result"] = (has_time.fillna(False) | has_rank.fillna(False)).astype(bool)
+    if "name" in tmp.columns:
+        tmp["has_named_rows"] = tmp["name"].fillna("").astype(str).str.strip().ne("")
+    else:
+        tmp["has_named_rows"] = False
 
     key_cols = [c for c in ["group_id", "round_key", "round_title", "heat_id", "heat_title"] if c in out.columns and c in tmp.columns]
     if not key_cols:
         out["has_result"] = False
+        out["has_named_rows"] = False
         return out
 
-    flags = tmp.groupby(key_cols, as_index=False)["has_result"].any()
+    flags = tmp.groupby(key_cols, as_index=False).agg(
+        has_result=("has_result", "any"),
+        has_named_rows=("has_named_rows", "any"),
+    )
     out = out.merge(flags, on=key_cols, how="left")
     out["has_result"] = out["has_result"].fillna(False).astype(bool)
+    out["has_named_rows"] = out["has_named_rows"].fillna(False).astype(bool)
     return out
 
 
@@ -1415,6 +1597,7 @@ def lane_distribution(df_hist: pd.DataFrame) -> pd.DataFrame:
 # UI
 # ----------------------------
 st.set_page_config(page_title="Heat Analyser", layout="wide", initial_sidebar_state="expanded")
+require_page_access(["admin", "coach"], "Heat Analyser")
 
 # Remove internal scrollbars for tables
 st.markdown(
@@ -1482,24 +1665,17 @@ else:
 events_work["_series_code"] = pd.Series(series_code, index=events_work.index)
 
 # Sidebar: Event Auswahl
-def safe_sidebar_page_link(script_path: str, label: str) -> None:
-    if os.path.exists(script_path):
-        st.sidebar.page_link(script_path, label=label)
-
-
-safe_sidebar_page_link("app.py", "Heat Analyser")
-safe_sidebar_page_link("pages/3_Athlete_Insights.py", "Athlete Insights")
-safe_sidebar_page_link("pages/4_Live_Polling.py", "Live Polling")
-safe_sidebar_page_link("pages/9_CoachNow_Automation.py", "CoachNow Automation")
-st.sidebar.divider()
+render_sidebar_nav()
 st.sidebar.header("Event Auswahl")
+page_prefs = load_page_prefs("heat_analyzer")
 
 # Live if there is something with event_date == today.
 # Do not restrict by derived year to avoid hiding valid events with legacy IDs.
 live_ids = live_event_ids_today(events)
 
 if live_ids:
-    mode = st.sidebar.radio("Modus", ["Live", "Archiv (Jahre)"], horizontal=True)
+    mode_default = page_prefs.get("mode", "Live" if live_ids else "Archiv (Jahre)")
+    mode = st.sidebar.radio("Modus", ["Live", "Archiv (Jahre)"], horizontal=True, index=(["Live", "Archiv (Jahre)"].index(mode_default) if mode_default in ["Live", "Archiv (Jahre)"] else 0), key="ha_mode")
 else:
     st.sidebar.caption("Kein Live-Event erkannt – Modus bleibt auf Archiv.")
     mode = "Archiv (Jahre)"
@@ -1509,7 +1685,8 @@ if mode == "Live":
     df_current_pool = events_work[events_work["event_id"].isin(live_ids)].copy()
 else:
     years = sorted(events_work["year"].dropna().unique().tolist(), reverse=True)
-    year_sel = st.sidebar.multiselect("Jahr", years, default=[years[0]] if years else [])
+    year_default = [y for y in page_prefs.get("year_sel", []) if y in years] or ([years[0]] if years else [])
+    year_sel = st.sidebar.multiselect("Jahr", years, default=year_default, key="ha_year_sel")
     code_to_label = {
         "wc": "WC",
         "wch": "WM",
@@ -1523,7 +1700,8 @@ else:
     label_to_code = {v: k for k, v in code_to_label.items()}
     available_codes = set(events_work["_series_code"].dropna().astype(str).tolist())
     type_opts = [code_to_label[c] for c in ["wc", "wch", "euc", "em", "usap", "ffc", "scc", "other"] if c in available_codes]
-    type_sel = st.sidebar.multiselect("Wettkampftyp", type_opts, default=type_opts)
+    type_default = [t for t in page_prefs.get("type_sel", []) if t in type_opts] or type_opts
+    type_sel = st.sidebar.multiselect("Wettkampftyp", type_opts, default=type_default, key="ha_type_sel")
     df_current_pool = events_work.copy()
     if year_sel:
         df_current_pool = df_current_pool[df_current_pool["year"].isin(year_sel)].copy()
@@ -1547,7 +1725,9 @@ try:
 except Exception:
     default_event_index = 0
 
-event_label_current = st.sidebar.selectbox("Event", event_options, index=default_event_index)
+event_default = page_prefs.get("event_label_current")
+event_index = event_options.index(event_default) if event_default in event_options else default_event_index
+event_label_current = st.sidebar.selectbox("Event", event_options, index=event_index, key="ha_event_current")
 event_id = df_current_pool.loc[df_current_pool["label_analysis"] == event_label_current, "event_id"].iloc[0]
 st.sidebar.caption(f"Aktives Event: {event_id}")
 
@@ -1557,10 +1737,12 @@ if event_id in events_work["event_id"].tolist():
     default_analysis_labels = [events_work.loc[events_work["event_id"] == event_id, "label_analysis"].iloc[0]]
 
 analysis_options = df_current_pool["label_analysis"].tolist()
+analysis_defaults = [x for x in page_prefs.get("analysis_event_labels", default_analysis_labels) if x in analysis_options] or default_analysis_labels
 analysis_event_labels = st.sidebar.multiselect(
     "Event (Analyse) – frei kombinierbar",
     options=analysis_options,
-    default=default_analysis_labels,
+    default=analysis_defaults,
+    key="ha_analysis_events",
 )
 
 analysis_event_labels = [x for x in analysis_event_labels if x]
@@ -1569,24 +1751,29 @@ analysis_event_ids = events_work.loc[events_work["label_analysis"].isin(analysis
 if event_id not in analysis_event_ids:
     analysis_event_ids.append(event_id)
 
-# Current event picks
+# Filters (order: Nation, Rider, Kategorie, Geschlecht)
+if "nation_filter_main" not in st.session_state:
+    st.session_state["nation_filter_main"] = page_prefs.get("nation_filter_main", "")
+nation = st.sidebar.text_input("Nation Filter (z.B. SUI) – leer = alle", key="nation_filter_main").strip().upper()
+show_times = st.sidebar.checkbox("Zeiten anzeigen (Start/T1)", value=bool(page_prefs.get("show_times", True)), key="ha_show_times")
+training_live = st.sidebar.checkbox("Training-Live Ansicht", value=bool(page_prefs.get("training_live", False)), key="ha_training_live")
+filter_bad_training = st.sidebar.checkbox("Fehlmessungen filtern", value=bool(page_prefs.get("filter_bad_training", True)), disabled=not training_live, key="ha_filter_bad_training")
+
+# Current event data
 df_event = load_picks_for_event(event_id)
-if df_event.empty:
+df_train_current = load_training_for_events([event_id]) if training_live else pd.DataFrame()
+has_training_current = not df_train_current.empty
+if df_event.empty and not (training_live and has_training_current):
     if mode == "Live":
         st.info("Live-Daten sind noch nicht verfügbar. Bitte später erneut laden.")
     else:
         st.warning(f"Keine Picks-Daten für {event_id}.")
     st.stop()
 
-# Filters (order: Nation, Rider, Kategorie, Geschlecht)
-nation = st.sidebar.text_input("Nation Filter (z.B. SUI) – leer = alle", value="SUI").strip().upper()
-show_times = st.sidebar.checkbox("Zeiten anzeigen (Start/T1)", value=True)
-training_live = st.sidebar.checkbox("Training-Live Ansicht", value=False)
-
 # Rider filter(s) - show only riders that match other filters (nation/category/gender)
 # Use session_state for category/gender (widgets are rendered below, but state persists)
-level_sel_state = st.session_state.get("level_sel", ["Elite", "U23", "Junior"])
-gender_sel_state = st.session_state.get("gender_sel", ["Men", "Women"])
+level_sel_state = st.session_state.get("level_sel", [])
+gender_sel_state = st.session_state.get("gender_sel", [])
 
 allowed_group_ids_preview = []
 levels_all = ["Elite", "U23", "Junior"]
@@ -1601,11 +1788,18 @@ else:
         if cat in labels:
             allowed_group_ids_preview.append(gid)
 
-df_rider_pool = df_event.copy()
-if nation:
-    df_rider_pool = df_rider_pool[df_rider_pool["nation"].fillna("").str.upper() == nation]
-if allowed_group_ids_preview:
-    df_rider_pool = df_rider_pool[df_rider_pool["group_id"].isin(allowed_group_ids_preview)].copy()
+if training_live:
+    df_rider_pool = df_train_current.copy()
+    if nation:
+        df_rider_pool = df_rider_pool[df_rider_pool["nation"].fillna("").str.upper() == nation]
+    if allowed_group_ids_preview:
+        df_rider_pool = filter_training_by_allowed_groups(df_rider_pool, allowed_group_ids_preview)
+else:
+    df_rider_pool = df_event.copy()
+    if nation:
+        df_rider_pool = df_rider_pool[df_rider_pool["nation"].fillna("").str.upper() == nation]
+    if allowed_group_ids_preview:
+        df_rider_pool = df_rider_pool[df_rider_pool["group_id"].isin(allowed_group_ids_preview)].copy()
 all_names = sorted([n for n in df_rider_pool["name"].dropna().unique().tolist() if isinstance(n, str) and n.strip()])
 if "rider_filter" not in st.session_state:
     st.session_state["rider_filter"] = []
@@ -1614,7 +1808,7 @@ if training_live:
     rider_live_selected = st.sidebar.multiselect(
         "Rider Filter (Live, leer = alle)",
         options=all_names,
-        default=[],
+        default=[x for x in page_prefs.get("rider_filter_live", []) if x in all_names],
         key="rider_filter_live",
     )
     rider_selected = "Alle"
@@ -1624,6 +1818,7 @@ else:
     rider_selected_list = st.sidebar.multiselect(
         "Rider Filter (optional, leer = alle)",
         options=options_riders,
+        default=[x for x in page_prefs.get("rider_filter", []) if x in options_riders],
         key="rider_filter",
     )
     # allow multi-select; baseline comparison only if exactly one selected
@@ -1634,15 +1829,31 @@ else:
 level_sel = st.sidebar.multiselect(
     "Kategorie",
     options=["Elite", "U23", "Junior"],
-    default=["Elite", "U23"],
+    default=[x for x in page_prefs.get("level_sel", []) if x in ["Elite", "U23", "Junior"]],
     key="level_sel",
 )
 gender_sel = st.sidebar.multiselect(
     "Geschlecht",
     options=["Men", "Women"],
-    default=["Men", "Women"],
+    default=[x for x in page_prefs.get("gender_sel", []) if x in ["Men", "Women"]],
     key="gender_sel",
 )
+
+update_page_prefs("heat_analyzer", {
+    "mode": mode,
+    "year_sel": year_sel if mode != "Live" else [],
+    "type_sel": type_sel if mode != "Live" else [],
+    "event_label_current": event_label_current,
+    "analysis_event_labels": analysis_event_labels,
+    "nation_filter_main": nation,
+    "show_times": show_times,
+    "training_live": training_live,
+    "filter_bad_training": filter_bad_training,
+    "rider_filter_live": rider_live_selected,
+    "rider_filter": rider_selected_list if not training_live else [],
+    "level_sel": level_sel,
+    "gender_sel": gender_sel,
+})
 
 allowed_group_ids = []
 levels_all = ["Elite", "U23", "Junior"]
@@ -1666,7 +1877,7 @@ if not df_hist_all.empty and allowed_group_ids:
     df_hist_all = df_hist_all[df_hist_all["group_id"].isin(allowed_group_ids)].copy()
 
 # Apply category filters to current event (empty selection = show all)
-if allowed_group_ids:
+if allowed_group_ids and not df_event.empty and "group_id" in df_event.columns:
     df_event = df_event[df_event["group_id"].isin(allowed_group_ids)].copy()
 
 # Cache reset (keep at bottom of sidebar)
@@ -1691,66 +1902,312 @@ if training_live:
     metric_label = st.selectbox("Rundenzeit anzeigen:", list(metric_options.keys()), index=0, key="live_metric")
     metric_col = metric_options[metric_label]
 
-    df_live = df_event.copy()
-    if nation:
-        df_live = df_live[df_live["nation"].fillna("").str.upper() == nation]
-    if rider_live_selected:
-        df_live = df_live[df_live["name"].isin(rider_live_selected)]
-
-    if df_live.empty:
+    df_live_scope = df_train_current.copy()
+    df_live_scope = filter_training_by_allowed_groups(df_live_scope, allowed_group_ids)
+    if df_live_scope.empty:
         st.info("Keine Live-Trainingsdaten mit den aktuellen Filtern.")
         st.stop()
 
-    df_live["start_s"] = df_live["start"].apply(parse_time_to_seconds)
-    df_live["t1_s"] = df_live["t1"].apply(parse_time_to_seconds)
-    df_live["split_t1"] = df_live["t1_s"] - df_live["start_s"]
+    df_live_scope = df_live_scope.copy()
+    df_live_scope["split_t1"] = df_live_scope["t1_s"] - df_live_scope["start_s"]
     if metric_col in ["start", "t1"]:
-        df_live["metric_s"] = df_live[metric_col + "_s"]
+        df_live_scope["metric_s"] = df_live_scope[metric_col + "_s"]
     else:
-        df_live["metric_s"] = df_live[metric_col]
+        df_live_scope["metric_s"] = df_live_scope[metric_col]
 
-    # Row key = start_time_string (fallback to heat_id)
-    df_live["start_label"] = df_live["start_time_string"].fillna("").astype(str)
-    df_live.loc[df_live["start_label"] == "", "start_label"] = df_live["heat_id"].astype(str)
+    df_live_scope = df_live_scope[df_live_scope["metric_s"].notna()].copy()
+    if df_live_scope.empty:
+        st.info("Keine Trainingszeiten fuer die gewaehlte Metrik vorhanden.")
+        st.stop()
 
-    riders = rider_live_selected if rider_live_selected else sorted(df_live["name"].dropna().unique().tolist())
-    mat = (
-        df_live[df_live["name"].isin(riders)]
-        .groupby(["start_label", "name"])["metric_s"]
+    filtered_training_stats: Dict[str, Dict[str, float]] = {}
+    if filter_bad_training:
+        before_count = len(df_live_scope)
+        df_live_scope, filtered_training_stats = filter_training_metric_outliers(df_live_scope, "metric_s")
+        removed_count = before_count - len(df_live_scope)
+        if removed_count > 0:
+            st.caption(f"Fehlmessungen ausgeblendet: {removed_count}")
+
+    for frame in (df_live_scope,):
+        frame["gate_label"] = frame["gate"].fillna("").astype(str).str.strip()
+        frame["clock_time"] = frame.apply(
+            lambda r: extract_clock_time(r.get("gate"), r.get("source_file"), r.get("start"), r.get("t1")),
+            axis=1,
+        )
+        frame["start_id"] = frame["gate_label"]
+        frame.loc[frame["start_id"] == "", "start_id"] = frame["clock_time"]
+        frame.loc[frame["start_id"] == "", "start_id"] = "Training"
+        frame["start_num"] = pd.to_numeric(
+            frame["gate_label"].str.extract(r"Race\s+(\d+)", expand=False),
+            errors="coerce",
+        )
+
+    df_live_focus = df_live_scope.copy()
+    if nation:
+        df_live_focus = df_live_focus[df_live_focus["nation"].fillna("").str.upper() == nation]
+    if rider_live_selected:
+        df_live_focus = df_live_focus[df_live_focus["name"].isin(rider_live_selected)]
+    df_live_focus = df_live_focus[df_live_focus["metric_s"].notna()].copy()
+
+    available_riders = sorted(df_live_focus["name"].dropna().astype(str).unique().tolist())
+    if rider_live_selected:
+        riders = [r for r in rider_live_selected if r in available_riders]
+    else:
+        riders = (
+            df_live_focus.groupby("name")["metric_s"]
+            .min()
+            .sort_values(kind="stable")
+            .head(10)
+            .index.tolist()
+        )
+        if len(available_riders) > 10:
+            st.caption("Ohne Rider-Auswahl werden die schnellsten 10 Athleten angezeigt.")
+    if len(riders) > 10:
+        st.warning("Training Live zeigt maximal 10 Athleten. Es werden die ersten 10 deiner Auswahl verwendet.")
+        riders = riders[:10]
+    if not riders and not df_live_focus.empty:
+        riders = (
+            df_live_focus.groupby("name")["metric_s"]
+            .min()
+            .sort_values(kind="stable")
+            .head(10)
+            .index.tolist()
+        )
+    if df_live_focus.empty or not riders:
+        st.info("Keine Athleten passend zu Nation-/Rider-Filter in der Start-Uebersicht.")
+        st.stop()
+
+    session_rank_df = (
+        df_live_scope.groupby(["start_id", "category_label", "name"], as_index=False)["metric_s"]
+        .min()
+        .sort_values(["category_label", "metric_s", "name", "start_id"], kind="stable")
+    )
+    session_rank_df["segment_rank"] = session_rank_df.groupby(["category_label"]).cumcount() + 1
+    session_rank_map = {
+        (str(r.start_id), str(r.category_label), str(r.name)): int(r.segment_rank)
+        for r in session_rank_df.itertuples()
+    }
+
+    athlete_best_df = (
+        df_live_scope.groupby(["category_label", "name"], as_index=False)["metric_s"]
+        .min()
+        .sort_values(["category_label", "metric_s", "name"], kind="stable")
+    )
+    athlete_best_df["segment_rank_best"] = athlete_best_df.groupby("category_label").cumcount() + 1
+    athlete_best_map = {
+        str(r.name): {
+            "category_label": str(r.category_label),
+            "best_metric": float(r.metric_s),
+            "best_rank": int(r.segment_rank_best),
+        }
+        for r in athlete_best_df.itertuples()
+    }
+    category_best_map = (
+        athlete_best_df.groupby("category_label")["metric_s"].min().to_dict()
+        if not athlete_best_df.empty
+        else {}
+    )
+
+    start_summary = (
+        df_live_focus.groupby("start_id", as_index=False)
+        .agg(
+            Start=("gate_label", lambda s: next((x for x in s if str(x).strip()), "Training")),
+            Uhrzeit=("clock_time", lambda s: next((x for x in s if str(x).strip()), "")),
+            Kategorie=("category_label", lambda s: next((x for x in s if str(x).strip()), "")),
+            _sort_num=("start_num", "min"),
+        )
+        .sort_values(["_sort_num", "Start", "Uhrzeit"], na_position="last", kind="stable")
+    )
+    start_summary["Schnellste"] = start_summary["Kategorie"].map(category_best_map)
+    start_matrix = (
+        df_live_focus[df_live_focus["name"].isin(riders)]
+        .groupby(["start_id", "category_label", "name"])["metric_s"]
         .min()
         .reset_index()
-        .pivot(index="start_label", columns="name", values="metric_s")
     )
-    mat = mat.reindex(columns=riders)
-    mat = mat.reset_index().rename(columns={"start_label": "Start"})
-    st.table(mat)
 
-    # Last available gate table
-    st.markdown("**Letzte verfügbare Gates (aktuellste Messung):**")
-    df_last = df_live.copy()
-    # derive a sortable time key from start_time_string
-    df_last["start_ts"] = pd.to_timedelta(df_last["start_time_string"], errors="coerce")
-    if df_last["start_ts"].notna().any():
-        latest_ts = df_last["start_ts"].max()
-        df_last = df_last[df_last["start_ts"] == latest_ts].copy()
-    else:
-        df_last = df_last.sort_values(["heat_id"], ascending=False).head(8).copy()
-
-    df_last = df_last.sort_values(["lane_idx", "lane"], na_position="last", kind="stable")
-    # compute split for display
-    df_last["split"] = df_last["t1_s"] - df_last["start_s"]
-    last_cols = ["start_time_string", "name", "start", "split", "t1"]
-    last_cols = [c for c in last_cols if c in df_last.columns]
-    df_last = df_last[last_cols].rename(
-        columns={
-            "start_time_string": "Starttime",
-            "name": "Name",
-            "start": "Start",
-            "split": "Split",
-            "t1": "T1",
+    start_rows = []
+    for row in start_summary.itertuples():
+        row_data = {
+            "Start": str(row.Start or "Training"),
+            "Uhrzeit": str(row.Uhrzeit or ""),
+            "Schnellste": format_seconds_3(row.Schnellste),
         }
+        for rider in riders:
+            best_info = athlete_best_map.get(rider)
+            rider_row = start_matrix[
+                (start_matrix["start_id"] == row.start_id)
+                & (start_matrix["name"] == rider)
+            ]
+            if rider_row.empty:
+                row_data[rider] = ""
+                continue
+            metric_val = rider_row.iloc[0]["metric_s"]
+            category_label = str(rider_row.iloc[0]["category_label"] or "")
+            seg_rank = session_rank_map.get((str(row.start_id), category_label, rider))
+            metric_txt = format_seconds_3(metric_val)
+            rank_txt = format_rank_tag(seg_rank)
+            is_best_start = bool(best_info) and abs(float(metric_val) - float(best_info.get("best_metric", float("nan")))) < 1e-9
+            if metric_txt and rank_txt:
+                content = (
+                    f"{html_lib.escape(metric_txt)} "
+                    f"<span style='font-size:11px;color:#6b7280'>{html_lib.escape(rank_txt)}</span>"
+                )
+                if is_best_start:
+                    row_data[rider] = (
+                        "<span style='display:inline-block;padding:1px 4px;"
+                        "background:#e7f6ea;border-radius:4px'>"
+                        f"{content}</span>"
+                    )
+                else:
+                    row_data[rider] = content
+            else:
+                plain = html_lib.escape(metric_txt)
+                if is_best_start and plain:
+                    row_data[rider] = (
+                        "<span style='display:inline-block;padding:1px 4px;"
+                        "background:#e7f6ea;border-radius:4px'>"
+                        f"{plain}</span>"
+                    )
+                else:
+                    row_data[rider] = plain
+        start_rows.append(row_data)
+
+    best_rank_row = {
+        "Start": "Segment Rank best start",
+        "Uhrzeit": "",
+        "Schnellste": "",
+    }
+    for rider in riders:
+        best_info = athlete_best_map.get(rider)
+        best_rank_row[rider] = html_lib.escape(format_rank_tag(best_info.get("best_rank"))) if best_info else ""
+
+    show_clock_col = start_summary["Uhrzeit"].fillna("").astype(str).str.strip().ne("").any()
+    start_columns = ["Start"] + (["Uhrzeit"] if show_clock_col else []) + ["Schnellste"] + riders
+    start_html = [
+        "<style>",
+        ".training-live-table-wrap { max-height: 540px; overflow: auto; }",
+        ".training-live-table { width: 100%; border-collapse: collapse; font-size: 12px; }",
+        ".training-live-table th, .training-live-table td { border: 1px solid #e6e6e6; padding: 4px 6px; text-align: center; white-space: nowrap; background: white; }",
+        ".training-live-table th:first-child, .training-live-table td:first-child { text-align: left; }",
+        ".training-live-table thead th { position: sticky; top: 0; z-index: 3; background: #f6f7f9; font-weight: 600; }",
+        ".training-live-table tbody tr.best-rank-row td { position: sticky; top: 29px; z-index: 2; background: #f6f7f9; font-weight: 600; }",
+        ".training-live-table tbody tr:hover td { background: #fafafa; }",
+        "@media (prefers-color-scheme: dark) {",
+        ".training-live-table th, .training-live-table td { color: #f1f3f5; background: #1b1b1b; border: 1px solid #333; }",
+        ".training-live-table thead th { background: #242424; }",
+        ".training-live-table tbody tr.best-rank-row td { background: #242424; }",
+        ".training-live-table tbody tr:hover td { background: #232323; }",
+        "}",
+        "</style>",
+        "<div class='training-live-table-wrap'>",
+        "<table class='training-live-table'>",
+        "<thead><tr>",
+    ]
+    for col in start_columns:
+        start_html.append(f"<th>{html_lib.escape(str(col))}</th>")
+    start_html.append("</tr></thead><tbody>")
+    start_html.append("<tr class='best-rank-row'>")
+    for col in start_columns:
+        start_html.append(f"<td>{best_rank_row.get(col, '')}</td>")
+    start_html.append("</tr>")
+    for row_data in start_rows:
+        start_html.append("<tr>")
+        for col in start_columns:
+            cell = row_data.get(col, "")
+            if col in {"Start", "Uhrzeit", "Schnellste"}:
+                cell = html_lib.escape(str(cell or ""))
+            start_html.append(f"<td>{cell}</td>")
+        start_html.append("</tr>")
+    start_html.append("</tbody></table></div>")
+    st.markdown("**Start-Uebersicht:**")
+    components.html("".join(start_html), height=560, scrolling=False)
+
+    start_display_map = {}
+    for _, row in start_summary.iterrows():
+        label = str(row.get("Start") or "Training")
+        clock = str(row.get("Uhrzeit") or "").strip()
+        start_display_map[str(row.get("start_id"))] = f"{label} | {clock}" if clock else label
+
+    start_options = start_summary["start_id"].tolist()
+    selected_start_id = st.selectbox(
+        "Start ansehen",
+        options=start_options,
+        format_func=lambda sid: start_display_map.get(str(sid), str(sid)),
+        key="training_live_start_select",
     )
-    st.table(df_last)
+
+    df_start = df_live_scope[df_live_scope["start_id"] == selected_start_id].copy()
+    df_start = df_start.sort_values(["metric_s", "name"], na_position="last", kind="stable")
+    if not df_start.empty:
+        st.markdown("**Teilnehmer dieses Starts:**")
+        df_start["Start"] = df_start["start_s"].apply(format_seconds_3)
+        df_start["Split"] = df_start["split_t1"].apply(format_seconds_3)
+        df_start["T1"] = df_start["t1_s"].apply(format_seconds_3)
+        participant_cols = ["category_label", "nation", "name", "Start", "Split", "T1"]
+        participant_cols = [c for c in participant_cols if c in df_start.columns]
+        participants_view = df_start[participant_cols].rename(
+            columns={
+                "category_label": "Kategorie",
+                "nation": "Nation",
+                "name": "Name",
+            }
+        )
+        st.dataframe(participants_view, use_container_width=True, hide_index=True)
+
+    best_per_category = (
+        athlete_best_df.sort_values(["category_label", "metric_s", "name"], na_position="last", kind="stable")
+        .groupby("category_label", group_keys=False)
+        .head(5)[["category_label", "name", "metric_s"]]
+        .copy()
+    )
+    best_meta = (
+        df_live_scope.sort_values(["category_label", "name", "metric_s", "start_s", "t1_s"], na_position="last", kind="stable")
+        .groupby(["category_label", "name"], as_index=False)
+        .first()[["category_label", "name", "nation", "start_s", "t1_s"]]
+    )
+    all_starts = (
+        df_live_scope.sort_values(["category_label", "name", "start_s"], na_position="last", kind="stable")
+        .groupby(["category_label", "name"], as_index=False)["start_s"]
+        .agg(lambda s: " | ".join([format_seconds_3(v) for v in s.tolist() if pd.notna(v)]))
+        .rename(columns={"start_s": "all_start_times"})
+    )
+    def _consistency_score(series: pd.Series) -> float:
+        s = series.dropna().astype(float)
+        if s.empty:
+            return float("nan")
+        std = s.std()
+        if pd.isna(std):
+            return float("nan")
+        return round(100.0 / (1.0 + std), 1)
+
+    train_scores = (
+        df_live_scope.groupby(["category_label", "name"], as_index=False)["start_s"]
+        .agg(score=_consistency_score)
+    )
+    best_per_category = best_per_category.merge(best_meta, on=["category_label", "name"], how="left")
+    best_per_category = best_per_category.merge(all_starts, on=["category_label", "name"], how="left")
+    best_per_category = best_per_category.merge(train_scores, on=["category_label", "name"], how="left")
+    best_per_category["metric_s"] = best_per_category["metric_s"].apply(format_seconds_3)
+    best_per_category["start_s"] = best_per_category["start_s"].apply(format_seconds_3)
+    best_per_category["t1_s"] = best_per_category["t1_s"].apply(format_seconds_3)
+    st.markdown(f"**Schnellste im Training pro Kategorie ({metric_label}):**")
+    st.dataframe(
+        best_per_category.rename(
+            columns={
+                "category_label": "Kategorie",
+                "name": "Athlet",
+                "nation": "Nation",
+                "metric_s": "Best",
+                "start_s": "Start",
+                "t1_s": "T1",
+                "all_start_times": "Alle Starts",
+                "score": "Score",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
     st.stop()
 
 # ----------------------------
@@ -1887,6 +2344,8 @@ if chosen_round_title:
     df_heat_ctx = df_heat_ctx[df_heat_ctx["round_title"] == chosen_round_title].copy()
 if chosen_heat_title:
     df_heat_ctx = df_heat_ctx[df_heat_ctx["heat_title"] == chosen_heat_title].copy()
+if "name" in df_heat_ctx.columns:
+    df_heat_ctx = df_heat_ctx[df_heat_ctx["name"].fillna("").astype(str).str.strip() != ""].copy()
 
 if "pick_order" in df_heat_ctx.columns:
     df_heat_ctx = df_heat_ctx.sort_values(["pick_order"], na_position="last", kind="stable")
@@ -1946,6 +2405,7 @@ with tab_start:
     start_df["name_key"] = start_df["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
     start_df["name_short"] = df_heat["name_short"].values
     start_df["Rider"] = start_df["name_short"]
+    heat_rider_names = start_df["name"].dropna().astype(str).tolist() if "name" in start_df.columns else []
 
     # Training stats for riders in heat
     if show_times:
@@ -2012,9 +2472,28 @@ with tab_start:
 
         training_source_note = "Training-Zeiten: aktuelles Event (Gate Practice)"
         # Small values in Startliste:
-        # - Round 1 day2: use race stats from previous event at same location + same year (same series).
-        # - Otherwise: use training times from current event only.
-        if is_round1 and prev_is_same_loc_year and prev_event_id:
+        # - Prefer actual training_times from the current event.
+        # - Only fall back to previous event at same location/year if current training is missing.
+        df_train = load_training_for_events([event_id], rider_names=heat_rider_names)
+        if not df_train.empty:
+            if gid in GROUP_MAP:
+                df_train = df_train[df_train["training_group_label"] == GROUP_MAP[gid]].copy()
+            if not df_train.empty:
+                df_train, _ = filter_training_metric_outliers(df_train, "start_s")
+            stats = training_stats(df_train)
+            stats_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]
+            stats = stats[stats_cols]
+            start_df = start_df.merge(stats, on="name_key", how="left")
+            start_df = start_df.rename(
+                columns={
+                    "best_start": "train_best_start",
+                    "best_t1": "train_best_t1",
+                    "avg_top3_start": "train_avg3_start",
+                    "avg_top3_t1": "train_avg3_t1",
+                    "cons_score": "train_cons_score",
+                }
+            )
+        elif is_round1 and prev_is_same_loc_year and prev_event_id:
             df_prev_small = load_picks_for_event(prev_event_id)
             if not df_prev_small.empty:
                 prev_small = race_stats(df_prev_small)
@@ -2030,23 +2509,7 @@ with tab_start:
                             "cons_score": "train_cons_score",
                         }
                     )
-                    training_source_note = "Training-Zeiten: vorheriges Event gleiche Location (gleiches Jahr, gleiche Serie)"
-        else:
-            df_train = load_training_for_events([event_id])
-            if not df_train.empty:
-                stats = training_stats(df_train)
-                stats_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]
-                stats = stats[stats_cols]
-                start_df = start_df.merge(stats, on="name_key", how="left")
-                start_df = start_df.rename(
-                    columns={
-                        "best_start": "train_best_start",
-                        "best_t1": "train_best_t1",
-                        "avg_top3_start": "train_avg3_start",
-                        "avg_top3_t1": "train_avg3_t1",
-                        "cons_score": "train_cons_score",
-                    }
-                )
+                    training_source_note = "Training-Zeiten: Fallback vorheriges Event gleiche Location (gleiches Jahr, gleiche Serie)"
 
         if is_round1:
             df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
@@ -2097,10 +2560,32 @@ with tab_start:
                 return ""
             return f"{v:.3f}" if isinstance(v, (int, float)) else str(v)
 
-        # Baseline: only when a rider is selected
+        # Baseline: enable comparison as long as exactly one filtered athlete is in this heat.
+        baseline_rider_name = None
+        selected_in_heat = []
+        nation_selected_in_heat = []
+        if rider_selected_list:
+            heat_rider_set = set(start_df["name"].dropna().astype(str).tolist())
+            selected_in_heat = [name for name in rider_selected_list if name in heat_rider_set]
+            if len(selected_in_heat) == 1:
+                baseline_rider_name = selected_in_heat[0]
+        elif nation and "nation" in start_df.columns:
+            nation_selected_in_heat = (
+                start_df.loc[
+                    start_df["nation"].fillna("").astype(str).str.upper() == nation,
+                    "name",
+                ]
+                .dropna()
+                .astype(str)
+                .drop_duplicates()
+                .tolist()
+            )
+            if len(nation_selected_in_heat) == 1:
+                baseline_rider_name = nation_selected_in_heat[0]
+
         baseline = {}
-        if rider_selected != "Alle":
-            base_rows = start_df[start_df["name"] == rider_selected]
+        if baseline_rider_name:
+            base_rows = start_df[start_df["name"] == baseline_rider_name]
             if not base_rows.empty:
                 base_row = base_rows.iloc[0]
                 baseline = {
@@ -2141,7 +2626,7 @@ with tab_start:
         # preserve full name for matching (display may be shortened later)
         if "name" in view.columns:
             view["name_full"] = view["name"]
-        view["is_baseline"] = view["name"] == rider_selected
+        view["is_baseline"] = view["name"] == baseline_rider_name
 
         # Heat Rank logic:
         # - if timing exists in selected heat: compute rank locally by time (1..8)
@@ -2278,8 +2763,12 @@ with tab_start:
         html = f"<div style='overflow-x:auto;width:100%;'>{html}</div>"
         components.html(style + html, height=auto_height(view, row_h=38, min_h=200) + 120, scrolling=False)
         st.caption(f"{race_source_note} | {training_source_note}")
-        if rider_selected != "Alle":
+        if baseline_rider_name:
             st.caption("Farben: Rot = schneller als gewählter Rider, Grün = langsamer. Vergleich nur für Start-Zeiten.")
+        elif len(selected_in_heat) > 1:
+            st.caption("Farben deaktiviert: Mehrere gefilterte Athleten sind im selben Heat.")
+        elif len(nation_selected_in_heat) > 1:
+            st.caption("Farben deaktiviert: Mehrere Athleten der gefilterten Nation sind im selben Heat.")
     else:
         start_df_simple = start_df.copy()
         if "name_short" in start_df_simple.columns:

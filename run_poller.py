@@ -20,6 +20,7 @@ sqorz:
 jstiming:
   RACE_URLS (optional, newline/comma/semicolon separated)
   TRAINING_URLS (optional, newline/comma/semicolon separated)
+  ALL_CLASSES=1 (optional; archive/backfill use)
   VERBOSE=1 (optional)
 
 chronorace:
@@ -38,7 +39,17 @@ from typing import List
 
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
-PYTHON_BIN = os.path.join(REPO_DIR, ".venv", "bin", "python")
+
+
+def resolve_python_bin() -> str:
+    # Prefer project venv in production, but fall back to current interpreter for local runs.
+    env_bin = os.path.join(REPO_DIR, ".venv", "bin", "python")
+    if os.path.exists(env_bin):
+        return env_bin
+    return sys.executable or "python3"
+
+
+PYTHON_BIN = resolve_python_bin()
 
 
 def now_iso() -> str:
@@ -105,6 +116,8 @@ def build_cmd() -> List[str]:
             cmd.extend(["--race", u])
         for u in training_urls:
             cmd.extend(["--training", u])
+        if str(os.getenv("ALL_CLASSES", "0")).strip() in {"1", "true", "True"}:
+            cmd.append("--all-classes")
         if str(os.getenv("VERBOSE", "0")).strip() in {"1", "true", "True"}:
             cmd.append("--verbose")
         return cmd

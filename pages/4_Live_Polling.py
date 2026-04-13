@@ -1,12 +1,22 @@
 import datetime
+import glob
+import html
+import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 from typing import Dict, List, Tuple
 
 import pandas as pd
+import requests
 import streamlit as st
+from access_control import render_sidebar_nav, require_page_access
+
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_DB_PATH = os.path.join(REPO_DIR, "bmx.db")
+ARCHIVE_DB_PATH = os.path.join(REPO_DIR, "bmx_archive.db")
 
 POLLER_ENV_DIR = "/etc/bmx-pollers"
 POLLER_UNIT_TEMPLATE = "/etc/systemd/system/bmx-poller@.service"
@@ -51,6 +61,10 @@ def sqorz_event_id_from_url(url: str) -> str:
 def run_cmd(args: List[str]) -> Tuple[int, str, str]:
     proc = subprocess.run(args, capture_output=True, text=True, check=False)
     return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+
+
+def db_path_exists(path: str) -> bool:
+    return bool(path) and os.path.exists(path)
 
 
 def write_poller_env(instance: str, values: Dict[str, str]) -> str:
@@ -128,11 +142,114 @@ def tail_poller_logs(instance: str, lines: int = 60) -> str:
     return out or "Keine Logs verfügbar."
 
 
+def read_env_file(instance: str) -> Dict[str, str]:
+    path = os.path.join(POLLER_ENV_DIR, f"{instance}.env")
+    data: Dict[str, str] = {}
+    if not os.path.exists(path):
+        return data
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or "=" not in line or line.startswith("#"):
+                    continue
+                key, val = line.split("=", 1)
+                data[key.strip()] = val.strip().strip('"').strip("'")
+    except Exception:
+        return {}
+    return data
+
+
+def list_known_instances() -> List[str]:
+    known = set()
+    for row in list_poller_units():
+        unit = str(row.get("unit") or "")
+        m = re.match(r"bmx-poller@(.+)\.service$", unit)
+        if m and str(row.get("active") or "") == "active":
+            known.add(m.group(1))
+    for path in glob.glob(os.path.join(POLLER_ENV_DIR, "*.env")):
+        known.add(os.path.basename(path)[:-4])
+    return sorted(known)
+
+
+def delete_poller_instance(instance: str) -> Tuple[bool, str]:
+    env_path = os.path.join(POLLER_ENV_DIR, f"{instance}.env")
+    unit = poller_service_name(instance)
+    run_cmd([systemctl_bin(), "stop", unit])
+    run_cmd([systemctl_bin(), "disable", unit])
+    run_cmd([systemctl_bin(), "reset-failed", unit])
+    try:
+        if os.path.exists(env_path):
+            os.remove(env_path)
+    except Exception as e:
+        return False, f"Env-Datei konnte nicht gelöscht werden: {e}"
+    run_cmd([systemctl_bin(), "daemon-reload"])
+    return True, f"Gelöscht: {unit}"
+
+
+def _extract_attr_payload(text: str, attr: str):
+    for quote in ['"', "'"]:
+        token = f"{attr}={quote}"
+        start = text.find(token)
+        if start == -1:
+            continue
+        start += len(token)
+        end = text.find(quote, start)
+        if end == -1:
+            continue
+        try:
+            return json.loads(html.unescape(text[start:end]))
+        except Exception:
+            return None
+    return None
+
+
+@st.cache_data(ttl=60)
+def resolve_event_label(source: str, env_vals: Dict[str, str]) -> str:
+    source = (source or "").strip().lower()
+    db_path = env_vals.get("DB_PATH", DEFAULT_DB_PATH)
+    if source == "sqorz":
+        event_id = env_vals.get("EVENT_ID", "").strip()
+        if event_id and db_path_exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                row = conn.execute("SELECT display_name FROM events WHERE event_id = ? LIMIT 1", (event_id,)).fetchone()
+                conn.close()
+                if row and row[0]:
+                    return str(row[0])
+            except Exception:
+                pass
+        return event_id
+    if source == "jstiming":
+        raw = env_vals.get("RACE_URLS") or env_vals.get("TRAINING_URLS") or ""
+        url = raw.splitlines()[0].strip() if raw else ""
+        if not url:
+            return ""
+        try:
+            headers = {"X-Inertia": "true", "X-Requested-With": "XMLHttpRequest"}
+            resp = requests.get(url, headers=headers, timeout=10)
+            payload = None
+            if "application/json" in (resp.headers.get("Content-Type") or ""):
+                payload = resp.json()
+            else:
+                text = resp.text
+                payload = _extract_attr_payload(text, "data-page") or _extract_attr_payload(text, "data-payload")
+            if not isinstance(payload, dict):
+                return ""
+            props = payload.get("props") or payload.get("view", {}).get("properties") or payload.get("view", {}).get("props") or payload
+            event = props.get("event", {}) or {}
+            return str(event.get("name") or "").strip()
+        except Exception:
+            return ""
+    if source == "chronorace":
+        return env_vals.get("EVENTS", "").splitlines()[0].strip()
+    return ""
+
+
 def ensure_poller_template_installed() -> Tuple[bool, str]:
     if os.path.exists(POLLER_UNIT_TEMPLATE):
         return True, "Service-Template vorhanden."
-    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    src = os.path.join(repo_dir, "deploy", "bmx-poller@.service.example")
+    src = os.path.join(REPO_DIR, "deploy", "bmx-poller@.service.example")
     if not os.path.exists(src):
         return False, f"Template-Datei fehlt: {src}"
     try:
@@ -149,11 +266,8 @@ def ensure_state(key: str, default):
 
 
 st.set_page_config(page_title="Live Polling", layout="wide", initial_sidebar_state="expanded")
-st.sidebar.page_link("app.py", label="Heat Analyser")
-st.sidebar.page_link("pages/3_Athlete_Insights.py", label="Athlete Insights")
-st.sidebar.page_link("pages/4_Live_Polling.py", label="Live Polling")
-st.sidebar.page_link("pages/9_CoachNow_Automation.py", label="CoachNow Automation")
-st.sidebar.divider()
+require_page_access(["admin"], "Live Polling")
+render_sidebar_nav()
 
 st.title("Live Polling")
 st.caption("Mehrere Polling-Services parallel starten (Sqorz, JSTiming, Chronorace).")
@@ -170,6 +284,61 @@ if units:
     st.dataframe(pd.DataFrame(units), use_container_width=True, hide_index=True)
 else:
     st.info("Noch keine bmx-poller Services gefunden.")
+
+known_instances = list_known_instances()
+if known_instances:
+    st.subheader("Poller Verwalten")
+    for instance in known_instances:
+        env_vals = read_env_file(instance)
+        status = poller_status(instance)
+        with st.container(border=True):
+            c1, c2, c3, c4, c5 = st.columns([2, 2, 1, 1, 1])
+            with c1:
+                st.markdown(f"**{instance}**")
+                st.caption(f"{poller_service_name(instance)}")
+            with c2:
+                source = env_vals.get("POLLER_KIND", "unbekannt")
+                target = env_vals.get("RACE_URLS") or env_vals.get("TRAINING_URLS") or env_vals.get("EVENT_URL") or env_vals.get("EVENTS") or ""
+                target = target.splitlines()[0] if target else ""
+                event_label = resolve_event_label(source, env_vals)
+                st.caption(f"Quelle: {source}")
+                if target:
+                    st.caption(target)
+                if event_label:
+                    st.caption(f"Event: {event_label}")
+            with c3:
+                if st.button("Stop", key=f"manage_stop_{instance}", use_container_width=True):
+                    rc_stop, out_stop, err_stop = run_cmd([systemctl_bin(), "stop", poller_service_name(instance)])
+                    rc_disable, out_disable, err_disable = run_cmd([systemctl_bin(), "disable", poller_service_name(instance)])
+                    if rc_stop == 0:
+                        st.success(f"Gestoppt: {poller_service_name(instance)}")
+                        st.rerun()
+                    else:
+                        st.error(err_stop or out_stop or err_disable or out_disable or "Stop fehlgeschlagen.")
+            with c4:
+                if st.button("Start", key=f"manage_start_{instance}", use_container_width=True):
+                    run_cmd([systemctl_bin(), "daemon-reload"])
+                    rc_enable, out_enable, err_enable = run_cmd([systemctl_bin(), "enable", poller_service_name(instance)])
+                    rc_restart, out_restart, err_restart = run_cmd([systemctl_bin(), "restart", poller_service_name(instance)])
+                    if rc_enable == 0 and rc_restart == 0:
+                        st.success(f"Gestartet: {poller_service_name(instance)}")
+                        st.rerun()
+                    else:
+                        st.error(err_restart or out_restart or err_enable or out_enable or "Start fehlgeschlagen.")
+            with c5:
+                if st.button("Löschen", key=f"manage_delete_{instance}", use_container_width=True):
+                    ok_delete, msg_delete = delete_poller_instance(instance)
+                    if ok_delete:
+                        st.success(msg_delete)
+                        st.rerun()
+                    else:
+                        st.error(msg_delete)
+            st.caption(
+                f"Status: {status.get('active', '?')} / {status.get('sub', '?')} | "
+                f"Result: {status.get('result', '')} | Start: {status.get('started', '')}"
+            )
+            if st.button("Logs", key=f"manage_logs_{instance}", use_container_width=False):
+                st.code(tail_poller_logs(instance), language="log")
 
 if "live_poller_form_ids" not in st.session_state:
     st.session_state["live_poller_form_ids"] = [1]
@@ -201,12 +370,13 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
         st.caption(f"Unit: {poller_service_name(instance) if instance else '–'}")
 
         poll_interval = int(st.number_input("Intervall (Sekunden)", min_value=5, max_value=600, value=15, step=5, key=f"poll_int_{fid}"))
-        db_path = st.text_input("DB Pfad", value="bmx.db", key=f"poll_db_{fid}")
+        db_key = f"poll_db_{fid}"
+        db_mode_key = f"poll_db_mode_{fid}"
+        ensure_state(db_key, DEFAULT_DB_PATH)
 
         env_values: Dict[str, str] = {
             "POLLER_KIND": source,
             "POLL_INTERVAL": str(poll_interval),
-            "DB_PATH": db_path,
         }
         errors: List[str] = []
 
@@ -248,7 +418,7 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
             all_classes = st.checkbox("Alle Klassen ingestieren", value=False, key=f"poll_sqorz_all_{fid}")
             class_filters = st.text_area(
                 "Class Filter (eine pro Zeile, falls nicht alle Klassen)",
-                value="Men Pro\nWomen Pro",
+                value="Men Pro\nWomen Pro\nMen Elite\nWomen Elite",
                 key=f"poll_sqorz_cls_{fid}",
                 height=90,
             )
@@ -269,11 +439,31 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
         elif source == "jstiming":
             race_urls = st.text_area("Race URLs (eine pro Zeile)", key=f"poll_jst_race_{fid}", height=90)
             training_urls = st.text_area("Training URLs (eine pro Zeile)", key=f"poll_jst_training_{fid}", height=90)
+            all_classes = st.checkbox(
+                "Alle Klassen (Archiv)",
+                value=False,
+                key=f"poll_jst_all_{fid}",
+                help="Nur fuer Archiv/Backfill sinnvoll. Dafuer am besten eine separate DB wie bmx_archive.db verwenden.",
+            )
             verbose = st.checkbox("Verbose Logs", value=False, key=f"poll_jst_verbose_{fid}")
+            if all_classes:
+                if (
+                    st.session_state.get(db_mode_key) != "archive"
+                    and st.session_state.get(db_key, DEFAULT_DB_PATH) in ("", DEFAULT_DB_PATH, ARCHIVE_DB_PATH)
+                ):
+                    st.session_state[db_key] = ARCHIVE_DB_PATH
+                st.session_state[db_mode_key] = "archive"
+            else:
+                if st.session_state.get(db_mode_key) == "archive" and st.session_state.get(db_key) == ARCHIVE_DB_PATH:
+                    st.session_state[db_key] = DEFAULT_DB_PATH
+                st.session_state[db_mode_key] = "main"
+            if all_classes:
+                st.caption("Hinweis: Fuer Archiv-Backfills eine separate DB verwenden, z. B. /opt/bmx/bmx-worldcup-analyse/bmx_archive.db")
             if not race_urls.strip() and not training_urls.strip():
                 errors.append("Mindestens eine Race- oder Training-URL ist nötig.")
             env_values["RACE_URLS"] = race_urls
             env_values["TRAINING_URLS"] = training_urls
+            env_values["ALL_CLASSES"] = "1" if all_classes else "0"
             env_values["VERBOSE"] = "1" if verbose else "0"
 
         else:
@@ -288,6 +478,12 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
             env_values["EVENTS"] = events
             env_values["WORKERS"] = str(workers)
 
+        db_help = None
+        if source == "jstiming" and st.session_state.get(f"poll_jst_all_{fid}", False):
+            db_help = "Automatisch auf Archiv-DB gesetzt. Kann bei Bedarf ueberschrieben werden."
+        db_path = st.text_input("DB Pfad", key=db_key, help=db_help)
+        env_values["DB_PATH"] = db_path
+
         c1, c2, c3 = st.columns(3)
         if c1.button("Start/Update", key=f"poll_start_{fid}", use_container_width=True):
             if not instance:
@@ -301,11 +497,12 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
                 else:
                     env_path = write_poller_env(instance, env_values)
                     run_cmd([systemctl_bin(), "daemon-reload"])
-                    rc, out, err = run_cmd([systemctl_bin(), "enable", "--now", poller_service_name(instance)])
-                    if rc == 0:
+                    rc_enable, out_enable, err_enable = run_cmd([systemctl_bin(), "enable", poller_service_name(instance)])
+                    rc_restart, out_restart, err_restart = run_cmd([systemctl_bin(), "restart", poller_service_name(instance)])
+                    if rc_enable == 0 and rc_restart == 0:
                         st.success(f"Gestartet: {poller_service_name(instance)} ({env_path})")
                     else:
-                        st.error(err or out or "Start fehlgeschlagen.")
+                        st.error(err_restart or out_restart or err_enable or out_enable or "Start fehlgeschlagen.")
 
         if c2.button("Stop", key=f"poll_stop_{fid}", use_container_width=True):
             if not instance:

@@ -58,12 +58,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--all-classes",
         action="store_true",
-        help="Ingest all classes (default ingests only Men Pro + Women Pro)",
+        help="Ingest all classes (default ingests Men/Women Pro + Elite)",
     )
     ap.add_argument(
         "--class-contains",
         action="append",
-        default=["Men Pro", "Women Pro"],
+        default=["Men Pro", "Women Pro", "Men Elite", "Women Elite"],
         help="Optional filter: only ingest classes whose className contains this text (case-insensitive). Repeatable.",
     )
     return ap.parse_args()
@@ -334,7 +334,9 @@ def ingest_payload(conn: sqlite3.Connection, payload: Dict[str, Any], args: argp
     seen_at = now_iso()
     rows: List[Dict[str, Any]] = []
 
-    class_filters = [] if args.all_classes else (args.class_contains or ["Men Pro", "Women Pro"])
+    class_filters = [] if args.all_classes else (
+        args.class_contains or ["Men Pro", "Women Pro", "Men Elite", "Women Elite"]
+    )
     for cls in payload.get("classRanks", []) or []:
         class_name = str(cls.get("className") or "").strip()
         if not class_allowed(class_name, class_filters):

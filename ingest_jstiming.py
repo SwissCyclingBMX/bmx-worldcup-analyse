@@ -12,7 +12,7 @@ import requests
 from ingest import init_db, upsert_event, upsert_picks, now_iso
 
 
-ALLOWED_CLASSES = {"ME", "WE", "MU", "WU", "MJ", "WJ"}
+DEFAULT_ALLOWED_CLASSES = {"ME", "WE", "MU", "WU", "MJ", "WJ"}
 
 CLASS_TO_GROUP = {
     "ME": 91,
@@ -27,9 +27,19 @@ ROUND_SLUG_TO_TITLE = {
     "round-1": "Round 1",
     "moto-1round-1": "Round 1",
     "lcq": "LCQ",
+    "116-finals": "1/16 Finals",
+    "16-finals": "1/16 Finals",
+    "1-16-finals": "1/16 Finals",
+    "1/16-finals": "1/16 Finals",
     "18-finals": "1/8 Finals",
+    "1-8-finals": "1/8 Finals",
+    "1/8-finals": "1/8 Finals",
     "14-finals": "1/4 Finals",
+    "1-4-finals": "1/4 Finals",
+    "1/4-finals": "1/4 Finals",
     "12-finals": "1/2 Finals",
+    "1-2-finals": "1/2 Finals",
+    "1/2-finals": "1/2 Finals",
     "finals": "Final",
     "overall": "Overall",
     "gate-practice": "Gate practice",
@@ -40,11 +50,118 @@ ROUND_SLUG_TO_KEY = {
     "round-1": 1,
     "moto-1round-1": 1,
     "lcq": 2,
-    "18-finals": 3,
-    "14-finals": 4,
-    "12-finals": 5,
-    "finals": 6,
+    "116-finals": 3,
+    "16-finals": 3,
+    "1-16-finals": 3,
+    "1/16-finals": 3,
+    "18-finals": 4,
+    "1-8-finals": 4,
+    "1/8-finals": 4,
+    "14-finals": 5,
+    "1-4-finals": 5,
+    "1/4-finals": 5,
+    "12-finals": 6,
+    "1-2-finals": 6,
+    "1/2-finals": 6,
+    "finals": 7,
 }
+
+CANONICAL_ROUND_SLUGS = [
+    "round-1",
+    "moto-1round-1",
+    "lcq",
+    "116-finals",
+    "16-finals",
+    "1-16-finals",
+    "18-finals",
+    "1-8-finals",
+    "14-finals",
+    "1-4-finals",
+    "12-finals",
+    "1-2-finals",
+    "finals",
+]
+
+
+def _walk_values(node: Any):
+    if isinstance(node, dict):
+        for v in node.values():
+            yield v
+            yield from _walk_values(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield v
+            yield from _walk_values(v)
+
+
+def normalize_slug(value: str) -> str:
+    s = (value or "").strip()
+    if not s:
+        return ""
+    s = s.split("#", 1)[0].split("?", 1)[0].strip()
+    s = s.strip("/")
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1]
+    s = s.replace("_", "-").strip().lower()
+    return s
+
+
+def split_event_root_and_seed_slug(url: str) -> Tuple[str, str]:
+    raw = (url or "").strip()
+    if not raw:
+        return "", ""
+    cleaned = raw.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    m = re.match(r"^(https?://[^/]+/event/[^/]+)(?:/([^/]+))?$", cleaned, flags=re.IGNORECASE)
+    if m:
+        return m.group(1), normalize_slug(m.group(2) or "")
+    return cleaned.rsplit("/", 1)[0], normalize_slug(cleaned.rsplit("/", 1)[-1])
+
+
+def event_uuid_from_props(props: Dict[str, Any]) -> str:
+    event = props.get("event", {}) or {}
+    return str(event.get("uuid") or "").strip().lower()
+
+
+def is_overall_slug(slug: str) -> bool:
+    s = normalize_slug(slug)
+    return s in {"overall", "overall-times"}
+
+
+def discover_round_slugs(props: Dict[str, Any], seed_slug: str = "") -> List[str]:
+    found: List[str] = []
+    seen = set()
+
+    def add_slug(raw: str) -> None:
+        s = normalize_slug(raw)
+        if not s:
+            return
+        if s not in seen:
+            seen.add(s)
+            found.append(s)
+
+    if seed_slug:
+        add_slug(seed_slug)
+
+    for raw in _walk_values(props):
+        if not isinstance(raw, str):
+            continue
+        s = normalize_slug(raw)
+        if not s:
+            continue
+        if s in ROUND_SLUG_TO_TITLE:
+            add_slug(s)
+            continue
+        # Parse candidate slug tokens from longer strings/URLs.
+        for tok in re.findall(
+            r"(moto-\d+round-\d+|round-\d+|lcq|1[/\-]?16-finals|16-finals|1[/\-]?8-finals|18-finals|1[/\-]?4-finals|14-finals|1[/\-]?2-finals|12-finals|finals|overall-times|overall)",
+            s,
+            flags=re.IGNORECASE,
+        ):
+            add_slug(tok)
+
+    for s in CANONICAL_ROUND_SLUGS:
+        add_slug(s)
+    return found
 
 
 def parse_date(s: str) -> Optional[str]:
@@ -110,9 +227,67 @@ def class_to_cat_gender(code: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def race_class_allowed(code: str, include_all_classes: bool = False) -> bool:
+    class_code = (code or "").strip().upper()
+    if not class_code:
+        return False
+    if include_all_classes:
+        return True
+    return class_code in DEFAULT_ALLOWED_CLASSES
+
+
 def event_exists(conn: sqlite3.Connection, event_id: str) -> bool:
     cur = conn.execute("SELECT 1 FROM events WHERE event_id = ? LIMIT 1", (event_id,))
     return cur.fetchone() is not None
+
+
+def _is_training_like_name(name: str) -> bool:
+    text = (name or "").strip().lower()
+    return any(token in text for token in ["practice", "training", "gate practice"])
+
+
+def find_linked_race_event(
+    conn: sqlite3.Connection,
+    city: str,
+    date_yyyymmdd: str,
+    exclude_event_id: str = "",
+) -> Optional[str]:
+    city_l = (city or "").strip().lower()
+    if not city_l:
+        return None
+
+    rows = conn.execute(
+        """
+        SELECT e.event_id, e.display_name, e.event_date,
+               EXISTS(SELECT 1 FROM picks p WHERE p.event_id = e.event_id LIMIT 1) AS has_picks
+        FROM events e
+        WHERE lower(coalesce(e.location, '')) = ?
+          AND e.event_id <> ?
+        """,
+        (city_l, exclude_event_id or ""),
+    ).fetchall()
+
+    candidates: List[Tuple[int, int, str]] = []
+    for event_id, display_name, event_date, has_picks in rows:
+        if _is_training_like_name(display_name or ""):
+            continue
+        if not has_picks:
+            continue
+        date_digits = re.sub(r"\D+", "", str(event_date or ""))[:8]
+        if not (date_digits.isdigit() and date_yyyymmdd.isdigit()):
+            continue
+        dist = abs(int(date_digits) - int(date_yyyymmdd))
+        # cap to nearby event weekends; ignore distant same-city events
+        if dist > 3:
+            continue
+        future_bias = 0 if int(date_digits) >= int(date_yyyymmdd) else 1
+        candidates.append((dist, future_bias, str(event_id)))
+
+    if not candidates:
+        return None
+
+    candidates.sort()
+    return candidates[0][2]
 
 
 def _extract_attr_payload(text: str, attr: str) -> Optional[Dict[str, Any]]:
@@ -177,9 +352,40 @@ def make_event_meta(props: Dict[str, Any], used_ids: Dict[str, int]) -> Tuple[st
 
 
 def round_title_from_slug(slug: str, fallback: str) -> str:
-    if slug in ROUND_SLUG_TO_TITLE:
-        return ROUND_SLUG_TO_TITLE[slug]
+    s = normalize_slug(slug)
+    if s in ROUND_SLUG_TO_TITLE:
+        return ROUND_SLUG_TO_TITLE[s]
     return fallback or "Round"
+
+
+def round_key_and_title(slug: str, fallback: str) -> Tuple[int, str]:
+    s = normalize_slug(slug)
+    fb = (fallback or "").strip()
+    text = f"{s} {fb}".lower()
+
+    if is_overall_slug(s) or "overall times" in text:
+        return 0, "Overall"
+    if s == "gate-practice" or "gate practice" in text:
+        return 0, "Gate practice"
+
+    if re.search(r"\bround[\s\-]*1\b|\bmoto[\s\-]*1round[\s\-]*1\b", text):
+        return 1, "Round 1"
+    if "lcq" in text or "last chance" in text:
+        return 2, "LCQ"
+    if re.search(r"1[/\-\s]?16|16[\s\-]*final", text):
+        return 3, "1/16 Finals"
+    if re.search(r"1[/\-\s]?8|8[\s\-]*final|eighth", text):
+        return 4, "1/8 Finals"
+    if re.search(r"1[/\-\s]?4|quarter", text):
+        return 5, "1/4 Finals"
+    if re.search(r"1[/\-\s]?2|semi", text):
+        return 6, "1/2 Finals"
+    if "final" in text:
+        return 7, "Final"
+
+    if s in ROUND_SLUG_TO_KEY:
+        return ROUND_SLUG_TO_KEY[s], round_title_from_slug(s, fb)
+    return 0, (fb or "Round")
 
 
 def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> int:
@@ -203,6 +409,29 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_training_event ON training_times(event_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_training_event_name ON training_times(event_id, name)")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_training_event_dedup
+        ON training_times(event_id, category, bib, name, nation, gate, start, t1)
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_training_times_dedup
+        ON training_times(
+          event_id,
+          coalesce(category, ''),
+          coalesce(bib, -1),
+          coalesce(name, ''),
+          coalesce(nation, ''),
+          coalesce(gate, ''),
+          coalesce(start, ''),
+          coalesce(t1, ''),
+          coalesce(source_file, '')
+        )
+        """
+    )
     conn.executemany(
         """
         INSERT OR IGNORE INTO training_times (
@@ -288,25 +517,28 @@ def parse_riders(heat: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def ingest_race_event(conn: sqlite3.Connection, url: str, event_id: str) -> int:
-    payload = fetch_event_payload(url)
-    props = extract_props(payload)
-    round_slug = (props.get("activeRoundSlug") or "").strip()
-    round_title = round_title_from_slug(round_slug, props.get("activeRoundName"))
-    if round_slug == "overall":
+def ingest_race_props(
+    conn: sqlite3.Connection,
+    props: Dict[str, Any],
+    event_id: str,
+    include_all_classes: bool = False,
+) -> int:
+    round_slug = normalize_slug(str(props.get("activeRoundSlug") or ""))
+    round_key, round_title = round_key_and_title(round_slug, str(props.get("activeRoundName") or ""))
+    if round_key == 0 and round_title == "Overall":
         return 0
-    round_key = ROUND_SLUG_TO_KEY.get(round_slug, 0)
     heats = props.get("heats") or []
     rows = []
     for h in heats:
         class_code = (h.get("class_code") or "").strip()
-        if class_code not in ALLOWED_CLASSES:
+        if not race_class_allowed(class_code, include_all_classes=include_all_classes):
             continue
         group_id = CLASS_TO_GROUP.get(class_code)
         heat_id = h.get("id")
         heat_title = h.get("name") or f"Heat {heat_id}"
         heat_status = h.get("is_live") or ""
         start_time_string = h.get("result_time") or ""
+        heat_rows_before = len(rows)
         for r in parse_riders(h):
             if not r["name"]:
                 continue
@@ -338,14 +570,48 @@ def ingest_race_event(conn: sqlite3.Connection, url: str, event_id: str) -> int:
                     "seen_at": now_iso(),
                 }
             )
+        if len(rows) == heat_rows_before:
+            # Keep upcoming heats visible even when JSTiming exposes only the heat shell
+            # (no riders/results yet) on future-round pages like LCQ.
+            rows.append(
+                {
+                    "event_id": event_id,
+                    "group_id": group_id,
+                    "round_key": round_key,
+                    "round_title": round_title,
+                    "heat_id": int(heat_id) if str(heat_id).isdigit() else 0,
+                    "heat_title": heat_title,
+                    "heat_status": heat_status,
+                    "start_time_string": start_time_string,
+                    "bib": 0,
+                    "name": "",
+                    "nation": "",
+                    "pick_order": None,
+                    "lane": None,
+                    "lane_idx": None,
+                    "uci_id": None,
+                    "start": None,
+                    "t1": None,
+                    "t2": None,
+                    "t3": None,
+                    "t4": None,
+                    "time": None,
+                    "rank": None,
+                    "seen_at": now_iso(),
+                }
+            )
     if rows:
         upsert_picks(conn, rows)
     return len(rows)
 
 
-def ingest_training_event(conn: sqlite3.Connection, url: str, event_id: str) -> int:
+def ingest_race_event(conn: sqlite3.Connection, url: str, event_id: str) -> int:
     payload = fetch_event_payload(url)
     props = extract_props(payload)
+    return ingest_race_props(conn, props, event_id)
+
+
+def ingest_training_props(conn: sqlite3.Connection, props: Dict[str, Any], event_id: str) -> int:
     heats = props.get("heats") or []
     rows = []
     for h in heats:
@@ -372,6 +638,12 @@ def ingest_training_event(conn: sqlite3.Connection, url: str, event_id: str) -> 
     return upsert_training_times(conn, rows)
 
 
+def ingest_training_event(conn: sqlite3.Connection, url: str, event_id: str) -> int:
+    payload = fetch_event_payload(url)
+    props = extract_props(payload)
+    return ingest_training_props(conn, props, event_id)
+
+
 def ingest_overall_event(conn: sqlite3.Connection, url: str, event_id: str) -> int:
     payload = fetch_event_payload(url)
     props = extract_props(payload)
@@ -387,7 +659,7 @@ def ingest_overall_event(conn: sqlite3.Connection, url: str, event_id: str) -> i
     rows = []
     for h in heats:
         class_code = (h.get("class_code") or "").strip().upper()
-        if class_code not in ALLOWED_CLASSES:
+        if class_code not in DEFAULT_ALLOWED_CLASSES:
             continue
         category, gender = class_to_cat_gender(class_code)
         for r in (h.get("riders") or []):
@@ -427,6 +699,12 @@ def main() -> None:
     parser.add_argument("--db", default="bmx.db")
     parser.add_argument("--race", action="append", default=[], help="Race round-1 URL (one per event)")
     parser.add_argument("--training", action="append", default=[], help="Gate practice URL")
+    parser.add_argument(
+        "--all-classes",
+        action="store_true",
+        help="Ingest all JSTiming race classes into picks (for archive/backfill use).",
+    )
+    parser.add_argument("--verbose", action="store_true", help="Verbose logs for round discovery/fallbacks")
     args = parser.parse_args()
 
     if not args.race and not args.training:
@@ -446,6 +724,7 @@ def main() -> None:
             raise RuntimeError(f"Failed to load {race_url}: {e}") from e
         props = extract_props(payload)
         event_id, display_name, city, date_yyyymmdd, country = make_event_meta(props, used_ids)
+        base, seed_slug = split_event_root_and_seed_slug(race_url)
         upsert_event(
             conn,
             {
@@ -463,46 +742,90 @@ def main() -> None:
                 "city": (city or "").lower(),
                 "date": date_yyyymmdd,
                 "display_name": display_name,
+                "event_uuid": event_uuid_from_props(props),
+                "event_root": base,
             }
         )
-        # generate round urls from base
-        base = race_url.rsplit("/", 1)[0]
-        slugs = ["round-1", "lcq", "18-finals", "14-finals", "12-finals", "finals"]
-        if "moto-1round-1" in race_url:
-            slugs[0] = "moto-1round-1"
+
+        # ingest currently loaded round first (already fetched)
+        ingest_race_props(conn, props, event_id, include_all_classes=args.all_classes)
+
+        # discover round slugs dynamically, then fallback to canonical slugs
+        slugs = discover_round_slugs(props, seed_slug=seed_slug)
+        seen_round_slugs = {normalize_slug(str(props.get("activeRoundSlug") or seed_slug))}
         for slug in slugs:
+            if is_overall_slug(slug):
+                continue
+            if normalize_slug(slug) in seen_round_slugs:
+                continue
             url = f"{base}/{slug}"
             try:
-                ingest_race_event(conn, url, event_id)
-            except Exception:
+                payload_round = fetch_event_payload(url)
+                props_round = extract_props(payload_round)
+                n_rows = ingest_race_props(conn, props_round, event_id, include_all_classes=args.all_classes)
+                if n_rows > 0:
+                    seen_round_slugs.add(normalize_slug(slug))
+            except Exception as e:
+                if args.verbose:
+                    print(f"[jstiming] round fetch failed event={event_id} slug={slug}: {e}")
                 continue
-        # overall results (final ranks)
-        try:
-            ingest_overall_event(conn, f"{base}/overall", event_id)
-        except Exception:
-            pass
+
+        # overall results (final ranks): try discovered overall-like slugs first, fallback to /overall
+        overall_candidates = []
+        for s in slugs:
+            if is_overall_slug(s):
+                overall_candidates.append(f"{base}/{s}")
+        overall_candidates.append(f"{base}/overall")
+
+        tried = set()
+        for overall_url in overall_candidates:
+            if overall_url in tried:
+                continue
+            tried.add(overall_url)
+            try:
+                n = ingest_overall_event(conn, overall_url, event_id)
+                if n > 0:
+                    break
+            except Exception as e:
+                if args.verbose:
+                    print(f"[jstiming] overall fetch failed event={event_id} url={overall_url}: {e}")
+                continue
 
     # Ingest training (gate practice) and link to nearest race by city/date
     for train_url in args.training:
         payload = fetch_event_payload(train_url)
         props = extract_props(payload)
         event_id, display_name, city, date_yyyymmdd, country = make_event_meta(props, used_ids)
+        train_root, _ = split_event_root_and_seed_slug(train_url)
+        train_uuid = event_uuid_from_props(props)
         # link to closest race event by city/date if possible
         linked_event_id = event_id
-        if race_meta and city:
-            city_l = city.lower()
-            candidates = [m for m in race_meta if m["city"] == city_l]
-            if candidates:
-                # choose closest date
-                def _dist(m):
-                    return abs(int(m["date"]) - int(date_yyyymmdd))
-                candidates.sort(key=_dist)
-                linked_event_id = candidates[0]["event_id"]
-        if not event_exists(conn, linked_event_id):
+        if race_meta:
+            exact_matches = [
+                m for m in race_meta
+                if (train_uuid and m.get("event_uuid") == train_uuid)
+                or (train_root and m.get("event_root") == train_root)
+            ]
+            if exact_matches:
+                linked_event_id = exact_matches[0]["event_id"]
+            elif city:
+                city_l = city.lower()
+                candidates = [m for m in race_meta if m["city"] == city_l]
+                if candidates:
+                    # choose closest date
+                    def _dist(m):
+                        return abs(int(m["date"]) - int(date_yyyymmdd))
+                    candidates.sort(key=_dist)
+                    linked_event_id = candidates[0]["event_id"]
+        if linked_event_id == event_id:
+            db_linked_event_id = find_linked_race_event(conn, city, date_yyyymmdd, exclude_event_id=event_id)
+            if db_linked_event_id:
+                linked_event_id = db_linked_event_id
+        if not event_exists(conn, event_id):
             upsert_event(
                 conn,
                 {
-                    "event_id": linked_event_id,
+                    "event_id": event_id,
                     "display_name": display_name,
                     "location": city,
                     "country": country,
@@ -511,8 +834,29 @@ def main() -> None:
                 },
             )
         else:
-            conn.execute("UPDATE events SET last_seen = ? WHERE event_id = ?", (now_iso(), linked_event_id))
-        ingest_training_event(conn, train_url, linked_event_id)
+            conn.execute("UPDATE events SET last_seen = ? WHERE event_id = ?", (now_iso(), event_id))
+
+        # Keep a dedicated training event visible in the event list.
+        ingest_training_props(conn, props, event_id)
+
+        # If this training belongs to a race event, mirror it there as well so
+        # race-centric views can still access current-event training data.
+        if linked_event_id != event_id:
+            if not event_exists(conn, linked_event_id):
+                upsert_event(
+                    conn,
+                    {
+                        "event_id": linked_event_id,
+                        "display_name": display_name,
+                        "location": city,
+                        "country": country,
+                        "event_date": f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}",
+                        "last_seen": now_iso(),
+                    },
+                )
+            else:
+                conn.execute("UPDATE events SET last_seen = ? WHERE event_id = ?", (now_iso(), linked_event_id))
+            ingest_training_props(conn, props, linked_event_id)
 
     conn.commit()
     conn.close()
