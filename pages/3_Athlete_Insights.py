@@ -924,7 +924,10 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
             ["event_id", "event_type", "year", "event_day", "location_norm", "category", "gender", "uci_norm", "name_key"]
         ].to_dict("records")
     ]
-    out["final_rank_event"] = pd.to_numeric(pd.Series(ranks), errors="coerce")
+    # Preserve the filtered frame's index; otherwise pandas aligns the default
+    # RangeIndex from pd.Series(ranks) onto scattered row indices and mixes
+    # final-event ranks between riders in multi-athlete views.
+    out["final_rank_event"] = pd.to_numeric(pd.Series(ranks, index=out.index), errors="coerce")
     out["final_rank_event_display"] = np.where(
         out["final_rank_event"].notna(), out["final_rank_event"].astype("Int64").astype(str), "NA"
     )
