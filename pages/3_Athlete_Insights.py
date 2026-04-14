@@ -2765,6 +2765,163 @@ with tabs[0]:
     else:
         st.info("Keine Daten fuer Peak Segment Profile in der aktuellen Auswahl.")
 
+    st.markdown("**Segment Trend (Boxplot)**")
+    segment_trend_options = [sd["label"] for sd in available_defs]
+    default_segment_trend = [x for x in selected_seg_labels if x in segment_trend_options]
+    if not default_segment_trend:
+        default_segment_trend = segment_trend_options[:1]
+    segment_trend_labels = st.multiselect(
+        "Segment(e) fuer Boxplot",
+        options=segment_trend_options,
+        default=default_segment_trend,
+        key="segment_trend_boxplot_segments",
+    )
+    if segment_trend_labels:
+        trend_rows = []
+        for sd in available_defs:
+            if sd["label"] not in segment_trend_labels:
+                continue
+            dcol = sd["delta_use_col"]
+            tcol = sd["time_col"]
+            rcol = sd["ref_col"]
+            seg_cols = [
+                "rider_short",
+                "display_name",
+                "location",
+                "round_short",
+                "round_title",
+                "heat_title",
+                "event_dt",
+                "event_id",
+                "group_id",
+                dcol,
+                tcol,
+                rcol,
+            ]
+            seg_cols = list(dict.fromkeys(seg_cols))
+            seg_df = contrib_src[seg_cols].copy()
+            seg_df = seg_df.rename(
+                columns={
+                    dcol: "delta_value",
+                    tcol: "segment_time",
+                    rcol: "reference_time",
+                }
+            )
+            seg_df["delta_value"] = pd.to_numeric(seg_df["delta_value"], errors="coerce")
+            seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
+            seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
+            seg_df["rank2_ref_event"] = seg_df.groupby(
+                ["event_id", "group_id"], dropna=False
+            )["segment_time"].transform(
+                lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
+            )
+            seg_df["reference_mode_display"] = "Aktive Referenz"
+            seg_df["active_reference_display"] = ref_caption
+            seg_df["delta_display"] = seg_df["delta_value"]
+            if show_delta_vs_rank2:
+                is_best_row = (
+                    seg_df["segment_time"].notna()
+                    & seg_df["reference_time"].notna()
+                    & np.isclose(seg_df["segment_time"], seg_df["reference_time"], atol=1e-6)
+                )
+                use_rank2 = is_best_row & seg_df["rank2_ref_event"].notna()
+                seg_df.loc[use_rank2, "delta_display"] = (
+                    seg_df.loc[use_rank2, "segment_time"] - seg_df.loc[use_rank2, "rank2_ref_event"]
+                )
+                seg_df.loc[use_rank2, "reference_mode_display"] = "Rank 2 (Event, nur Referenz-Rider)"
+            seg_df = seg_df.dropna(subset=["delta_display"]).copy()
+            if seg_df.empty:
+                continue
+            seg_df["Segment"] = sd["label"]
+            seg_df["Segment Short"] = segment_short_label(sd["label"])
+            trend_rows.append(seg_df)
+
+        segment_trend_df = pd.concat(trend_rows, ignore_index=True) if trend_rows else pd.DataFrame()
+        if segment_trend_df.empty:
+            st.info("Keine Segment-Daten fuer Boxplot in der aktuellen Auswahl.")
+        elif go is None:
+            st.warning("Plotly ist fuer den Segment-Boxplot nicht verfuegbar.")
+        else:
+            seg_order = [x for x in segment_trend_labels if x in segment_trend_df["Segment"].unique().tolist()]
+            seg_short_order = [segment_short_label(x) for x in seg_order]
+            rider_order = sorted(segment_trend_df["rider_short"].dropna().unique().tolist())
+            rider_colors = [
+                "#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c",
+                "#98df8a", "#d62728", "#ff9896", "#9467bd", "#c5b0d5",
+            ]
+            color_map = {r: rider_colors[i % len(rider_colors)] for i, r in enumerate(rider_order)}
+            fig = go.Figure()
+            for rider in rider_order:
+                rdf = segment_trend_df[segment_trend_df["rider_short"] == rider].copy()
+                if rdf.empty:
+                    continue
+                customdata = np.column_stack([
+                    rdf["Segment"].fillna("").to_numpy(),
+                    rdf["display_name"].fillna(rdf["event_id"]).to_numpy(),
+                    rdf["event_dt"].dt.strftime("%Y-%m-%d").fillna("").to_numpy(),
+                    rdf["location"].fillna("").to_numpy(),
+                    rdf["round_short"].fillna(rdf["round_title"]).to_numpy(),
+                    rdf["heat_title"].fillna("").to_numpy(),
+                    rdf["reference_mode_display"].fillna("").to_numpy(),
+                    rdf["active_reference_display"].fillna("").to_numpy(),
+                ])
+                fig.add_trace(
+                    go.Box(
+                        y=rdf["delta_display"],
+                        x=rdf["Segment Short"],
+                        name=rider,
+                        boxpoints="all",
+                        jitter=0.48,
+                        pointpos=0,
+                        width=0.62,
+                        whiskerwidth=0.8,
+                        marker=dict(
+                            size=10,
+                            color="rgba(0,0,0,0)",
+                            line=dict(color="rgba(120,120,120,0.85)", width=1.3),
+                        ),
+                        line=dict(color=color_map[rider], width=1.8),
+                        fillcolor="rgba(0,0,0,0)",
+                        showlegend=True,
+                        customdata=customdata,
+                        hovertemplate=(
+                            "Rider: %{fullData.name}<br>"
+                            "Segment: %{customdata[0]}<br>"
+                            "Delta (s): %{y:.4f}<br>"
+                            "Event: %{customdata[1]}<br>"
+                            "Date: %{customdata[2]}<br>"
+                            "Location: %{customdata[3]}<br>"
+                            "Round: %{customdata[4]}<br>"
+                            "Heat: %{customdata[5]}<br>"
+                            "Reference Mode: %{customdata[6]}<br>"
+                            "Active Reference: %{customdata[7]}<extra></extra>"
+                        ),
+                    )
+                )
+            fig.update_layout(
+                height=520,
+                margin=dict(l=40, r=20, t=10, b=40),
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                boxmode="group",
+                legend=dict(orientation="h", y=1.12, x=0, title="Rider"),
+                xaxis=dict(
+                    title="Segment",
+                    tickangle=-90,
+                    categoryorder="array",
+                    categoryarray=seg_short_order,
+                ),
+                yaxis=dict(
+                    title="Delta (s)",
+                    gridcolor="#e5e7eb",
+                    zeroline=True,
+                    zerolinecolor="#cbd5e1",
+                ),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Bitte mindestens ein Segment fuer den Segment-Boxplot auswaehlen.")
+
     st.markdown("**Start Delta vs Finish Delta**")
     scat = runs_sel.dropna(subset=["start_delta", "finish_delta"]).copy()
     if not scat.empty:
@@ -3373,9 +3530,9 @@ with tabs[7]:
                                 x=[rider] * len(rdf),
                                 name=rider,
                                 boxpoints="all",
-                                jitter=0.55,
+                                jitter=0.42,
                                 pointpos=0,
-                                width=0.9,
+                                width=0.42,
                                 whiskerwidth=0.8,
                                 marker=dict(size=11, color="rgba(0,0,0,0)", line=dict(color="rgba(120,120,120,0.85)", width=1.4)),
                                 line=dict(color="black", width=1.4),
@@ -3406,7 +3563,7 @@ with tabs[7]:
                         plot_bgcolor="white",
                         paper_bgcolor="white",
                         boxmode="group",
-                        xaxis=dict(title="Rider", tickangle=-90, categoryorder="array", categoryarray=rider_order),
+                        xaxis=dict(title="Rider", tickangle=-90, categoryorder="array", categoryarray=rider_order, tickson="boundaries"),
                         yaxis=dict(title="Final Rank", range=[48, 1], tickmode="array", tickvals=[1, 4, 8, 16, 32, 48], gridcolor="#e5e7eb"),
                     )
                     st.plotly_chart(fig, use_container_width=True)
