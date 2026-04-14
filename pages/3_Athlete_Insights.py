@@ -2896,7 +2896,7 @@ with tabs[1]:
     elif go is None:
         st.warning("Plotly ist fuer den Segment-Boxplot nicht verfuegbar.")
     else:
-        rider_order = [r for r in rider_names if r in segment_profile_df["rider_short"].dropna().unique().tolist()]
+        rider_order = list(dict.fromkeys(segment_profile_df["rider_short"].dropna().tolist()))
         if not rider_order:
             rider_order = sorted(segment_profile_df["rider_short"].dropna().unique().tolist())
         seg_order = [x for x in segment_profile_selected if x in segment_profile_df["Segment"].unique().tolist()]
