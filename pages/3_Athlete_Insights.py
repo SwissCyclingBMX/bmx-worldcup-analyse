@@ -2820,11 +2820,15 @@ with tabs[1]:
         sd2["ref_col"] = ref_col
         segment_profile_available.append(sd2)
 
-    segment_profile_labels = [sd["label"] for sd in segment_profile_available]
-    segment_profile_default = [x for x in default_segments if x in segment_profile_labels] or segment_profile_labels
+    segment_profile_label_map = {sd["label"]: segment_short_label(sd["label"]) for sd in segment_profile_available}
+    segment_profile_display_to_label = {v: k for k, v in segment_profile_label_map.items()}
+    segment_profile_options = [segment_profile_label_map[sd["label"]] for sd in segment_profile_available]
+    segment_profile_default = [
+        segment_profile_label_map[x] for x in default_segments if x in segment_profile_label_map
+    ] or segment_profile_options
     segment_profile_selected = st.multiselect(
         "Segmente anzeigen",
-        options=segment_profile_labels,
+        options=segment_profile_options,
         default=segment_profile_default,
         key="segment_profile_box_segments",
     )
@@ -2837,7 +2841,7 @@ with tabs[1]:
 
     segment_profile_rows = []
     for sd in segment_profile_available:
-        if sd["label"] not in segment_profile_selected:
+        if segment_profile_label_map[sd["label"]] not in segment_profile_selected:
             continue
         metric_col = sd["delta_use_col"] if segment_profile_metric == "Segment Delta" else sd["rank_col"]
         if metric_col not in segment_profile_src.columns:
@@ -2887,7 +2891,7 @@ with tabs[1]:
         if seg_df.empty:
             continue
         seg_df["Segment"] = sd["label"]
-        seg_df["Segment Short"] = segment_short_label(sd["label"])
+        seg_df["Segment Short"] = segment_profile_label_map[sd["label"]]
         segment_profile_rows.append(seg_df)
 
     segment_profile_df = pd.concat(segment_profile_rows, ignore_index=True) if segment_profile_rows else pd.DataFrame()
@@ -2899,72 +2903,74 @@ with tabs[1]:
         rider_order = list(dict.fromkeys(segment_profile_df["rider_short"].dropna().tolist()))
         if not rider_order:
             rider_order = sorted(segment_profile_df["rider_short"].dropna().unique().tolist())
-        seg_order = [x for x in segment_profile_selected if x in segment_profile_df["Segment"].unique().tolist()]
-        seg_short_order = [segment_short_label(x) for x in seg_order]
-        rider_colors = [
-            "#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c",
-            "#98df8a", "#d62728", "#ff9896", "#9467bd", "#c5b0d5",
-        ]
-        color_map = {r: rider_colors[i % len(rider_colors)] for i, r in enumerate(rider_order)}
+        seg_display_order = [x for x in segment_profile_selected if x in segment_profile_df["Segment Short"].unique().tolist()]
+        x_order = []
         fig = go.Figure()
         for rider in rider_order:
-            rdf = segment_profile_df[segment_profile_df["rider_short"] == rider].copy()
-            if rdf.empty:
-                continue
-            customdata = np.column_stack([
-                rdf["display_name"].fillna(rdf["event_id"]).to_numpy(),
-                rdf["event_dt"].dt.strftime("%Y-%m-%d").fillna("").to_numpy(),
-                rdf["location"].fillna("").to_numpy(),
-                rdf["round_short"].fillna(rdf["round_title"]).to_numpy(),
-                rdf["heat_title"].fillna("").to_numpy(),
-            ])
-            fig.add_trace(
-                go.Box(
-                    y=rdf["metric_value"],
-                    x=rdf["Segment Short"],
-                    name=rider,
-                    boxpoints="all",
-                    jitter=0.38,
-                    pointpos=0,
-                    width=0.42,
-                    whiskerwidth=0.8,
-                    marker=dict(
-                        size=10,
-                        color="rgba(0,0,0,0)",
-                        line=dict(color="rgba(120,120,120,0.85)", width=1.3),
-                    ),
-                    line=dict(color=color_map[rider], width=1.8),
-                    fillcolor="rgba(0,0,0,0)",
-                    customdata=customdata,
-                    hovertemplate=(
-                        "Rider: %{fullData.name}<br>"
-                        "Segment: %{x}<br>"
-                        + ("Delta (s): %{y:.4f}<br>" if segment_profile_metric == "Segment Delta" else "Segment Rank: %{y:.0f}<br>")
-                        + "Event: %{customdata[0]}<br>"
-                        + "Date: %{customdata[1]}<br>"
-                        + "Location: %{customdata[2]}<br>"
-                        + "Round: %{customdata[3]}<br>"
-                        + "Heat: %{customdata[4]}<extra></extra>"
-                    ),
-                    showlegend=True,
+            for seg_short in seg_display_order:
+                rdf = segment_profile_df[
+                    (segment_profile_df["rider_short"] == rider)
+                    & (segment_profile_df["Segment Short"] == seg_short)
+                ].copy()
+                if rdf.empty:
+                    continue
+                x_label = f"{rider}/{seg_short}"
+                x_order.append(x_label)
+                customdata = np.column_stack([
+                    rdf["display_name"].fillna(rdf["event_id"]).to_numpy(),
+                    rdf["event_dt"].dt.strftime("%Y-%m-%d").fillna("").to_numpy(),
+                    rdf["location"].fillna("").to_numpy(),
+                    rdf["round_short"].fillna(rdf["round_title"]).to_numpy(),
+                    rdf["heat_title"].fillna("").to_numpy(),
+                    rdf["Segment Short"].to_numpy(),
+                ])
+                fig.add_trace(
+                    go.Box(
+                        y=rdf["metric_value"],
+                        x=[x_label] * len(rdf),
+                        name=x_label,
+                        boxpoints="all",
+                        jitter=0.45,
+                        pointpos=0,
+                        width=0.52,
+                        whiskerwidth=0.8,
+                        marker=dict(
+                            size=10,
+                            color="rgba(0,0,0,0)",
+                            line=dict(color="rgba(120,120,120,0.85)", width=1.4),
+                        ),
+                        line=dict(color="rgba(25,25,25,0.95)", width=1.8),
+                        fillcolor="rgba(0,0,0,0)",
+                        customdata=customdata,
+                        hovertemplate=(
+                            "Rider: %{customdata[0]}<br>"
+                            "Segment: %{customdata[5]}<br>"
+                            + ("Delta (s): %{y:.4f}<br>" if segment_profile_metric == "Segment Delta" else "Segment Rank: %{y:.0f}<br>")
+                            + "Date: %{customdata[1]}<br>"
+                            + "Location: %{customdata[2]}<br>"
+                            + "Round: %{customdata[3]}<br>"
+                            + "Heat: %{customdata[4]}<extra></extra>"
+                        ),
+                        showlegend=False,
+                    )
                 )
-            )
+        x_order = list(dict.fromkeys(x_order))
         fig.update_layout(
             height=560,
             margin=dict(l=40, r=20, t=10, b=40),
             plot_bgcolor="white",
             paper_bgcolor="white",
-            boxmode="group",
-            legend=dict(orientation="h", y=1.12, x=0, title="Rider"),
-            xaxis=dict(title="Segment", tickangle=-90, categoryorder="array", categoryarray=seg_short_order),
+            boxmode="overlay",
+            xaxis=dict(title="Rider / Segment", tickangle=-90, categoryorder="array", categoryarray=x_order),
             yaxis=dict(
                 title="Delta (s)" if segment_profile_metric == "Segment Delta" else "Segment Rank",
                 gridcolor="#e5e7eb",
                 zeroline=(segment_profile_metric == "Segment Delta"),
                 zerolinecolor="#cbd5e1",
-                range=[8.5, 0.5] if segment_profile_metric == "Segment Rank" else None,
-                tickmode="array" if segment_profile_metric == "Segment Rank" else None,
-                tickvals=list(range(1, 9)) if segment_profile_metric == "Segment Rank" else None,
+                range=[
+                    pd.to_numeric(segment_profile_df["metric_value"], errors="coerce").max() + 0.5,
+                    0.5,
+                ] if segment_profile_metric == "Segment Rank" and segment_profile_df["metric_value"].notna().any() else None,
             ),
         )
         st.plotly_chart(fig, use_container_width=True)
