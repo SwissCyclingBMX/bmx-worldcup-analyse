@@ -1558,7 +1558,7 @@ with tabs[0]:
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    st.markdown("**Peak Segment Profile**")
+    st.markdown("**Segment Trend**")
     contrib_src = runs_sel.copy()
     rank_pool_src = pool_rel.copy()
     ref_suffix_map = {
@@ -1570,15 +1570,15 @@ with tabs[0]:
     }
     ref_suffix = ref_suffix_map.get(ref_key, "rank4_ref")
     seg_defs = [
-        {"label": "BottomDelta", "delta_col": "start_delta", "time_col": "start", "seg_base": "start"},
-        {"label": "T1Delta", "delta_col": "t1_delta", "time_col": "t1", "seg_base": "t1"},
-        {"label": "T2Delta", "delta_col": "t2_delta", "time_col": "t2", "seg_base": "t2"},
-        {"label": "T3Delta", "delta_col": "t3_delta", "time_col": "t3", "seg_base": "t3"},
-        {"label": "LaptimeDelta", "delta_col": "finish_delta", "time_col": "finish", "seg_base": "finish"},
-        {"label": "Bottom->T1Delta", "delta_col": "split_bottom_t1_delta", "time_col": "split_bottom_t1", "seg_base": "split_bottom_t1"},
-        {"label": "T1->T2Delta", "delta_col": "split_t1_t2_delta", "time_col": "split_t1_t2", "seg_base": "split_t1_t2"},
-        {"label": "T2->T3Delta", "delta_col": "split_t2_t3_delta", "time_col": "split_t2_t3", "seg_base": "split_t2_t3"},
-        {"label": "T3->FinishDelta", "delta_col": "split_t3_finish_delta", "time_col": "split_t3_finish", "seg_base": "split_t3_finish"},
+        {"label": "BottomDelta", "delta_col": "start_delta", "time_col": "start", "seg_base": "start", "rank_col": "rank_bottom"},
+        {"label": "T1Delta", "delta_col": "t1_delta", "time_col": "t1", "seg_base": "t1", "rank_col": "rank_t1"},
+        {"label": "T2Delta", "delta_col": "t2_delta", "time_col": "t2", "seg_base": "t2", "rank_col": "rank_t2"},
+        {"label": "T3Delta", "delta_col": "t3_delta", "time_col": "t3", "seg_base": "t3", "rank_col": "rank_t3"},
+        {"label": "LaptimeDelta", "delta_col": "finish_delta", "time_col": "finish", "seg_base": "finish", "rank_col": "rank_finish"},
+        {"label": "Bottom->T1Delta", "delta_col": "split_bottom_t1_delta", "time_col": "split_bottom_t1", "seg_base": "split_bottom_t1", "rank_col": "rank_bottom_t1"},
+        {"label": "T1->T2Delta", "delta_col": "split_t1_t2_delta", "time_col": "split_t1_t2", "seg_base": "split_t1_t2", "rank_col": "rank_t1_t2"},
+        {"label": "T2->T3Delta", "delta_col": "split_t2_t3_delta", "time_col": "split_t2_t3", "seg_base": "split_t2_t3", "rank_col": "rank_t2_t3"},
+        {"label": "T3->FinishDelta", "delta_col": "split_t3_finish_delta", "time_col": "split_t3_finish", "seg_base": "split_t3_finish", "rank_col": "rank_t3_finish"},
     ]
     available_defs = []
     for sd in seg_defs:
@@ -1600,9 +1600,8 @@ with tabs[0]:
         available_defs.append(sd2)
 
     available_seg_labels = [sd["label"] for sd in available_defs]
-    segment_options = ["Final Rank"] + [x for x in available_seg_labels if x != "Final Rank"]
+    segment_options = list(available_seg_labels)
     default_segments = [
-        "Final Rank",
         "BottomDelta",
         "Bottom->T1Delta",
         "T1->T2Delta",
@@ -1618,18 +1617,14 @@ with tabs[0]:
         default=default_segment_selection,
         key="peak_seg_segments",
     )
-    peak_mode = st.selectbox(
-        "Peak Selection",
-        ["All", "Best Run", "Best 3 Runs", "Best 5 Runs", "Best 10%", "Best 20%"],
-        index=5,
-        key="peak_seg_mode",
+    segment_box_metric = st.selectbox(
+        "Boxplot-Wert",
+        ["Segment Delta", "Segment Rank"],
+        index=0,
+        key="segment_trend_boxplot_metric",
     )
-    peak_per_location = st.checkbox(
-        "Peak per Location",
-        value=True,
-        key="peak_seg_per_location",
-        help="Wenn aktiv: pro Location wird zuerst nur der beste Run genommen, dann der Peak daraus berechnet.",
-    )
+    peak_mode = "Best 20%"
+    peak_per_location = True
     # For Event Top1 only: reference rider row can be compared vs Rank 2 for visibility.
     show_delta_vs_rank2 = ref_key in {"event_topn", "event_top4", "event_best"} and int(event_top_n) == 1
     show_overall_median = st.toggle(
@@ -1639,6 +1634,139 @@ with tabs[0]:
     )
     if show_delta_vs_rank2:
         st.caption("Bei Event Top 1 wird nur fuer den Referenz-Rider Delta gegen Rank 2 berechnet.")
+
+    segment_boxplot_df_rows = []
+    for sd in available_defs:
+        if sd["label"] not in selected_seg_labels:
+            continue
+        metric_col = sd["delta_use_col"] if segment_box_metric == "Segment Delta" else sd["rank_col"]
+        if metric_col not in contrib_src.columns:
+            continue
+        seg_df = contrib_src[
+            [
+                "rider_short",
+                "display_name",
+                "event_id",
+                "event_dt",
+                "location",
+                "round_short",
+                "round_title",
+                "heat_title",
+                "group_id",
+                metric_col,
+                sd["time_col"],
+                sd["ref_col"],
+            ]
+        ].copy()
+        seg_df = seg_df.rename(
+            columns={
+                metric_col: "metric_value",
+                sd["time_col"]: "segment_time",
+                sd["ref_col"]: "reference_time",
+            }
+        )
+        seg_df["metric_value"] = pd.to_numeric(seg_df["metric_value"], errors="coerce")
+        seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
+        seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
+        if segment_box_metric == "Segment Delta" and show_delta_vs_rank2:
+            seg_df["rank2_ref_event"] = seg_df.groupby(
+                ["event_id", "group_id"], dropna=False
+            )["segment_time"].transform(
+                lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
+            )
+            is_best_row = (
+                seg_df["segment_time"].notna()
+                & seg_df["reference_time"].notna()
+                & np.isclose(seg_df["segment_time"], seg_df["reference_time"], atol=1e-6)
+            )
+            use_rank2 = is_best_row & seg_df["rank2_ref_event"].notna()
+            seg_df.loc[use_rank2, "metric_value"] = (
+                seg_df.loc[use_rank2, "segment_time"] - seg_df.loc[use_rank2, "rank2_ref_event"]
+            )
+        seg_df = seg_df.dropna(subset=["metric_value"]).copy()
+        if seg_df.empty:
+            continue
+        seg_df["Segment"] = sd["label"]
+        seg_df["Segment Short"] = segment_short_label(sd["label"])
+        segment_boxplot_df_rows.append(seg_df)
+
+    segment_boxplot_df = pd.concat(segment_boxplot_df_rows, ignore_index=True) if segment_boxplot_df_rows else pd.DataFrame()
+    if not segment_boxplot_df.empty:
+        rider_order = sorted(segment_boxplot_df["rider_short"].dropna().unique().tolist())
+        seg_order = [x for x in selected_seg_labels if x in segment_boxplot_df["Segment"].unique().tolist()]
+        seg_short_order = [segment_short_label(x) for x in seg_order]
+        rider_colors = [
+            "#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c",
+            "#98df8a", "#d62728", "#ff9896", "#9467bd", "#c5b0d5",
+        ]
+        color_map = {r: rider_colors[i % len(rider_colors)] for i, r in enumerate(rider_order)}
+        if go is None:
+            st.warning("Plotly ist fuer den Segment-Boxplot nicht verfuegbar.")
+        else:
+            fig = go.Figure()
+            for rider in rider_order:
+                rdf = segment_boxplot_df[segment_boxplot_df["rider_short"] == rider].copy()
+                if rdf.empty:
+                    continue
+                customdata = np.column_stack([
+                    rdf["display_name"].fillna(rdf["event_id"]).to_numpy(),
+                    rdf["event_dt"].dt.strftime("%Y-%m-%d").fillna("").to_numpy(),
+                    rdf["location"].fillna("").to_numpy(),
+                    rdf["round_short"].fillna(rdf["round_title"]).to_numpy(),
+                    rdf["heat_title"].fillna("").to_numpy(),
+                ])
+                fig.add_trace(
+                    go.Box(
+                        y=rdf["metric_value"],
+                        x=rdf["Segment Short"],
+                        name=rider,
+                        boxpoints="all",
+                        jitter=0.42,
+                        pointpos=0,
+                        width=0.42,
+                        whiskerwidth=0.8,
+                        marker=dict(
+                            size=10,
+                            color="rgba(0,0,0,0)",
+                            line=dict(color="rgba(120,120,120,0.85)", width=1.3),
+                        ),
+                        line=dict(color=color_map[rider], width=1.8),
+                        fillcolor="rgba(0,0,0,0)",
+                        customdata=customdata,
+                        hovertemplate=(
+                            "Rider: %{fullData.name}<br>"
+                            "Segment: %{x}<br>"
+                            + ("Delta (s): %{y:.4f}<br>" if segment_box_metric == "Segment Delta" else "Segment Rank: %{y:.0f}<br>")
+                            + "Event: %{customdata[0]}<br>"
+                            + "Date: %{customdata[1]}<br>"
+                            + "Location: %{customdata[2]}<br>"
+                            + "Round: %{customdata[3]}<br>"
+                            + "Heat: %{customdata[4]}<extra></extra>"
+                        ),
+                        showlegend=True,
+                    )
+                )
+            fig.update_layout(
+                height=520,
+                margin=dict(l=40, r=20, t=10, b=40),
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                boxmode="group",
+                legend=dict(orientation="h", y=1.12, x=0, title="Rider"),
+                xaxis=dict(title="Segment", tickangle=-90, categoryorder="array", categoryarray=seg_short_order),
+                yaxis=dict(
+                    title="Delta (s)" if segment_box_metric == "Segment Delta" else "Segment Rank",
+                    gridcolor="#e5e7eb",
+                    zeroline=(segment_box_metric == "Segment Delta"),
+                    zerolinecolor="#cbd5e1",
+                    range=[8.5, 0.5] if segment_box_metric == "Segment Rank" else None,
+                    tickmode="array" if segment_box_metric == "Segment Rank" else None,
+                    tickvals=list(range(1, 9)) if segment_box_metric == "Segment Rank" else None,
+                ),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Keine Daten fuer Segment Trend in der aktuellen Auswahl.")
 
     def _take_n(n_rows: int, mode: str) -> int:
         if n_rows <= 0:
@@ -1835,7 +1963,7 @@ with tabs[0]:
                 )
 
     peak_df = pd.DataFrame(peak_rows)
-    if not peak_df.empty:
+    if False and not peak_df.empty:
         # Segment ranks are computed against full field (same filters, without rider filter),
         # grouped by Segment + Category + Gender.
         rank_rows = []
@@ -2762,166 +2890,6 @@ with tabs[0]:
                 hide_index=True,
             )
         st.caption("Peak wird pro Rider × Segment unabhaengig berechnet (Top-Auswahl je Segment, danach Median).")
-    else:
-        st.info("Keine Daten fuer Peak Segment Profile in der aktuellen Auswahl.")
-
-    st.markdown("**Segment Trend (Boxplot)**")
-    segment_trend_options = [sd["label"] for sd in available_defs]
-    default_segment_trend = [x for x in selected_seg_labels if x in segment_trend_options]
-    if not default_segment_trend:
-        default_segment_trend = segment_trend_options[:1]
-    segment_trend_labels = st.multiselect(
-        "Segment(e) fuer Boxplot",
-        options=segment_trend_options,
-        default=default_segment_trend,
-        key="segment_trend_boxplot_segments",
-    )
-    if segment_trend_labels:
-        trend_rows = []
-        for sd in available_defs:
-            if sd["label"] not in segment_trend_labels:
-                continue
-            dcol = sd["delta_use_col"]
-            tcol = sd["time_col"]
-            rcol = sd["ref_col"]
-            seg_cols = [
-                "rider_short",
-                "display_name",
-                "location",
-                "round_short",
-                "round_title",
-                "heat_title",
-                "event_dt",
-                "event_id",
-                "group_id",
-                dcol,
-                tcol,
-                rcol,
-            ]
-            seg_cols = list(dict.fromkeys(seg_cols))
-            seg_df = contrib_src[seg_cols].copy()
-            seg_df = seg_df.rename(
-                columns={
-                    dcol: "delta_value",
-                    tcol: "segment_time",
-                    rcol: "reference_time",
-                }
-            )
-            seg_df["delta_value"] = pd.to_numeric(seg_df["delta_value"], errors="coerce")
-            seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
-            seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
-            seg_df["rank2_ref_event"] = seg_df.groupby(
-                ["event_id", "group_id"], dropna=False
-            )["segment_time"].transform(
-                lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
-            )
-            seg_df["reference_mode_display"] = "Aktive Referenz"
-            seg_df["active_reference_display"] = ref_caption
-            seg_df["delta_display"] = seg_df["delta_value"]
-            if show_delta_vs_rank2:
-                is_best_row = (
-                    seg_df["segment_time"].notna()
-                    & seg_df["reference_time"].notna()
-                    & np.isclose(seg_df["segment_time"], seg_df["reference_time"], atol=1e-6)
-                )
-                use_rank2 = is_best_row & seg_df["rank2_ref_event"].notna()
-                seg_df.loc[use_rank2, "delta_display"] = (
-                    seg_df.loc[use_rank2, "segment_time"] - seg_df.loc[use_rank2, "rank2_ref_event"]
-                )
-                seg_df.loc[use_rank2, "reference_mode_display"] = "Rank 2 (Event, nur Referenz-Rider)"
-            seg_df = seg_df.dropna(subset=["delta_display"]).copy()
-            if seg_df.empty:
-                continue
-            seg_df["Segment"] = sd["label"]
-            seg_df["Segment Short"] = segment_short_label(sd["label"])
-            trend_rows.append(seg_df)
-
-        segment_trend_df = pd.concat(trend_rows, ignore_index=True) if trend_rows else pd.DataFrame()
-        if segment_trend_df.empty:
-            st.info("Keine Segment-Daten fuer Boxplot in der aktuellen Auswahl.")
-        elif go is None:
-            st.warning("Plotly ist fuer den Segment-Boxplot nicht verfuegbar.")
-        else:
-            seg_order = [x for x in segment_trend_labels if x in segment_trend_df["Segment"].unique().tolist()]
-            seg_short_order = [segment_short_label(x) for x in seg_order]
-            rider_order = sorted(segment_trend_df["rider_short"].dropna().unique().tolist())
-            rider_colors = [
-                "#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c",
-                "#98df8a", "#d62728", "#ff9896", "#9467bd", "#c5b0d5",
-            ]
-            color_map = {r: rider_colors[i % len(rider_colors)] for i, r in enumerate(rider_order)}
-            fig = go.Figure()
-            for rider in rider_order:
-                rdf = segment_trend_df[segment_trend_df["rider_short"] == rider].copy()
-                if rdf.empty:
-                    continue
-                customdata = np.column_stack([
-                    rdf["Segment"].fillna("").to_numpy(),
-                    rdf["display_name"].fillna(rdf["event_id"]).to_numpy(),
-                    rdf["event_dt"].dt.strftime("%Y-%m-%d").fillna("").to_numpy(),
-                    rdf["location"].fillna("").to_numpy(),
-                    rdf["round_short"].fillna(rdf["round_title"]).to_numpy(),
-                    rdf["heat_title"].fillna("").to_numpy(),
-                    rdf["reference_mode_display"].fillna("").to_numpy(),
-                    rdf["active_reference_display"].fillna("").to_numpy(),
-                ])
-                fig.add_trace(
-                    go.Box(
-                        y=rdf["delta_display"],
-                        x=rdf["Segment Short"],
-                        name=rider,
-                        boxpoints="all",
-                        jitter=0.48,
-                        pointpos=0,
-                        width=0.62,
-                        whiskerwidth=0.8,
-                        marker=dict(
-                            size=10,
-                            color="rgba(0,0,0,0)",
-                            line=dict(color="rgba(120,120,120,0.85)", width=1.3),
-                        ),
-                        line=dict(color=color_map[rider], width=1.8),
-                        fillcolor="rgba(0,0,0,0)",
-                        showlegend=True,
-                        customdata=customdata,
-                        hovertemplate=(
-                            "Rider: %{fullData.name}<br>"
-                            "Segment: %{customdata[0]}<br>"
-                            "Delta (s): %{y:.4f}<br>"
-                            "Event: %{customdata[1]}<br>"
-                            "Date: %{customdata[2]}<br>"
-                            "Location: %{customdata[3]}<br>"
-                            "Round: %{customdata[4]}<br>"
-                            "Heat: %{customdata[5]}<br>"
-                            "Reference Mode: %{customdata[6]}<br>"
-                            "Active Reference: %{customdata[7]}<extra></extra>"
-                        ),
-                    )
-                )
-            fig.update_layout(
-                height=520,
-                margin=dict(l=40, r=20, t=10, b=40),
-                plot_bgcolor="white",
-                paper_bgcolor="white",
-                boxmode="group",
-                legend=dict(orientation="h", y=1.12, x=0, title="Rider"),
-                xaxis=dict(
-                    title="Segment",
-                    tickangle=-90,
-                    categoryorder="array",
-                    categoryarray=seg_short_order,
-                ),
-                yaxis=dict(
-                    title="Delta (s)",
-                    gridcolor="#e5e7eb",
-                    zeroline=True,
-                    zerolinecolor="#cbd5e1",
-                ),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("Bitte mindestens ein Segment fuer den Segment-Boxplot auswaehlen.")
-
     st.markdown("**Start Delta vs Finish Delta**")
     scat = runs_sel.dropna(subset=["start_delta", "finish_delta"]).copy()
     if not scat.empty:
