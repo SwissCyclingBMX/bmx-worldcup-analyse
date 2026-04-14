@@ -3373,9 +3373,9 @@ with tabs[7]:
                                 x=[rider] * len(rdf),
                                 name=rider,
                                 boxpoints="all",
-                                jitter=0.42,
+                                jitter=0.55,
                                 pointpos=0,
-                                width=0.42,
+                                width=0.9,
                                 whiskerwidth=0.8,
                                 marker=dict(size=11, color="rgba(0,0,0,0)", line=dict(color="rgba(120,120,120,0.85)", width=1.4)),
                                 line=dict(color="black", width=1.4),
@@ -3406,7 +3406,7 @@ with tabs[7]:
                         plot_bgcolor="white",
                         paper_bgcolor="white",
                         boxmode="group",
-                        xaxis=dict(title="Rider", tickangle=-90, categoryorder="array", categoryarray=rider_order, tickson="boundaries"),
+                        xaxis=dict(title="Rider", tickangle=-90, categoryorder="array", categoryarray=rider_order),
                         yaxis=dict(title="Final Rank", range=[48, 1], tickmode="array", tickvals=[1, 4, 8, 16, 32, 48], gridcolor="#e5e7eb"),
                     )
                     st.plotly_chart(fig, use_container_width=True)
