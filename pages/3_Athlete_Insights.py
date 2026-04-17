@@ -1112,10 +1112,10 @@ with g2:
     round_defaults = [x for x in ["R1", "LCQ", "1/32", "1/16", "1/8", "1/4", "1/2", "F"] if x in set(round_opts)]
     sel_rounds = st.multiselect("Runde (optional)", round_opts, default=[x for x in page_prefs.get("sel_rounds", round_defaults) if x in round_opts] or round_defaults, key="ai_sel_rounds")
 
-# Comparison/reference pool must stay on full field for selected filters.
+# Comparison/reference pool must stay on the full field for the active
+# event/category/gender filters. Nation and athlete filters only define which
+# riders are displayed, not who they are ranked against.
 base_scope = all_runs.copy()
-if rider_mode == "nation" and sel_nations:
-    base_scope = base_scope[base_scope["nation"].isin(sel_nations)]
 if sel_years:
     base_scope = base_scope[base_scope["year"].isin(sel_years)]
 if sel_event_types:
