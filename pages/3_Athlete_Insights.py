@@ -382,6 +382,22 @@ def segment_short_label(segment: str) -> str:
     return m.get(str(segment), str(segment))
 
 
+def parse_time_to_seconds(val) -> float:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return float("nan")
+    s = str(val).strip()
+    if not s or s in {"-", "None", "nan"}:
+        return float("nan")
+    try:
+        td = pd.to_timedelta(s)
+        return td.total_seconds()
+    except Exception:
+        try:
+            return float(s)
+        except Exception:
+            return float("nan")
+
+
 def safe_float(v):
     x = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
     return float(x) if pd.notna(x) else np.nan
@@ -454,10 +470,11 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     if df.empty:
         return df
 
-    for c in ["start", "t1", "t2", "t3", "time", "rank", "heat_id", "round_key"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
     for c in ["start", "t1", "t2", "t3", "time"]:
+        df[c] = df[c].map(parse_time_to_seconds)
         df.loc[df[c] <= 0, c] = np.nan
+    for c in ["rank", "heat_id", "round_key"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df["finish"] = df["time"]
     df["event_type"] = df["event_id"].apply(infer_event_type)
@@ -612,6 +629,32 @@ def add_heat_relative_metrics(df: pd.DataFrame) -> pd.DataFrame:
     out["split_t1_t2"] = out["t2"] - out["t1"]
     out["split_t2_t3"] = out["t3"] - out["t2"]
     out["split_t3_finish"] = out["finish"] - out["t3"]
+    invalid_bottom_t1 = (
+        out["start"].notna()
+        & out["t1"].notna()
+        & (out["t1"] < out["start"])
+    )
+    invalid_t1_t2 = (
+        out["t1"].notna()
+        & out["t2"].notna()
+        & (out["t2"] < out["t1"])
+    )
+    invalid_t2_t3 = (
+        out["t2"].notna()
+        & out["t3"].notna()
+        & (out["t3"] < out["t2"])
+    )
+    invalid_t3_finish = (
+        out["t3"].notna()
+        & out["finish"].notna()
+        & (out["finish"] < out["t3"])
+    )
+    out.loc[invalid_bottom_t1, "split_bottom_t1"] = np.nan
+    out.loc[invalid_t1_t2, "split_t1_t2"] = np.nan
+    out.loc[invalid_t2_t3, "split_t2_t3"] = np.nan
+    out.loc[invalid_t3_finish, "split_t3_finish"] = np.nan
+    for split_col in ["split_bottom_t1", "split_t1_t2", "split_t2_t3", "split_t3_finish"]:
+        out.loc[out[split_col] <= 0, split_col] = np.nan
     split_segments = ["split_bottom_t1", "split_t1_t2", "split_t2_t3", "split_t3_finish"]
     for seg in split_segments:
         grp = out.groupby(heat_cols)[seg]
@@ -2844,6 +2887,8 @@ with tabs[1]:
         index=0,
         key="segment_profile_box_metric",
     )
+    if segment_profile_metric == "Segment Rank" and segment_profile_comparison_mode == "Runde":
+        st.caption("Segment Rank bleibt eventbasiert (Best of the Day pro Event), auch wenn Vergleichsmodus `Runde` gewaehlt ist.")
     segment_profile_delta_mode = None
     if segment_profile_metric == "Segment Delta":
         segment_profile_delta_mode = st.selectbox(
@@ -2876,13 +2921,16 @@ with tabs[1]:
             out["group_sort"] = pd.Series(dtype="float")
             out["x_label"] = pd.Series(dtype="object")
             return out
-        if segment_profile_comparison_mode == "Athlet":
+        effective_mode = segment_profile_comparison_mode
+        if segment_profile_metric == "Segment Rank" and segment_profile_comparison_mode == "Runde":
+            effective_mode = "Event"
+        if effective_mode == "Athlet":
             out["group_value"] = out["rider_short"].fillna("Unknown")
             out["group_sort"] = 0.0
-        elif segment_profile_comparison_mode == "Runde":
+        elif effective_mode == "Runde":
             out["group_value"] = out["rider_short"].fillna("Unknown") + " / " + _segment_profile_round_value(out)
             out["group_sort"] = pd.to_numeric(out["round_sort"], errors="coerce").fillna(999)
-        elif segment_profile_comparison_mode == "Jahr":
+        elif effective_mode == "Jahr":
             year_num = pd.to_numeric(out["year"], errors="coerce")
             year_txt = year_num.astype("Int64").astype(str).replace("<NA>", "Unknown")
             out["group_value"] = out["rider_short"].fillna("Unknown") + " / " + year_txt
@@ -2967,15 +3015,11 @@ with tabs[1]:
             seg_df = seg_df.dropna(subset=["segment_time"]).copy()
             if seg_df.empty:
                 continue
-            if segment_profile_comparison_mode == "Runde":
-                rider_event_keys = ["rider_id", "event_id", "round_short"]
-                rank_group_cols = ["event_id", "round_short", "category", "gender"]
-            else:
-                rider_event_keys = ["rider_id", "event_id"]
-                rank_group_cols = ["event_id", "category", "gender"]
             seg_df = seg_df.sort_values(["segment_time", "event_dt", "round_sort"], ascending=[True, True, True])
-            seg_df = seg_df.drop_duplicates(subset=rider_event_keys, keep="first")
-            seg_df["metric_value"] = seg_df.groupby(rank_group_cols, dropna=False)["segment_time"].rank(method="min", ascending=True)
+            seg_df = seg_df.drop_duplicates(subset=["rider_id", "event_id"], keep="first")
+            seg_df["metric_value"] = seg_df.groupby(
+                ["event_id", "category", "gender"], dropna=False
+            )["segment_time"].rank(method="min", ascending=True)
             seg_df = seg_df[seg_df["rider_id"].astype(str).isin(selected_rider_set)].copy()
             if seg_df.empty:
                 continue
@@ -3061,14 +3105,23 @@ with tabs[1]:
                     showlegend=False,
                 )
             )
-        rank_range = None
-        rank_ticks = None
+        yaxis_range = None
+        yaxis_tickvals = None
+        metric_vals = pd.to_numeric(segment_profile_df["metric_value"], errors="coerce").dropna()
         if segment_profile_metric == "Segment Rank":
-            rank_vals = pd.to_numeric(segment_profile_df["metric_value"], errors="coerce")
-            if rank_vals.notna().any():
-                rank_max = max(8, int(np.nanmax(rank_vals)))
-                rank_range = [rank_max + 0.5, 0.5]
-                rank_ticks = sorted(set([x for x in [1, 4, 8, 16, 32, 48, 64] if x <= rank_max]))
+            if not metric_vals.empty:
+                rank_cap = int(np.ceil(metric_vals.quantile(0.95)))
+                rank_cap = max(8, min(48, rank_cap))
+                yaxis_range = [rank_cap + 0.5, 0.5]
+                yaxis_tickvals = sorted(set([x for x in [1, 4, 8, 16, 32, 48] if x <= rank_cap]))
+        elif not metric_vals.empty:
+            upper_cap = float(metric_vals.quantile(0.95))
+            lower_bound = float(metric_vals.min())
+            if np.isfinite(upper_cap) and np.isfinite(lower_bound):
+                if upper_cap <= lower_bound:
+                    upper_cap = lower_bound + 1e-6
+                pad = max((upper_cap - lower_bound) * 0.05, 1e-6)
+                yaxis_range = [lower_bound - pad, upper_cap + pad]
         fig.update_layout(
             height=620,
             margin=dict(l=40, r=20, t=10, b=40),
@@ -3081,8 +3134,8 @@ with tabs[1]:
                 gridcolor="#e5e7eb",
                 zeroline=(segment_profile_metric == "Segment Delta"),
                 zerolinecolor="#cbd5e1",
-                range=rank_range,
-                tickvals=rank_ticks,
+                range=yaxis_range,
+                tickvals=yaxis_tickvals,
             ),
         )
         st.plotly_chart(fig, use_container_width=True)
