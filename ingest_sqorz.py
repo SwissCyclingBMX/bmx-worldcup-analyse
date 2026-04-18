@@ -88,6 +88,20 @@ def unwrap_payload(obj: Any) -> Dict[str, Any]:
     raise RuntimeError("Payload does not contain classRanks")
 
 
+def normalize_sqorz_url(url: str) -> str:
+    u = str(url or "").strip()
+    if not u:
+        return u
+    if "/json/event/" in u:
+        return u
+    if "our.sqorz.com" not in u:
+        return u
+    m = re.search(r"/event/([a-f0-9]{24})(?:/|$)", u, flags=re.IGNORECASE)
+    if m:
+        return f"https://our.sqorz.com/json/event/{m.group(1)}"
+    return u
+
+
 def load_payload(args: argparse.Namespace) -> Dict[str, Any]:
     raw: Any
     if args.payload_file:
@@ -95,11 +109,12 @@ def load_payload(args: argparse.Namespace) -> Dict[str, Any]:
             raw = json.load(f)
     elif args.url:
         headers = {"accept": "application/json", "user-agent": "HeatScout/1.0"}
+        url = normalize_sqorz_url(args.url)
         if args.post_json:
             body = json.loads(args.post_json)
-            r = requests.post(args.url, headers=headers, json=body, timeout=30)
+            r = requests.post(url, headers=headers, json=body, timeout=30)
         else:
-            r = requests.get(args.url, headers=headers, timeout=30)
+            r = requests.get(url, headers=headers, timeout=30)
         r.raise_for_status()
         raw = r.json()
     else:

@@ -17,6 +17,7 @@ import argparse
 import re
 import sqlite3
 import time
+import zlib
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -147,6 +148,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         t3 TEXT,
         t4 TEXT,
         time TEXT,
+        start_time_first_seen_at TEXT,
+        start_time_last_seen_at TEXT,
         seen_at TEXT NOT NULL,
         PRIMARY KEY (event_id, round_key, heat_id, bib)
     )
@@ -171,6 +174,8 @@ def ensure_pick_columns(conn: sqlite3.Connection) -> None:
         "t4": "TEXT",
         "time": "TEXT",
         "rank": "INTEGER",
+        "start_time_first_seen_at": "TEXT",
+        "start_time_last_seen_at": "TEXT",
     }
     cur = conn.execute("PRAGMA table_info(picks)")
     existing = {row[1] for row in cur.fetchall()}
@@ -197,18 +202,50 @@ def upsert_event(conn: sqlite3.Connection, meta: Dict[str, Optional[str]]) -> No
 def upsert_picks(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> None:
     if not rows:
         return
+    normalized_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        bib_val = item.get("bib")
+        try:
+            bib_int = int(bib_val) if bib_val is not None and str(bib_val).strip() != "" else None
+        except Exception:
+            bib_int = None
+        if bib_int is None:
+            key = "|".join(
+                [
+                    str(item.get("event_id") or ""),
+                    str(item.get("round_key") or ""),
+                    str(item.get("heat_id") or ""),
+                    str(item.get("name") or ""),
+                    str(item.get("uci_id") or ""),
+                    str(item.get("pick_order") or ""),
+                ]
+            )
+            bib_int = 900000000 + (zlib.crc32(key.encode("utf-8")) % 99999999)
+        item["bib"] = bib_int
+        start_time_string = str(item.get("start_time_string") or "").strip()
+        seen_at = item.get("seen_at")
+        if start_time_string:
+            item.setdefault("start_time_first_seen_at", seen_at)
+            item.setdefault("start_time_last_seen_at", seen_at)
+        else:
+            item.setdefault("start_time_first_seen_at", None)
+            item.setdefault("start_time_last_seen_at", None)
+        normalized_rows.append(item)
     conn.executemany("""
     INSERT INTO picks (
         event_id, group_id, round_key, round_title,
         heat_id, heat_title, heat_status, start_time_string,
         bib, name, nation, pick_order, lane, lane_idx,
         uci_id, start, t1, t2, t3, t4, time, rank,
+        start_time_first_seen_at, start_time_last_seen_at,
         seen_at
     ) VALUES (
         :event_id, :group_id, :round_key, :round_title,
         :heat_id, :heat_title, :heat_status, :start_time_string,
         :bib, :name, :nation, :pick_order, :lane, :lane_idx,
         :uci_id, :start, :t1, :t2, :t3, :t4, :time, :rank,
+        :start_time_first_seen_at, :start_time_last_seen_at,
         :seen_at
     )
     ON CONFLICT(event_id, round_key, heat_id, bib) DO UPDATE SET
@@ -230,8 +267,20 @@ def upsert_picks(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> None:
         t4=excluded.t4,
         time=excluded.time,
         rank=excluded.rank,
+        start_time_first_seen_at=
+            CASE
+                WHEN COALESCE(TRIM(excluded.start_time_string), '') = '' THEN picks.start_time_first_seen_at
+                WHEN COALESCE(TRIM(picks.start_time_string), '') = '' THEN COALESCE(picks.start_time_first_seen_at, excluded.seen_at)
+                WHEN picks.start_time_string = excluded.start_time_string THEN picks.start_time_first_seen_at
+                ELSE excluded.seen_at
+            END,
+        start_time_last_seen_at=
+            CASE
+                WHEN COALESCE(TRIM(excluded.start_time_string), '') = '' THEN picks.start_time_last_seen_at
+                ELSE excluded.seen_at
+            END,
         seen_at=excluded.seen_at
-    """, rows)
+    """, normalized_rows)
     conn.commit()
 
 
