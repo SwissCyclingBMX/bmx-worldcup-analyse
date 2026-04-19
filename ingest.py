@@ -148,6 +148,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         t3 TEXT,
         t4 TEXT,
         time TEXT,
+        start_first_seen_at TEXT,
+        t1_first_seen_at TEXT,
+        time_first_seen_at TEXT,
         start_time_first_seen_at TEXT,
         start_time_last_seen_at TEXT,
         seen_at TEXT NOT NULL,
@@ -173,6 +176,9 @@ def ensure_pick_columns(conn: sqlite3.Connection) -> None:
         "t3": "TEXT",
         "t4": "TEXT",
         "time": "TEXT",
+        "start_first_seen_at": "TEXT",
+        "t1_first_seen_at": "TEXT",
+        "time_first_seen_at": "TEXT",
         "rank": "INTEGER",
         "start_time_first_seen_at": "TEXT",
         "start_time_last_seen_at": "TEXT",
@@ -231,20 +237,31 @@ def upsert_picks(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> None:
         else:
             item.setdefault("start_time_first_seen_at", None)
             item.setdefault("start_time_last_seen_at", None)
+        for value_col, first_seen_col in (
+            ("start", "start_first_seen_at"),
+            ("t1", "t1_first_seen_at"),
+            ("time", "time_first_seen_at"),
+        ):
+            value = str(item.get(value_col) or "").strip()
+            item.setdefault(first_seen_col, seen_at if value else None)
         normalized_rows.append(item)
     conn.executemany("""
     INSERT INTO picks (
         event_id, group_id, round_key, round_title,
         heat_id, heat_title, heat_status, start_time_string,
         bib, name, nation, pick_order, lane, lane_idx,
-        uci_id, start, t1, t2, t3, t4, time, rank,
+        uci_id, start, t1, t2, t3, t4, time,
+        start_first_seen_at, t1_first_seen_at, time_first_seen_at,
+        rank,
         start_time_first_seen_at, start_time_last_seen_at,
         seen_at
     ) VALUES (
         :event_id, :group_id, :round_key, :round_title,
         :heat_id, :heat_title, :heat_status, :start_time_string,
         :bib, :name, :nation, :pick_order, :lane, :lane_idx,
-        :uci_id, :start, :t1, :t2, :t3, :t4, :time, :rank,
+        :uci_id, :start, :t1, :t2, :t3, :t4, :time,
+        :start_first_seen_at, :t1_first_seen_at, :time_first_seen_at,
+        :rank,
         :start_time_first_seen_at, :start_time_last_seen_at,
         :seen_at
     )
@@ -266,6 +283,24 @@ def upsert_picks(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> None:
         t3=excluded.t3,
         t4=excluded.t4,
         time=excluded.time,
+        start_first_seen_at=
+            CASE
+                WHEN COALESCE(TRIM(excluded.start), '') = '' THEN picks.start_first_seen_at
+                WHEN COALESCE(TRIM(picks.start), '') = '' THEN COALESCE(picks.start_first_seen_at, excluded.seen_at)
+                ELSE picks.start_first_seen_at
+            END,
+        t1_first_seen_at=
+            CASE
+                WHEN COALESCE(TRIM(excluded.t1), '') = '' THEN picks.t1_first_seen_at
+                WHEN COALESCE(TRIM(picks.t1), '') = '' THEN COALESCE(picks.t1_first_seen_at, excluded.seen_at)
+                ELSE picks.t1_first_seen_at
+            END,
+        time_first_seen_at=
+            CASE
+                WHEN COALESCE(TRIM(excluded.time), '') = '' THEN picks.time_first_seen_at
+                WHEN COALESCE(TRIM(picks.time), '') = '' THEN COALESCE(picks.time_first_seen_at, excluded.seen_at)
+                ELSE picks.time_first_seen_at
+            END,
         rank=excluded.rank,
         start_time_first_seen_at=
             CASE
