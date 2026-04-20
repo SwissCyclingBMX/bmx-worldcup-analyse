@@ -1123,7 +1123,7 @@ render_sidebar_nav()
 page_prefs = load_page_prefs("athlete_insights")
 
 st.title("Athlete Insights")
-st.caption("Trend, Segmente, Positionen, Druck, Track-Profile, Benchmark, Fatigue und Result-Trend.")
+st.caption("Trend, Segment Profile und Results Trend.")
 
 # Keep Vega/Altair tooltips anchored at top-center for better readability on dense charts.
 st.markdown(
@@ -1373,20 +1373,19 @@ runs_sel["final_rank_event_display"] = np.where(
 )
 runs_sel["event_label"] = make_event_label(runs_sel)
 
-tabs = st.tabs(
-    [
-        "Athlete Trend",
-        "Segment Profile",
-        "Positions & Overtakes",
-        "Pressure Performance",
-        "Track Profile",
-        "Benchmark",
-        "Fatigue",
-        "Results Trend",
-    ]
+section_options = ["Athlete Trend", "Segment Profile", "Results Trend"]
+section_default = page_prefs.get("ai_active_section", section_options[0])
+if section_default not in section_options:
+    section_default = section_options[0]
+ai_active_section = st.segmented_control(
+    "Ansicht",
+    section_options,
+    default=section_default,
+    key="ai_active_section",
 )
+update_page_prefs("athlete_insights", {"ai_active_section": ai_active_section})
 
-with tabs[0]:
+if ai_active_section == "Athlete Trend":
     st.subheader("Athlete Trend")
     plot = runs_sel.copy()
     plot["round_short"] = plot["round_title"].apply(round_short_label)
@@ -2954,7 +2953,7 @@ with tabs[0]:
             diag_line = alt.Chart(diag).mark_line(strokeDash=[4, 4], color="gray").encode(x="x:Q", y="y:Q")
             st.altair_chart(scatter + diag_line, use_container_width=True)
 
-with tabs[1]:
+elif ai_active_section == "Segment Profile":
     st.subheader("Segment Profile")
 
     segment_profile_src = runs_sel.copy()
@@ -3373,329 +3372,7 @@ with tabs[1]:
                 f"Aktuell ausgeschlossen: {len(excluded_id_set(segment_profile_exclusion_state))} Punkt(e)."
             )
 
-with tabs[2]:
-    st.subheader("Positions & Overtakes")
-    scope = st.selectbox("Scope", ["alle Laeufe", "nur KO", "nur Finals"], index=0, key="pos_scope")
-    scope_key = {"alle Laeufe": "alle", "nur KO": "nur KO", "nur Finals": "nur Finals"}[scope]
-    rider_scope = apply_scope(runs_sel, scope_key).copy()
-
-    if rider_scope.empty:
-        st.info("Keine Laeufe im gewaehlten Scope.")
-    else:
-        rider_scope["delta_start_to_t1"] = rider_scope["pos_start"] - rider_scope["pos_t1"]
-        rider_scope["delta_t1_to_finish"] = rider_scope["pos_t1"] - rider_scope["pos_finish"]
-        rider_scope["delta_start_to_finish"] = rider_scope["pos_start"] - rider_scope["pos_finish"]
-
-        deltas = {
-            "Start->T1": rider_scope["delta_start_to_t1"],
-            "T1->Finish": rider_scope["delta_t1_to_finish"],
-            "Start->Finish": rider_scope["delta_start_to_finish"],
-        }
-        bar_rows = []
-        for k, s in deltas.items():
-            if s.notna().sum() > 0:
-                bar_rows.append({"phase": k, "mean_delta": s.mean(), "std": s.std(), "n": int(s.notna().sum())})
-        if bar_rows:
-            bdf = pd.DataFrame(bar_rows)
-            b = (
-                alt.Chart(bdf)
-                .mark_bar()
-                .encode(x="phase:N", y=alt.Y("mean_delta:Q", title="Durchschnittliche Positionsgewinne"), tooltip=["phase:N", "mean_delta:Q", "std:Q", "n:Q"])
-                .properties(height=260)
-            )
-            st.altair_chart(b, use_container_width=True)
-
-        scat = rider_scope.dropna(subset=["pos_start", "pos_finish"]).copy()
-        if not scat.empty:
-            scat["pos_start"] = pd.to_numeric(scat["pos_start"], errors="coerce")
-            scat["pos_finish"] = pd.to_numeric(scat["pos_finish"], errors="coerce")
-            scat = scat.dropna(subset=["pos_start", "pos_finish"]).copy()
-            scat["delta_start_to_finish"] = pd.to_numeric(scat["delta_start_to_finish"], errors="coerce")
-            scat["move_state"] = np.where(
-                scat["delta_start_to_finish"] > 0,
-                "Plätze gewonnen",
-                np.where(scat["delta_start_to_finish"] < 0, "Plätze verloren", "Neutral"),
-            )
-            total_points = len(scat)
-            # BMX gates are 1..8; hide out-of-range points from this view.
-            scat = scat[
-                (scat["pos_start"] >= 1)
-                & (scat["pos_start"] <= 8)
-                & (scat["pos_finish"] >= 1)
-                & (scat["pos_finish"] <= 8)
-            ].copy()
-            removed_points = total_points - len(scat)
-        if not scat.empty:
-            axis_x = alt.X(
-                "pos_start:Q",
-                title="Position Start",
-                scale=alt.Scale(domain=[1, 8], clamp=True),
-                axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
-            )
-            axis_y = alt.Y(
-                "pos_finish:Q",
-                title="Position Finish",
-                scale=alt.Scale(domain=[1, 8], clamp=True),
-                axis=alt.Axis(values=[1, 2, 3, 4, 5, 6, 7, 8], format="d"),
-            )
-            bg_df = pd.DataFrame({"x": [1, 8], "diag": [1, 8], "top": [8, 8], "bottom": [1, 1]})
-            red_upper = (
-                alt.Chart(bg_df)
-                .mark_area(opacity=0.12, color="#ef8a8a")
-                .encode(x="x:Q", y="top:Q", y2="diag:Q")
-            )
-            green_lower = (
-                alt.Chart(bg_df)
-                .mark_area(opacity=0.12, color="#74c476")
-                .encode(x="x:Q", y="diag:Q", y2="bottom:Q")
-            )
-            diag_line = (
-                alt.Chart(pd.DataFrame({"x": [1, 8], "y": [1, 8]}))
-                .mark_line(color="#808080", strokeWidth=2)
-                .encode(x="x:Q", y="y:Q")
-            )
-            points = (
-                alt.Chart(scat)
-                .mark_circle(opacity=0.9, size=110)
-                .encode(
-                    x=axis_x,
-                    y=axis_y,
-                    color=alt.Color("rider_short:N", title="Rider"),
-                    tooltip=[
-                        "rider_short:N",
-                        "event_id:N",
-                        "round_title:N",
-                        "heat_title:N",
-                        "pos_start:Q",
-                        "pos_finish:Q",
-                        "delta_start_to_finish:Q",
-                        "move_state:N",
-                        "start:Q",
-                        "t1:Q",
-                        "finish:Q",
-                    ],
-                )
-                .properties(height=300)
-            )
-            st.altair_chart(green_lower + red_upper + diag_line + points, use_container_width=True)
-            if removed_points > 0:
-                st.caption(f"Hinweis: {removed_points} Punkte ausserhalb Gate-Range 1-8 wurden im Scatter ausgeblendet.")
-
-            mat = pd.crosstab(scat["pos_start"].apply(bin_pos), scat["pos_finish"].apply(bin_pos)).reset_index().melt(
-                id_vars="pos_start", var_name="finish_bin", value_name="count"
-            )
-            mat = mat.rename(columns={"pos_start": "start_bin"})
-            hm = (
-                alt.Chart(mat)
-                .mark_rect()
-                .encode(
-                    x="finish_bin:N",
-                    y="start_bin:N",
-                    color=alt.Color("count:Q", scale=alt.Scale(scheme="blues")),
-                    tooltip=["start_bin:N", "finish_bin:N", "count:Q"],
-                )
-                .properties(height=220)
-            )
-            st.altair_chart(hm, use_container_width=True)
-
-        n_heats = len(rider_scope)
-        delta_sf = rider_scope["delta_start_to_finish"]
-        summary = pd.DataFrame(
-            [
-                {
-                    "n_heats": n_heats,
-                    "mean_delta_start_to_finish": delta_sf.mean(),
-                    "%gained": (delta_sf > 0).mean() * 100.0,
-                    "%lost": (delta_sf < 0).mean() * 100.0,
-                    "%neutral": (delta_sf == 0).mean() * 100.0,
-                }
-            ]
-        )
-        st.dataframe(summary.round(4), use_container_width=True, hide_index=True)
-
-with tabs[3]:
-    st.subheader("Pressure Performance")
-    scope = st.selectbox("Scope", ["alle", "nur KO", "nur Finals"], index=0, key="press_scope")
-    rider_scope = apply_scope(runs_sel, scope)
-    if rider_scope.empty:
-        st.info("Keine Daten im Scope.")
-    else:
-        phase_tbl = (
-            rider_scope.groupby("phase", as_index=False)
-            .agg(
-                n=("event_id", "count"),
-                mean_finish_delta=("finish_delta", "mean"),
-                std_finish_delta=("finish_delta", "std"),
-                mean_start_delta=("start_delta", "mean"),
-                mean_t1_delta=("t1_delta", "mean"),
-            )
-            .sort_values("phase")
-        )
-        st.dataframe(phase_tbl.round(4), use_container_width=True, hide_index=True)
-
-        pmap = phase_tbl.set_index("phase")
-        if "Final" in pmap.index and "Early" in pmap.index:
-            drop_finish = pmap.loc["Final", "mean_finish_delta"] - pmap.loc["Early", "mean_finish_delta"]
-            drop_start = pmap.loc["Final", "mean_start_delta"] - pmap.loc["Early", "mean_start_delta"]
-            drop_t1 = pmap.loc["Final", "mean_t1_delta"] - pmap.loc["Early", "mean_t1_delta"]
-            st.metric("Pressure Dropoff Finish (Final - Early)", f"{drop_finish:.4f} s")
-            st.caption(f"Start Dropoff: {drop_start:.4f} s | T1 Dropoff: {drop_t1:.4f} s")
-        else:
-            st.caption("Final oder Early nicht ausreichend vorhanden, Dropoff nicht berechnet.")
-
-        box_df = rider_scope[["phase", "finish_delta"]].dropna()
-        if not box_df.empty:
-            box = alt.Chart(box_df).mark_boxplot().encode(x="phase:N", y=alt.Y("finish_delta:Q", title="Finish Delta (s)"))
-            st.altair_chart(box, use_container_width=True)
-
-with tabs[4]:
-    st.subheader("Track Profile")
-    top_n = st.slider("Top N Locations nach Runs", min_value=3, max_value=20, value=8, step=1, key="track_topn")
-    show_unknown = st.toggle("Unknown anzeigen", value=False, key="track_unknown")
-    tr = runs_sel.copy()
-    if not show_unknown:
-        tr = tr[tr["location"].str.lower() != "unknown"]
-
-    agg = (
-        tr.groupby("location", as_index=False)
-        .agg(
-            n_runs=("event_id", "count"),
-            mean_finish_delta=("finish_delta", "mean"),
-            std_finish_delta=("finish_delta", "std"),
-            mean_start_delta=("start_delta", "mean"),
-            mean_t1_delta=("t1_delta", "mean"),
-            median_rank=("rank", "median"),
-            finals_pct=("phase", lambda s: (s == "Final").mean() * 100.0),
-        )
-        .sort_values("n_runs", ascending=False)
-    )
-    agg = agg.head(top_n)
-    if agg.empty:
-        st.info("Keine Track-Daten vorhanden.")
-    else:
-        bar = alt.Chart(agg).mark_bar().encode(
-            x=alt.X("mean_finish_delta:Q", title="Mean Finish Delta (s)"),
-            y=alt.Y("location:N", sort="-x"),
-            tooltip=["location:N", "n_runs:Q", "mean_finish_delta:Q", "std_finish_delta:Q", "mean_start_delta:Q", "mean_t1_delta:Q"],
-        )
-        st.altair_chart(bar.properties(height=280), use_container_width=True)
-
-        sc = alt.Chart(agg).mark_circle(opacity=0.8).encode(
-            x=alt.X("mean_start_delta:Q", title="Mean Start Delta"),
-            y=alt.Y("mean_finish_delta:Q", title="Mean Finish Delta"),
-            size=alt.Size("n_runs:Q"),
-            color=alt.Color("location:N", legend=None),
-            tooltip=["location:N", "n_runs:Q", "mean_start_delta:Q", "mean_finish_delta:Q", "finals_pct:Q"],
-        )
-        st.altair_chart(sc.properties(height=280), use_container_width=True)
-        st.dataframe(agg.round(4), use_container_width=True, hide_index=True)
-
-with tabs[5]:
-    st.subheader("Benchmark")
-    mode = st.selectbox("Benchmark Mode", ["Gap to Winner", "Gap to Top3 mean", "Percentile in Heat"], index=0, key="bench_mode")
-    b = runs_sel.copy()
-    heat_cols = ["event_id", "group_id", "heat_id", "round_sort"]
-    b["winner_finish"] = b.groupby(heat_cols)["finish"].transform("min")
-    b["top3_mean"] = b.groupby(heat_cols)["finish"].transform(lambda s: s.nsmallest(3).mean() if s.notna().sum() >= 3 else np.nan)
-    b["finish_pctile"] = b["finish_pct"]
-
-    rr = b[b["rider_id"].isin(selected_ids)].copy()
-    rr["gap_winner"] = rr["finish"] - rr["winner_finish"]
-    rr["gap_top3"] = rr["finish"] - rr["top3_mean"]
-    rr["event_label"] = make_event_label(rr)
-    rr = rr.sort_values(["event_dt", "event_id", "round_sort", "heat_id"])
-    rr["order"] = rr.groupby("rider_id").cumcount()
-
-    metric_col = {"Gap to Winner": "gap_winner", "Gap to Top3 mean": "gap_top3", "Percentile in Heat": "finish_pctile"}[mode]
-    mm = rr.dropna(subset=[metric_col]).copy()
-    if mm.empty:
-        st.info("Keine Daten fuer diesen Benchmark-Modus.")
-    else:
-        line = alt.Chart(mm).mark_line(point=True).encode(
-            x=alt.X("order:Q", title="Chronologische Runs"),
-            y=alt.Y(f"{metric_col}:Q", title=mode),
-            color=alt.Color("rider_short:N", title="Rider"),
-            strokeDash=alt.StrokeDash("phase:N", title="Phase"),
-            tooltip=["rider_short:N", "event_label:N", "round_title:N", "heat_title:N", "rank:Q", "final_rank_event_display:N", f"{metric_col}:Q"],
-        )
-        st.altair_chart(line.properties(height=320), use_container_width=True)
-
-        hist = alt.Chart(mm).mark_bar().encode(x=alt.X(f"{metric_col}:Q", bin=True), y="count()")
-        st.altair_chart(hist.properties(height=220), use_container_width=True)
-
-        tcols = ["event_id", "event_dt", "location", "round_title", "heat_title", "rank", "final_rank_event_display", metric_col]
-        view = mm[tcols].copy()
-        view = view.rename(columns={"final_rank_event_display": "final_rank_event"})
-        st.dataframe(view.round(4), use_container_width=True, hide_index=True)
-
-with tabs[6]:
-    st.subheader("Fatigue / Day Progression")
-    ev = runs_sel.copy()
-    ev = ev.sort_values(["rider_id", "event_id", "round_sort", "heat_id"])
-    agg_rows = []
-    for (rid, event_id), g in ev.groupby(["rider_id", "event_id"]):
-        g = g.dropna(subset=["finish_delta"])
-        if len(g) < 2:
-            continue
-        first = g.iloc[0]
-        last = g.iloc[-1]
-        agg_rows.append(
-            {
-                "event_id": event_id,
-                "rider_id": rid,
-                "rider_short": first["rider_short"],
-                "event_dt": first["event_dt"],
-                "location": first["location"],
-                "n_runs": len(g),
-                "first_finish_delta": first["finish_delta"],
-                "last_finish_delta": last["finish_delta"],
-                "dropoff": last["finish_delta"] - first["finish_delta"],
-                "first_start_delta": first["start_delta"],
-                "last_start_delta": last["start_delta"],
-                "first_t1_delta": first["t1_delta"],
-                "last_t1_delta": last["t1_delta"],
-                "final_rank_event": first.get("final_rank_event", np.nan),
-            }
-        )
-    prog = pd.DataFrame(agg_rows)
-    if prog.empty:
-        st.info("Zu wenig Events mit >=2 Runden.")
-    else:
-        prog["event_label"] = (
-            prog["event_dt"].dt.strftime("%Y-%m-%d").fillna(prog["event_id"])
-            + " | "
-            + prog["location"]
-            + " | "
-            + prog["rider_short"]
-        )
-        bar = alt.Chart(prog).mark_bar().encode(
-            x=alt.X("event_label:N", sort=None, title="Event"),
-            y=alt.Y("dropoff:Q", title="Dropoff Finish Delta (last - first)"),
-            color=alt.Color("rider_short:N", title="Rider"),
-            tooltip=["event_label:N", "dropoff:Q", "n_runs:Q", "final_rank_event:Q"],
-        )
-        st.altair_chart(bar.properties(height=300), use_container_width=True)
-
-        scat = alt.Chart(prog).mark_circle(size=80).encode(
-            x=alt.X("n_runs:Q", title="Runs im Event"),
-            y=alt.Y("dropoff:Q", title="Dropoff"),
-            color=alt.Color("rider_short:N", title="Rider"),
-            tooltip=["event_label:N", "n_runs:Q", "dropoff:Q"],
-        )
-        st.altair_chart(scat.properties(height=220), use_container_width=True)
-
-        summary = pd.DataFrame(
-            [
-                {
-                    "mean_dropoff": prog["dropoff"].mean(),
-                    "%events_improved": (prog["dropoff"] < 0).mean() * 100.0,
-                    "%events_worse": (prog["dropoff"] > 0).mean() * 100.0,
-                }
-            ]
-        )
-        st.dataframe(summary.round(4), use_container_width=True, hide_index=True)
-
-with tabs[7]:
+elif ai_active_section == "Results Trend":
     st.subheader("Results Trend")
     show_boxplot = st.toggle("Boxplot statt Liniengrafik", value=False, key="results_trend_show_boxplot")
     show_dnq_labels = st.toggle("Show DNQ labels (>32)", value=True, key="results_trend_show_dnq_labels")
