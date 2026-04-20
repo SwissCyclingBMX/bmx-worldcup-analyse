@@ -1738,1221 +1738,6 @@ if ai_active_section == "Athlete Trend":
         summary[c] = pd.to_numeric(summary[c], errors="coerce").round(4)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    st.markdown("**Segment Trend**")
-    contrib_src = runs_sel.copy()
-    rank_pool_src = pool_rel.copy()
-    ref_suffix_map = {
-        "rank4": "rank4_ref",
-        "winner": "winner",
-        "event_topn": "event_topn_ref",
-        "event_top4": "event_topn_ref",
-        "event_best": "event_topn_ref",
-    }
-    ref_suffix = ref_suffix_map.get(ref_key, "rank4_ref")
-    seg_defs = [
-        {"label": "BottomDelta", "delta_col": "start_delta", "time_col": "start", "seg_base": "start", "rank_col": "rank_bottom"},
-        {"label": "T1Delta", "delta_col": "t1_delta", "time_col": "t1", "seg_base": "t1", "rank_col": "rank_t1"},
-        {"label": "T2Delta", "delta_col": "t2_delta", "time_col": "t2", "seg_base": "t2", "rank_col": "rank_t2"},
-        {"label": "T3Delta", "delta_col": "t3_delta", "time_col": "t3", "seg_base": "t3", "rank_col": "rank_t3"},
-        {"label": "LaptimeDelta", "delta_col": "finish_delta", "time_col": "finish", "seg_base": "finish", "rank_col": "rank_finish"},
-        {"label": "Bottom->T1Delta", "delta_col": "split_bottom_t1_delta", "time_col": "split_bottom_t1", "seg_base": "split_bottom_t1", "rank_col": "rank_bottom_t1"},
-        {"label": "T1->T2Delta", "delta_col": "split_t1_t2_delta", "time_col": "split_t1_t2", "seg_base": "split_t1_t2", "rank_col": "rank_t1_t2"},
-        {"label": "T2->T3Delta", "delta_col": "split_t2_t3_delta", "time_col": "split_t2_t3", "seg_base": "split_t2_t3", "rank_col": "rank_t2_t3"},
-        {"label": "T3->FinishDelta", "delta_col": "split_t3_finish_delta", "time_col": "split_t3_finish", "seg_base": "split_t3_finish", "rank_col": "rank_t3_finish"},
-    ]
-    available_defs = []
-    for sd in seg_defs:
-        delta_col = sd["delta_col"]
-        time_col = sd["time_col"]
-        ref_col = f"{sd['seg_base']}_{ref_suffix}"
-        delta_use_col = f"{delta_col}_w" if f"{delta_col}_w" in contrib_src.columns else delta_col
-        if delta_use_col not in contrib_src.columns:
-            continue
-        if time_col not in contrib_src.columns:
-            continue
-        if ref_col not in contrib_src.columns:
-            continue
-        if pd.to_numeric(contrib_src[delta_use_col], errors="coerce").notna().sum() == 0:
-            continue
-        sd2 = sd.copy()
-        sd2["delta_use_col"] = delta_use_col
-        sd2["ref_col"] = ref_col
-        available_defs.append(sd2)
-
-    available_seg_labels = [sd["label"] for sd in available_defs]
-    segment_options = list(available_seg_labels)
-    default_segments = [
-        "BottomDelta",
-        "Bottom->T1Delta",
-        "T1->T2Delta",
-        "T2->T3Delta",
-        "T3->FinishDelta",
-    ]
-    default_segment_selection = [x for x in default_segments if x in segment_options]
-    if not default_segment_selection:
-        default_segment_selection = segment_options
-    selected_seg_labels = st.multiselect(
-        "Segmente anzeigen",
-        options=segment_options,
-        default=default_segment_selection,
-        key="peak_seg_segments",
-    )
-    peak_mode = "Best 20%"
-    peak_per_location = True
-    # For Event Top1 only: reference rider row can be compared vs Rank 2 for visibility.
-    show_delta_vs_rank2 = ref_key in {"event_topn", "event_top4", "event_best"} and int(event_top_n) == 1
-    show_overall_median = st.toggle(
-        "Show Overall Median (Reality Check)",
-        value=False,
-        key="peak_seg_show_overall",
-    )
-    if show_delta_vs_rank2:
-        st.caption("Bei Event Top 1 wird nur fuer den Referenz-Rider Delta gegen Rank 2 berechnet.")
-
-    def _take_n(n_rows: int, mode: str) -> int:
-        if n_rows <= 0:
-            return 0
-        if mode == "All":
-            return n_rows
-        if mode == "Best Run":
-            return 1
-        if mode == "Best 3 Runs":
-            return min(3, n_rows)
-        if mode == "Best 5 Runs":
-            return min(5, n_rows)
-        if mode == "Best 10%":
-            return max(1, int(np.ceil(n_rows * 0.10)))
-        return max(1, int(np.ceil(n_rows * 0.20)))
-
-    def _pick_peak_rows(g_in: pd.DataFrame) -> pd.DataFrame:
-        g_base = g_in.copy()
-        g_peak_base = g_base.drop_duplicates(subset=["location"], keep="first") if peak_per_location else g_base
-        if peak_mode == "All":
-            return g_peak_base.copy()
-        if peak_mode == "Best Run":
-            if peak_per_location:
-                return g_peak_base.copy()
-            return g_peak_base.nsmallest(1, "delta_display").copy()
-        if g_peak_base.empty:
-            return g_peak_base
-        k = _take_n(len(g_peak_base), peak_mode)
-        return g_peak_base.nsmallest(k, "delta_display").copy()
-
-    peak_rows = []
-    coverage_rows = []
-    for sd in available_defs:
-        if sd["label"] not in selected_seg_labels:
-            continue
-        dcol = sd["delta_use_col"]
-        dcol_raw = sd["delta_col"]
-        tcol = sd["time_col"]
-        rcol = sd["ref_col"]
-
-        seg_cols = [
-            "rider_short",
-            "category",
-            "gender",
-            "display_name",
-            "location",
-            "round_short",
-            "round_title",
-            "event_dt",
-            "event_id",
-            "group_id",
-            dcol,
-            dcol_raw,
-            tcol,
-            rcol,
-            "round_sort",
-            "heat_id",
-        ]
-        seg_cols = list(dict.fromkeys(seg_cols))
-        seg_df = contrib_src[seg_cols].copy()
-        rename_map = {
-            tcol: "segment_time",
-            rcol: "reference_time",
-        }
-        if dcol == dcol_raw:
-            rename_map[dcol] = "delta_value"
-            seg_df = seg_df.rename(columns=rename_map)
-            seg_df["delta_raw"] = seg_df["delta_value"]
-        else:
-            rename_map[dcol] = "delta_value"
-            rename_map[dcol_raw] = "delta_raw"
-            seg_df = seg_df.rename(columns=rename_map)
-        seg_df["delta_value"] = pd.to_numeric(seg_df["delta_value"], errors="coerce")
-        seg_df["delta_raw"] = pd.to_numeric(seg_df["delta_raw"], errors="coerce")
-        seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
-        seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
-        seg_df["rank2_ref_heat"] = seg_df.groupby(
-            ["event_id", "group_id", "heat_id", "round_sort"], dropna=False
-        )["segment_time"].transform(
-            lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
-        )
-        seg_df["ref_time_display"] = seg_df["reference_time"]
-        seg_df["ref_display_type"] = "Aktive Referenz"
-        seg_df["delta_display"] = seg_df["delta_value"]
-        if show_delta_vs_rank2:
-            ref_seg_df = rank_pool_src[seg_cols].copy().rename(columns=rename_map)
-            ref_seg_df["segment_time"] = pd.to_numeric(ref_seg_df["segment_time"], errors="coerce")
-            seg_df = apply_event_top1_adjustment(
-                seg_df,
-                ref_seg_df,
-                time_col="segment_time",
-                reference_time_col="reference_time",
-                delta_col="delta_display",
-                group_cols=["event_id", "group_id"],
-                rider_col="rider_id",
-                use_rider_best=False,
-                ref_display_col="ref_time_display",
-            )
-            seg_df.loc[seg_df["ref_time_display"].notna() & (seg_df["ref_time_display"] != seg_df["reference_time"]), "ref_display_type"] = "Rank 2 (Event, nur Referenz-Rider)"
-        seg_df["is_valid_peak_row"] = (
-            seg_df["delta_display"].notna() & seg_df["segment_time"].notna() & seg_df["ref_time_display"].notna()
-        )
-        cov = (
-            seg_df.groupby("rider_short", as_index=False)
-            .agg(n_total=("event_id", "count"), n_valid=("is_valid_peak_row", "sum"))
-        )
-        cov["Segment"] = sd["label"]
-        coverage_rows.extend(cov.to_dict("records"))
-        seg_df = seg_df[seg_df["is_valid_peak_row"]].copy()
-        if seg_df.empty:
-            continue
-        seg_df = seg_df.sort_values(["delta_display", "event_dt", "event_id", "round_sort", "heat_id"], na_position="last")
-
-        for rider, g in seg_df.groupby("rider_short", dropna=False):
-            g_all = g.copy()
-            peak_sel = _pick_peak_rows(g_all)
-            if peak_sel.empty:
-                continue
-
-            peak_delta = float(peak_sel["delta_display"].median())
-            peak_time = float(peak_sel["segment_time"].median())
-            peak_ref = float(peak_sel["ref_time_display"].median())
-            peak_pct = (peak_delta / peak_ref * 100.0) if pd.notna(peak_ref) and peak_ref != 0 else np.nan
-            peak_runs_text = " | ".join(
-                [
-                    f"{clean_spaces(ev)} | {clean_spaces(loc)} | {clean_spaces(rsh)} | {stm:.3f}s"
-                    for ev, loc, rsh, stm in zip(
-                        peak_sel["display_name"].fillna(peak_sel["event_id"]).astype(str),
-                        peak_sel["location"].fillna("Unknown").astype(str),
-                        peak_sel["round_short"].fillna(peak_sel["round_title"]).astype(str),
-                        peak_sel["segment_time"],
-                    )
-                ]
-            )
-            peak_runs_meta_lines = [
-                f"{int(y) if pd.notna(y) else 'NA'} | {clean_spaces(loc)} | {clean_spaces(rsh)} | {clean_spaces(cat)}"
-                for y, loc, rsh, cat in zip(
-                    peak_sel["event_dt"].dt.year,
-                    peak_sel["location"].fillna("Unknown").astype(str),
-                    peak_sel["round_short"].fillna(peak_sel["round_title"]).astype(str),
-                    peak_sel["category"].fillna("Unknown").astype(str),
-                )
-            ]
-            peak_runs_meta_text = "\n".join(peak_runs_meta_lines)
-            peak_runs_meta_html = "<br>".join(peak_runs_meta_lines)
-
-            peak_rows.append(
-                {
-                    "Rider": rider,
-                    "Segment": sd["label"],
-                    "Category": peak_sel["category"].mode().iloc[0] if "category" in peak_sel.columns and not peak_sel["category"].mode().empty else "Unknown",
-                    "Gender": peak_sel["gender"].mode().iloc[0] if "gender" in peak_sel.columns and not peak_sel["gender"].mode().empty else "Unknown",
-                    "Profile": "Peak",
-                    "Delta (s)": peak_delta,
-                    "Delta (% ref)": peak_pct,
-                    "Rider Segment Time (s)": peak_time,
-                    "Reference Segment Time (s)": peak_ref,
-                    "Reference Mode": peak_sel["ref_display_type"].iloc[0],
-                    "Active Reference": ref_caption,
-                    "Runs Used (n)": int(len(peak_sel)),
-                    "Locations Used (n)": int(peak_sel["location"].nunique(dropna=True)),
-                    "Peak Runs": peak_runs_text,
-                    "Peak Runs (meta)": peak_runs_meta_text,
-                    "Peak Runs (meta html)": peak_runs_meta_html,
-                }
-            )
-
-            if show_overall_median:
-                ov_delta = float(g_all["delta_display"].median())
-                ov_time = float(g_all["segment_time"].median())
-                ov_ref = float(g_all["ref_time_display"].median())
-                ov_pct = (ov_delta / ov_ref * 100.0) if pd.notna(ov_ref) and ov_ref != 0 else np.nan
-                peak_rows.append(
-                    {
-                        "Rider": rider,
-                        "Segment": sd["label"],
-                        "Category": g_all["category"].mode().iloc[0] if "category" in g_all.columns and not g_all["category"].mode().empty else "Unknown",
-                        "Gender": g_all["gender"].mode().iloc[0] if "gender" in g_all.columns and not g_all["gender"].mode().empty else "Unknown",
-                        "Profile": "Overall Median",
-                        "Delta (s)": ov_delta,
-                        "Delta (% ref)": ov_pct,
-                        "Rider Segment Time (s)": ov_time,
-                        "Reference Segment Time (s)": ov_ref,
-                        "Reference Mode": g_all["ref_display_type"].iloc[0],
-                        "Active Reference": ref_caption,
-                        "Runs Used (n)": int(len(g_all)),
-                        "Locations Used (n)": int(g_all["location"].nunique(dropna=True)),
-                        "Peak Runs": "",
-                        "Peak Runs (meta)": "",
-                        "Peak Runs (meta html)": "",
-                    }
-                )
-
-    peak_df = pd.DataFrame(peak_rows)
-    if False and not peak_df.empty:
-        # Segment ranks are computed against full field (same filters, without rider filter),
-        # grouped by Segment + Category + Gender.
-        rank_rows = []
-        for sd in available_defs:
-            if sd["label"] not in selected_seg_labels:
-                continue
-            dcol = sd["delta_use_col"]
-            dcol_raw = sd["delta_col"]
-            tcol = sd["time_col"]
-            rcol = sd["ref_col"]
-
-            rseg_cols = [
-                "rider_short",
-                "category",
-                "gender",
-                "location",
-                "event_dt",
-                "event_id",
-                "group_id",
-                dcol,
-                dcol_raw,
-                tcol,
-                rcol,
-                "round_sort",
-                "heat_id",
-            ]
-            rseg_cols = list(dict.fromkeys(rseg_cols))
-            rseg = rank_pool_src[rseg_cols].copy()
-            rrename = {tcol: "segment_time", rcol: "reference_time"}
-            if dcol == dcol_raw:
-                rrename[dcol] = "delta_value"
-                rseg = rseg.rename(columns=rrename)
-                rseg["delta_raw"] = rseg["delta_value"]
-            else:
-                rrename[dcol] = "delta_value"
-                rrename[dcol_raw] = "delta_raw"
-                rseg = rseg.rename(columns=rrename)
-
-            rseg["delta_value"] = pd.to_numeric(rseg["delta_value"], errors="coerce")
-            rseg["segment_time"] = pd.to_numeric(rseg["segment_time"], errors="coerce")
-            rseg["reference_time"] = pd.to_numeric(rseg["reference_time"], errors="coerce")
-            rseg["ref_time_display"] = rseg["reference_time"]
-            rseg["delta_display"] = rseg["delta_value"]
-            if show_delta_vs_rank2:
-                rseg = apply_event_top1_adjustment(
-                    rseg,
-                    rseg,
-                    time_col="segment_time",
-                    reference_time_col="reference_time",
-                    delta_col="delta_display",
-                    group_cols=["event_id", "group_id"],
-                    rider_col="rider_id",
-                    use_rider_best=False,
-                    ref_display_col="ref_time_display",
-                )
-            rseg = rseg.dropna(subset=["delta_display", "segment_time", "ref_time_display"])
-            if rseg.empty:
-                continue
-            rseg = rseg.sort_values(["delta_display", "event_dt", "event_id", "round_sort", "heat_id"], na_position="last")
-
-            for rider, g in rseg.groupby("rider_short", dropna=False):
-                peak_sel = _pick_peak_rows(g)
-                if peak_sel.empty:
-                    continue
-                rank_rows.append(
-                    {
-                        "Rider": rider,
-                        "Segment": sd["label"],
-                        "Category": peak_sel["category"].mode().iloc[0] if not peak_sel["category"].mode().empty else "Unknown",
-                        "Gender": peak_sel["gender"].mode().iloc[0] if not peak_sel["gender"].mode().empty else "Unknown",
-                        "Delta (s) rank_base": float(peak_sel["delta_display"].median()),
-                    }
-                )
-
-        rank_pool_df = pd.DataFrame(rank_rows)
-        if not rank_pool_df.empty:
-            rank_pool_df["Segment Rank"] = rank_pool_df.groupby(["Segment", "Category", "Gender"])["Delta (s) rank_base"].rank(method="min", ascending=True)
-            rank_pool_df["Field Size"] = rank_pool_df.groupby(["Segment", "Category", "Gender"])["Rider"].transform("nunique")
-            rank_pool_df["Rank %"] = np.where(
-                rank_pool_df["Field Size"] > 0,
-                (rank_pool_df["Segment Rank"] / rank_pool_df["Field Size"]) * 100.0,
-                np.nan,
-            )
-            rank_cols = rank_pool_df[
-                ["Rider", "Segment", "Category", "Gender", "Segment Rank", "Field Size", "Rank %"]
-            ].drop_duplicates(subset=["Rider", "Segment", "Category", "Gender"])
-            peak_df = peak_df.merge(rank_cols, on=["Rider", "Segment", "Category", "Gender"], how="left")
-        else:
-            peak_df["Segment Rank"] = np.nan
-            peak_df["Field Size"] = np.nan
-            peak_df["Rank %"] = np.nan
-        peak_df.loc[peak_df["Profile"] != "Peak", ["Segment Rank", "Field Size", "Rank %"]] = np.nan
-
-        rider_fr = (
-            runs_sel[["rider_short", "event_id", "final_rank_event"]]
-            .drop_duplicates(subset=["rider_short", "event_id"])
-            .copy()
-        )
-        rider_fr["final_rank_event"] = pd.to_numeric(rider_fr["final_rank_event"], errors="coerce")
-        rider_fr_med = rider_fr.groupby("rider_short", as_index=False)["final_rank_event"].median()
-        fr_map = rider_fr_med.set_index("rider_short")["final_rank_event"].to_dict()
-        peak_df["Final Rank (median)"] = peak_df["Rider"].map(fr_map)
-        peak_df["Final Rank (median) display"] = np.where(
-            pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").notna(),
-            pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").round(1).astype(str),
-            "NA",
-        )
-
-        # Add one synthetic radar metric for Final Rank per rider (single value).
-        pool_fr = attach_final_rank_event(pool_rel.copy(), master_results)
-        pool_fr = (
-            pool_fr[["rider_short", "category", "gender", "event_id", "location", "final_rank_event"]]
-            .drop_duplicates(subset=["rider_short", "category", "gender", "event_id"])
-            .copy()
-        )
-        pool_fr["final_rank_event"] = pd.to_numeric(pool_fr["final_rank_event"], errors="coerce")
-        pool_fr_med = (
-            pool_fr.groupby(["rider_short", "category", "gender"], as_index=False)["final_rank_event"].median()
-        )
-        pool_field = (
-            pool_fr_med.dropna(subset=["final_rank_event"])
-            .groupby(["category", "gender"], as_index=False)
-            .agg(field_size=("rider_short", "nunique"))
-        )
-        rider_meta = (
-            runs_sel.groupby("rider_short", as_index=False)
-            .agg(
-                category=("category", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
-                gender=("gender", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
-                runs_used=("event_id", "nunique"),
-                locations_used=("location", "nunique"),
-            )
-        )
-        fr_rows = rider_meta.merge(pool_fr_med, on=["rider_short", "category", "gender"], how="left")
-        fr_rows = fr_rows.merge(pool_field, on=["category", "gender"], how="left")
-        fr_rows = fr_rows.dropna(subset=["final_rank_event"]).copy()
-        if not fr_rows.empty:
-            fr_rows["Segment Rank"] = pd.to_numeric(fr_rows["final_rank_event"], errors="coerce")
-            fr_rows["Field Size"] = pd.to_numeric(fr_rows["field_size"], errors="coerce")
-            fr_rows["Rank %"] = np.where(
-                fr_rows["Field Size"] > 0,
-                (fr_rows["Segment Rank"] / fr_rows["Field Size"]) * 100.0,
-                np.nan,
-            )
-            fr_rows["Final Rank (median)"] = fr_rows["Segment Rank"]
-            fr_rows["Final Rank (median) display"] = fr_rows["Segment Rank"].round(1).astype(str)
-            fr_rows["Profile"] = "Peak"
-            fr_rows["Segment"] = "Final Rank"
-            fr_rows["Delta (s)"] = np.nan
-            fr_rows["Delta (% ref)"] = np.nan
-            fr_rows["Rider Segment Time (s)"] = np.nan
-            fr_rows["Reference Segment Time (s)"] = np.nan
-            fr_rows["Reference Mode"] = "Final Classification"
-            fr_rows["Active Reference"] = ref_caption
-            fr_rows["Runs Used (n)"] = fr_rows["runs_used"].astype(int)
-            fr_rows["Locations Used (n)"] = fr_rows["locations_used"].astype(int)
-            fr_rows["Peak Runs"] = ""
-            fr_rows["Peak Runs (meta)"] = ""
-            fr_rows["Peak Runs (meta html)"] = ""
-            fr_rows["Rider"] = fr_rows["rider_short"]
-            fr_rows["Category"] = fr_rows["category"]
-            fr_rows["Gender"] = fr_rows["gender"]
-            add_cols = [
-                "Rider",
-                "Segment",
-                "Category",
-                "Gender",
-                "Profile",
-                "Delta (s)",
-                "Delta (% ref)",
-                "Rider Segment Time (s)",
-                "Reference Segment Time (s)",
-                "Reference Mode",
-                "Active Reference",
-                "Runs Used (n)",
-                "Locations Used (n)",
-                "Peak Runs",
-                "Segment Rank",
-                "Field Size",
-                "Rank %",
-                "Final Rank (median)",
-                "Final Rank (median) display",
-            ]
-            peak_df = pd.concat([peak_df, fr_rows[add_cols]], ignore_index=True)
-
-        # Ensure every peak row carries the same rider-level final-rank value
-        # that is used for the synthetic "Final Rank" segment.
-        fr_row_map = (
-            peak_df[peak_df["Segment"] == "Final Rank"][["Rider", "Final Rank (median)"]]
-            .dropna(subset=["Final Rank (median)"])
-            .drop_duplicates(subset=["Rider"], keep="first")
-            .set_index("Rider")["Final Rank (median)"]
-            .to_dict()
-        )
-        if fr_row_map:
-            peak_df["Final Rank (median)"] = np.where(
-                pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").notna(),
-                pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce"),
-                peak_df["Rider"].map(fr_row_map),
-            )
-            peak_df["Final Rank (median) display"] = np.where(
-                pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").notna(),
-                pd.to_numeric(peak_df["Final Rank (median)"], errors="coerce").round(1).astype(str),
-                "NA",
-            )
-
-        tt = [
-            alt.Tooltip("Rider:N"),
-            alt.Tooltip("Segment:N"),
-            alt.Tooltip("Profile:N"),
-            alt.Tooltip("Segment Rank:Q", format=".0f"),
-            alt.Tooltip("Field Size:Q", format=".0f"),
-            alt.Tooltip("Rank %:Q", format=".1f"),
-            alt.Tooltip("Delta (s):Q", format=".4f"),
-            alt.Tooltip("Delta (% ref):Q", format=".2f"),
-            alt.Tooltip("Rider Segment Time (s):Q", format=".4f"),
-            alt.Tooltip("Reference Segment Time (s):Q", format=".4f"),
-                alt.Tooltip("Reference Mode:N"),
-                alt.Tooltip("Active Reference:N"),
-                alt.Tooltip("Final Rank (median) display:N", title="Final Rank"),
-                alt.Tooltip("Runs Used (n):Q"),
-                alt.Tooltip("Locations Used (n):Q"),
-                alt.Tooltip("Peak Runs (meta):N", title="Runs (Year | Location | Round | Category)"),
-                alt.Tooltip("Peak Runs:N"),
-            ]
-        bottom_peak = peak_df[peak_df["Segment"] == "BottomDelta"].copy()
-        other_peak = peak_df[(peak_df["Segment"] != "BottomDelta") & (peak_df["Segment"] != "Final Rank")].copy()
-
-        rider_domain = sorted(peak_df["Rider"].dropna().unique().tolist())
-        rider_color = alt.Color("Rider:N", title="Rider", scale=alt.Scale(domain=rider_domain))
-
-        c_left, c_right = st.columns([14, 36])
-        with c_left:
-            if not bottom_peak.empty:
-                bmin = float(pd.to_numeric(bottom_peak["Delta (s)"], errors="coerce").min())
-                bmax = float(pd.to_numeric(bottom_peak["Delta (s)"], errors="coerce").max())
-                by_min = min(-0.05, bmin - 0.01)
-                by_max = max(0.2, bmax + 0.01)
-                c_bottom = (
-                    alt.Chart(bottom_peak)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("Rider:N", title="Rider", axis=alt.Axis(labelAngle=-90, labelLimit=180)),
-                        xOffset=alt.XOffset("Profile:N"),
-                        y=alt.Y("Delta (s):Q", title="Bottom Delta (s)", scale=alt.Scale(domain=[by_min, by_max], nice=False)),
-                        color=alt.Color("Rider:N", scale=alt.Scale(domain=rider_domain), legend=None),
-                        tooltip=tt,
-                    )
-                    .properties(height=320)
-                )
-                st.altair_chart(c_bottom, use_container_width=True)
-            else:
-                st.info("Kein BottomDelta fuer aktuelle Filter.")
-        with c_right:
-            if not other_peak.empty:
-                other_peak_plot = other_peak.copy()
-                # Show rider bars side-by-side (not stacked). If both profiles are shown,
-                # include profile in the offset key to avoid overlap.
-                if show_overall_median:
-                    other_peak_plot["offset_key"] = other_peak_plot["Rider"] + " | " + other_peak_plot["Profile"]
-                else:
-                    other_peak_plot["offset_key"] = other_peak_plot["Rider"]
-                c_other = (
-                    alt.Chart(other_peak_plot)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("Segment:N", sort=[x for x in selected_seg_labels if x != "BottomDelta"]),
-                        xOffset=alt.XOffset("offset_key:N", title=None),
-                        y=alt.Y("Delta (s):Q", title="Delta (s)", stack=None),
-                        color=rider_color,
-                        tooltip=tt,
-                    )
-                    .properties(height=320)
-                )
-                st.altair_chart(c_other, use_container_width=True)
-            else:
-                st.info("Keine weiteren Segment-Deltas fuer aktuelle Filter.")
-
-        st.markdown("**Peak Segment Radar (Rank)**")
-        radar_df = peak_df[peak_df["Profile"] == "Peak"].copy()
-        radar_df["Segment Rank"] = pd.to_numeric(radar_df["Segment Rank"], errors="coerce")
-        radar_df["Field Size"] = pd.to_numeric(radar_df["Field Size"], errors="coerce")
-        radar_df = radar_df.dropna(subset=["Segment Rank", "Field Size"])
-        if not radar_df.empty:
-            seg_order = [x for x in selected_seg_labels if x in radar_df["Segment"].unique().tolist()]
-            radar_df["Segment Short"] = radar_df["Segment"].apply(segment_short_label)
-            seg_counts = radar_df.groupby("Rider")["Segment"].nunique()
-            riders_ok = seg_counts[seg_counts >= 2].index.tolist()
-            hidden = sorted(set(radar_df["Rider"]) - set(riders_ok))
-            if hidden:
-                st.caption("Radar blendet Rider mit <2 verfuegbaren Segmenten aus: " + ", ".join(hidden))
-            radar_df = radar_df[radar_df["Rider"].isin(riders_ok)].copy()
-            if radar_df["Rider"].nunique() > 4:
-                rider_top = (
-                    radar_df.groupby("Rider", as_index=False)["Segment Rank"]
-                    .mean()
-                    .sort_values(["Segment Rank", "Rider"], ascending=[True, True])
-                )
-                keep_riders = rider_top["Rider"].head(4).tolist()
-                st.warning("Mehr als 4 Rider im Radar. Es werden automatisch die Top 4 (bester mittlerer Segment Rank) angezeigt.")
-                radar_df = radar_df[radar_df["Rider"].isin(keep_riders)].copy()
-            fr_scope = pd.to_numeric(runs_sel.get("final_rank_event"), errors="coerce")
-            has_top8 = fr_scope.notna().any() and (fr_scope <= 8).any()
-            fixed_radar_max_rank = 48 if has_top8 else 80
-            radar_df["Segment Rank Plot"] = pd.to_numeric(radar_df["Segment Rank"], errors="coerce").clip(lower=1, upper=fixed_radar_max_rank)
-            if not radar_df.empty and len(seg_order) >= 2:
-                seg_order_short = [segment_short_label(x) for x in seg_order]
-                radar_df["Rank Top %"] = np.where(
-                    radar_df["Field Size"] > 0,
-                    (radar_df["Segment Rank"] / radar_df["Field Size"]) * 100.0,
-                    np.nan,
-                )
-                radar_df["Segment Rank Text"] = radar_df.apply(
-                    lambda r: f"{format_rank_value(r.get('Segment Rank'))}/{format_rank_value(r.get('Field Size'))}",
-                    axis=1,
-                )
-                if go is None:
-                    st.warning("Radar benoetigt `plotly`. Fallback-Ansicht wird angezeigt.")
-                    fallback = (
-                        alt.Chart(radar_df)
-                        .mark_line(point=True)
-                        .encode(
-                            x=alt.X("Segment Short:N", sort=seg_order_short),
-                            y=alt.Y(
-                                "Segment Rank Plot:Q",
-                                title="Segment Rank (1=best)",
-                                scale=alt.Scale(domain=[1, fixed_radar_max_rank], reverse=False),
-                            ),
-                            color=alt.Color("Rider:N", title="Rider"),
-                            detail="Rider:N",
-                            tooltip=[
-                                alt.Tooltip("Rider:N"),
-                                alt.Tooltip("Segment Short:N", title="Segment"),
-                                alt.Tooltip("Segment Rank Text:N", title="Segment Rank"),
-                                alt.Tooltip("Rank Top %:Q", title="Rank %", format=".1f"),
-                                alt.Tooltip("Delta (s):Q", format=".4f"),
-                                alt.Tooltip("Runs Used (n):Q", format=".0f"),
-                                alt.Tooltip("Reference Mode:N"),
-                                alt.Tooltip("Active Reference:N"),
-                                alt.Tooltip("Final Rank (median) display:N", title="Final Rank"),
-                                alt.Tooltip("Peak Runs (meta):N", title="Runs (Year | Location | Round | Category)"),
-                            ],
-                        )
-                        .properties(height=420)
-                    )
-                    st.altair_chart(fallback, use_container_width=True)
-                else:
-                    fig = go.Figure()
-                    for rider, g in radar_df.groupby("Rider", dropna=False):
-                        gm = g.set_index("Segment Short")
-                        r_vals = []
-                        custom = []
-                        for seg in seg_order_short:
-                            if seg in gm.index:
-                                row = gm.loc[seg]
-                                if isinstance(row, pd.DataFrame):
-                                    row = row.iloc[0]
-                                r_vals.append(float(row["Segment Rank Plot"]))
-                                custom.append(
-                                    [
-                                        row.get("Segment Rank Text", "NA/NA"),
-                                        row.get("Rank Top %", np.nan),
-                                        row.get("Delta (s)", np.nan),
-                                        row.get("Runs Used (n)", np.nan),
-                                        row.get("Reference Mode", ""),
-                                        row.get("Active Reference", ""),
-                                        row.get("Final Rank (median) display", "NA"),
-                                        row.get("Peak Runs (meta html)", ""),
-                                    ]
-                                )
-                            else:
-                                continue
-                        if len(r_vals) < 2:
-                            continue
-                        theta_vals = [s for s in seg_order_short if s in gm.index]
-                        r_plot = r_vals + [r_vals[0]]
-                        theta_plot = theta_vals + [theta_vals[0]]
-                        custom_plot = custom + [custom[0]]
-                        fig.add_trace(
-                            go.Scatterpolar(
-                                r=r_plot,
-                                theta=theta_plot,
-                                mode="lines+markers",
-                                name=str(rider),
-                                fill="none",
-                                customdata=custom_plot,
-                                hovertemplate=(
-                                    "Rider: %{fullData.name}<br>"
-                                    "Segment: %{theta}<br>"
-                                    "Segment Rank: %{customdata[0]}<br>"
-                                    "Rank %%: %{customdata[1]:.1f}%<br>"
-                                    "Delta (s): %{customdata[2]:.4f}<br>"
-                                    "Runs Used (n): %{customdata[3]:.0f}<br>"
-                                    "Reference Mode: %{customdata[4]}<br>"
-                                    "Active Reference: %{customdata[5]}<br>"
-                                    "Final Rank: %{customdata[6]}<br>"
-                                    "Runs (Y|Loc|Rnd|Cat):<br>%{customdata[7]}<extra></extra>"
-                                ),
-                            )
-                        )
-                    ring_vals = [48, 32, 16, 8, 1] if fixed_radar_max_rank == 48 else [80, 32, 16, 8, 1]
-                    fig.update_layout(
-                        height=560,
-                        showlegend=True,
-                        margin=dict(l=10, r=10, t=10, b=20),
-                        legend=dict(orientation="h", y=-0.12, x=0.5, xanchor="center", yanchor="top"),
-                        polar=dict(
-                            domain=dict(x=[0.08, 0.92], y=[0.06, 0.98]),
-                            radialaxis=dict(
-                                autorange=False,
-                                range=[fixed_radar_max_rank, 1],
-                                tickmode="array",
-                                tickvals=ring_vals,
-                                ticktext=[str(v) for v in ring_vals],
-                                showticklabels=True,
-                                ticks="outside",
-                                tickfont=dict(size=11),
-                            ),
-                            angularaxis=dict(categoryorder="array", categoryarray=seg_order_short),
-                        ),
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-                    st.caption(
-                        "Segment Rank (1=best). Referenzringe (fix): "
-                        + ("1, 8, 16, 32, 48." if fixed_radar_max_rank == 48 else "1, 8, 16, 32, 80.")
-                    )
-            else:
-                st.info("Nicht genug Daten fuer Peak Segment Radar.")
-        else:
-            st.info("Keine Peak-Ranks verfuegbar fuer Radar.")
-
-        # PDF export for Peak Segment Radar report (per-event + overall).
-        if plt is None or PdfPages is None:
-            st.caption("PDF-Export verfuegbar nach Installation von `matplotlib`.")
-        else:
-            export_segment_order = [
-                "BottomDelta",
-                "Bottom->T1Delta",
-                "T1Delta",
-                "T1->T2Delta",
-                "T2Delta",
-                "T2->T3Delta",
-                "T3->FinishDelta",
-                "LaptimeDelta",
-                "Final Rank",
-            ]
-            export_segment_order = [
-                s
-                for s in export_segment_order
-                if (s == "Final Rank") or (s in [d["label"] for d in available_defs])
-            ]
-            export_seg_idx = {s: i for i, s in enumerate(export_segment_order)}
-
-            def _compute_event_peak_df(event_slice: pd.DataFrame, rank_pool_slice: pd.DataFrame) -> pd.DataFrame:
-                rows = []
-                seg_defs_for_export = [d for d in available_defs if d["label"] in export_segment_order]
-                for sd in seg_defs_for_export:
-                    if sd["label"] not in export_segment_order:
-                        continue
-                    dcol = sd["delta_use_col"]
-                    dcol_raw = sd["delta_col"]
-                    tcol = sd["time_col"]
-                    rcol = sd["ref_col"]
-                    # Selected riders view
-                    cols = [
-                        "rider_short", "category", "gender", "location", "display_name",
-                        "round_short", "round_title", "heat_title", "event_id", "event_dt",
-                        "group_id", "round_sort", "heat_id", dcol, dcol_raw, tcol, rcol,
-                    ]
-                    cols = list(dict.fromkeys(cols))
-                    s = event_slice[cols].copy()
-                    rnm = {tcol: "segment_time", rcol: "reference_time"}
-                    if dcol == dcol_raw:
-                        rnm[dcol] = "delta_value"
-                        s = s.rename(columns=rnm)
-                        s["delta_raw"] = s["delta_value"]
-                    else:
-                        rnm[dcol] = "delta_value"
-                        rnm[dcol_raw] = "delta_raw"
-                        s = s.rename(columns=rnm)
-                    s["delta_value"] = pd.to_numeric(s["delta_value"], errors="coerce")
-                    s["segment_time"] = pd.to_numeric(s["segment_time"], errors="coerce")
-                    s["reference_time"] = pd.to_numeric(s["reference_time"], errors="coerce")
-                    s["delta_display"] = s["delta_value"]
-                    if show_delta_vs_rank2:
-                        s = apply_event_top1_adjustment(
-                            s,
-                            rank_pool_slice[cols].copy().rename(columns=rnm),
-                            time_col="segment_time",
-                            reference_time_col="reference_time",
-                            delta_col="delta_display",
-                            group_cols=["event_id", "group_id"],
-                            rider_col="rider_id",
-                            use_rider_best=False,
-                        )
-                    s = s.dropna(subset=["delta_display", "segment_time", "reference_time"])
-                    if s.empty:
-                        continue
-                    s = s.sort_values(["delta_display", "round_sort", "heat_id"], na_position="last")
-
-                    # Full field rank pool for this event/segment.
-                    rp = rank_pool_slice[cols].copy()
-                    rp = rp.rename(columns=rnm)
-                    rp["delta_value"] = pd.to_numeric(rp["delta_value"], errors="coerce")
-                    rp["segment_time"] = pd.to_numeric(rp["segment_time"], errors="coerce")
-                    rp["reference_time"] = pd.to_numeric(rp["reference_time"], errors="coerce")
-                    rp["delta_display"] = rp["delta_value"]
-                    if show_delta_vs_rank2:
-                        rp = apply_event_top1_adjustment(
-                            rp,
-                            rp,
-                            time_col="segment_time",
-                            reference_time_col="reference_time",
-                            delta_col="delta_display",
-                            group_cols=["event_id", "group_id"],
-                            rider_col="rider_id",
-                            use_rider_best=False,
-                        )
-                    rp = rp.dropna(subset=["delta_display", "segment_time", "reference_time"])
-                    if rp.empty:
-                        continue
-                    rp = rp.sort_values(["delta_display", "round_sort", "heat_id"], na_position="last")
-
-                    # Peak per rider in selected view.
-                    for rider, g in s.groupby("rider_short", dropna=False):
-                        gsel = _pick_peak_rows(g)
-                        if gsel.empty:
-                            continue
-                        peak_delta = float(gsel["delta_display"].median())
-                        peak_time = float(gsel["segment_time"].median())
-                        peak_ref = float(gsel["reference_time"].median())
-                        pct = (peak_delta / peak_ref * 100.0) if pd.notna(peak_ref) and peak_ref != 0 else np.nan
-                        peak_runs = " | ".join(
-                            [
-                                f"{clean_spaces(ev)} | {clean_spaces(rsh)} | {clean_spaces(hh)} | {stm:.3f}s"
-                                for ev, rsh, hh, stm in zip(
-                                    gsel["display_name"].fillna(gsel["event_id"]).astype(str),
-                                    gsel["round_short"].fillna(gsel["round_title"]).astype(str),
-                                    gsel["heat_title"].fillna("").astype(str),
-                                    gsel["segment_time"],
-                                )
-                            ]
-                        )
-                        round_list = " | ".join(
-                            list(
-                                dict.fromkeys(
-                                    gsel["round_short"].fillna(gsel["round_title"]).astype(str).tolist()
-                                )
-                            )
-                        )
-
-                        # Segment rank in full field.
-                        rr = []
-                        for rid2, g2 in rp.groupby("rider_short", dropna=False):
-                            g2sel = _pick_peak_rows(g2)
-                            if g2sel.empty:
-                                continue
-                            rr.append({"Rider": rid2, "rank_base": float(g2sel["delta_display"].median())})
-                        rrdf = pd.DataFrame(rr)
-                        seg_rank = np.nan
-                        field_size = np.nan
-                        rank_pct = np.nan
-                        if not rrdf.empty:
-                            rrdf["seg_rank"] = rrdf["rank_base"].rank(method="min", ascending=True)
-                            field_size = int(rrdf["Rider"].nunique())
-                            m = rrdf[rrdf["Rider"] == rider]
-                            if not m.empty:
-                                seg_rank = float(m["seg_rank"].iloc[0])
-                                rank_pct = (seg_rank / field_size) * 100.0 if field_size > 0 else np.nan
-
-                        rows.append(
-                            {
-                                "Rider": rider,
-                                "Segment": sd["label"],
-                                "Segment Short": segment_short_label(sd["label"]),
-                                "Delta (s)": peak_delta,
-                                "Delta (% ref)": pct,
-                                "Rider Segment Time (s)": peak_time,
-                                "Reference Segment Time (s)": peak_ref,
-                                "Reference Mode": ref_caption,
-                                "Runs Used (n)": int(len(gsel)),
-                                "Peak Runs": peak_runs,
-                                "Rounds": round_list,
-                                "Segment Rank": seg_rank,
-                                "Field Size": field_size,
-                                "Rank %": rank_pct,
-                            }
-                        )
-
-                # Add event-level final classification as synthetic segment.
-                ev = event_slice.copy()
-                rp_ev = rank_pool_slice.copy()
-                if "final_rank_event" not in ev.columns:
-                    ev = attach_final_rank_event(ev, master_results)
-                if "final_rank_event" not in rp_ev.columns:
-                    rp_ev = attach_final_rank_event(rp_ev, master_results)
-                ev["final_rank_event"] = pd.to_numeric(ev.get("final_rank_event"), errors="coerce")
-                rp_ev["final_rank_event"] = pd.to_numeric(rp_ev.get("final_rank_event"), errors="coerce")
-                ev_fr = (
-                    ev[["rider_short", "category", "gender", "final_rank_event"]]
-                    .dropna(subset=["final_rank_event"])
-                    .sort_values(["rider_short", "final_rank_event"], na_position="last")
-                    .drop_duplicates(subset=["rider_short"], keep="first")
-                    .copy()
-                )
-                if not ev_fr.empty:
-                    pool_fr = (
-                        rp_ev[["rider_short", "category", "gender", "final_rank_event"]]
-                        .dropna(subset=["final_rank_event"])
-                        .sort_values(["rider_short", "final_rank_event"], na_position="last")
-                        .drop_duplicates(subset=["rider_short"], keep="first")
-                        .copy()
-                    )
-                    if not pool_fr.empty:
-                        for _, rr in ev_fr.iterrows():
-                            cat = rr.get("category")
-                            gen = rr.get("gender")
-                            rider = rr.get("rider_short")
-                            rnk = float(rr.get("final_rank_event"))
-                            field = pool_fr[
-                                (pool_fr["category"] == cat) & (pool_fr["gender"] == gen)
-                            ].copy()
-                            seg_rank = np.nan
-                            field_size = np.nan
-                            rank_pct = np.nan
-                            if not field.empty:
-                                field = field.sort_values("final_rank_event", ascending=True, na_position="last")
-                                field["seg_rank"] = field["final_rank_event"].rank(method="min", ascending=True)
-                                field_size = int(field["rider_short"].nunique())
-                                one = field[field["rider_short"] == rider]
-                                if not one.empty:
-                                    seg_rank = float(one["seg_rank"].iloc[0])
-                                    rank_pct = (seg_rank / field_size) * 100.0 if field_size > 0 else np.nan
-                            rows.append(
-                                {
-                                    "Rider": rider,
-                                    "Segment": "Final Rank",
-                                    "Segment Short": segment_short_label("Final Rank"),
-                                    "Delta (s)": np.nan,
-                                    "Delta (% ref)": np.nan,
-                                    "Rider Segment Time (s)": np.nan,
-                                    "Reference Segment Time (s)": np.nan,
-                                    "Reference Mode": "Final Classification",
-                                    "Runs Used (n)": 1,
-                                    "Peak Runs": "",
-                                    "Rounds": "Final classification",
-                                    "Segment Rank": seg_rank,
-                                    "Field Size": field_size,
-                                    "Rank %": rank_pct,
-                                }
-                            )
-                return pd.DataFrame(rows)
-
-            def _draw_radar(ax, one_rider_df: pd.DataFrame, title: str):
-                if one_rider_df.empty:
-                    return
-                d = one_rider_df.copy()
-                if "Segment Short" not in d.columns:
-                    if "Segment" in d.columns:
-                        d["Segment Short"] = d["Segment"].apply(segment_short_label)
-                    else:
-                        return
-                d["Segment Rank"] = pd.to_numeric(d["Segment Rank"], errors="coerce")
-                d["seg_idx"] = d["Segment"].map(export_seg_idx)
-                d = d.sort_values("seg_idx", na_position="last")
-                if d.empty:
-                    return
-                labels = [segment_short_label(x) for x in export_segment_order]
-                theta = np.linspace(0, 2 * np.pi, len(export_segment_order), endpoint=False)
-                rank_map = d.set_index("Segment")["Segment Rank"].to_dict()
-                rank_vals = np.array([safe_float(rank_map.get(seg)) for seg in export_segment_order], dtype=float)
-                theta = np.concatenate([theta, [theta[0]]])
-                # Dynamic, page-stable max rank: use field size of this page/rider view.
-                field_max = int(pd.to_numeric(d["Field Size"], errors="coerce").max()) if d["Field Size"].notna().any() else 0
-                finite_ranks = rank_vals[np.isfinite(rank_vals)]
-                rank_max = int(finite_ranks.max()) if finite_ranks.size > 0 else 0
-                max_rank = max(16, field_max, rank_max)
-                # Keep axis non-inverted; transform rank so Rank 1 is at the outer ring.
-                # r_plot = max_rank + 1 - rank
-                r_plot_vals = (max_rank + 1.0) - rank_vals
-                r = np.concatenate([r_plot_vals, [r_plot_vals[0]]])
-                ax.plot(theta, r, linewidth=2)
-                valid_mask = ~np.isnan(r_plot_vals)
-                ax.scatter(theta[:-1][valid_mask], r[:-1][valid_mask], s=20)
-                ax.set_title(title, fontsize=10, pad=18)
-                ax.set_xticks(theta[:-1])
-                ax.set_xticklabels(labels, fontsize=8)
-                ax.set_ylim(0.5, max_rank + 0.5)
-                ring_ranks = [x for x in [1, 8, 16, 32] if x <= max_rank]
-                ring_pos = [(max_rank + 1) - x for x in ring_ranks]
-                ax.set_yticks(ring_pos)
-                ax.set_yticklabels([str(x) for x in ring_ranks], fontsize=7)
-                ax.set_theta_offset(np.pi / 2)
-                ax.set_theta_direction(-1)
-
-            export_disabled = radar_df.empty if "radar_df" in locals() else True
-            if st.button("Export Peak Radar PDF", disabled=export_disabled, key="export_peak_radar_pdf"):
-                if export_disabled:
-                    st.warning("Keine Radar-Daten fuer Export.")
-                else:
-                    pdf_buffer = BytesIO()
-                    rider_list = sorted(radar_df["Rider"].dropna().unique().tolist())
-                    # Event order by normalized date.
-                    event_order = (
-                        runs_sel[["event_id", "event_dt", "display_name", "location"]]
-                        .drop_duplicates("event_id")
-                        .sort_values(["event_dt", "event_id"], na_position="last")
-                    )
-                    with PdfPages(pdf_buffer) as pdf:
-                        for rider in rider_list:
-                            rider_event_peaks: list[pd.DataFrame] = []
-                            # Header page
-                            fig = plt.figure(figsize=(8.27, 11.69))
-                            fig.text(0.08, 0.94, f"Peak Segment Radar Report - {rider}", fontsize=14, weight="bold")
-                            fig.text(0.08, 0.90, f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", fontsize=9)
-                            fig.text(0.08, 0.87, f"Reference: {ref_caption}", fontsize=9)
-                            fig.text(0.08, 0.84, f"Peak Selection: {peak_mode} | Peak per Location: {'ON' if peak_per_location else 'OFF'}", fontsize=9)
-                            fig.text(0.08, 0.81, "Further details per event on following pages.", fontsize=9)
-                            plt.axis("off")
-                            pdf.savefig(fig, bbox_inches="tight")
-                            plt.close(fig)
-
-                            # Event pages
-                            for _, erow in event_order.iterrows():
-                                eid = erow["event_id"]
-                                eview = runs_sel[runs_sel["event_id"] == eid].copy()
-                                erank = rank_pool_src[rank_pool_src["event_id"] == eid].copy()
-                                evt_peak = _compute_event_peak_df(eview, erank)
-                                evt_peak = evt_peak[evt_peak["Rider"] == rider].copy()
-                                if evt_peak.empty:
-                                    continue
-                                evt_peak["event_id"] = eid
-                                evt_peak["event_location"] = clean_spaces(str(erow["location"]))
-                                rider_event_peaks.append(evt_peak.copy())
-                                fig = plt.figure(figsize=(8.27, 11.69))
-                                ax = plt.subplot(211, projection="polar")
-                                event_title = f"{clean_spaces(str(erow['display_name']))} | {clean_spaces(str(erow['location']))}"
-                                event_title_wrapped = textwrap.fill(event_title, width=78, max_lines=2, placeholder="...")
-                                _draw_radar(ax, evt_peak, event_title_wrapped)
-                                fig.text(0.08, 0.50, f"Rider: {rider}", fontsize=9, weight="bold")
-                                fig.text(0.08, 0.48, "Aussen = besser (Rank 1).", fontsize=8)
-                                t_ax = plt.subplot(212)
-                                t_ax.axis("off")
-                                tbl = evt_peak[[
-                                    "Segment Short",
-                                    "Segment Rank",
-                                    "Field Size",
-                                    "Rank %",
-                                    "Delta (s)",
-                                    "Delta (% ref)",
-                                    "Rider Segment Time (s)",
-                                    "Runs Used (n)",
-                                    "Rounds",
-                                ]].copy()
-                                tbl["seg_idx"] = tbl["Segment Short"].map(
-                                    {segment_short_label(k): i for i, k in enumerate(export_segment_order)}
-                                )
-                                tbl = tbl.sort_values("seg_idx", na_position="last").drop(columns=["seg_idx"])
-                                base_segments = pd.DataFrame(
-                                    {"Segment": [segment_short_label(k) for k in export_segment_order]}
-                                )
-                                tbl = tbl.rename(
-                                    columns={
-                                        "Segment Short": "Segment",
-                                        "Segment Rank": "Rank",
-                                        "Field Size": "Field",
-                                        "Rank %": "Rank %",
-                                        "Delta (s)": "Delta\n(s)",
-                                        "Delta (% ref)": "Delta\n(% ref)",
-                                        "Rider Segment Time (s)": "Rider Time\n(s)",
-                                        "Runs Used (n)": "Runs",
-                                        "Rounds": "Round(s)",
-                                    }
-                                )
-                                tbl = base_segments.merge(tbl, on="Segment", how="left")
-                                tbl["Rank"] = tbl["Rank"].apply(format_rank_value)
-                                for c in ["Field", "Runs"]:
-                                    tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
-                                for c in ["Rank %", "Delta\n(s)", "Delta\n(% ref)", "Rider Time\n(s)"]:
-                                    tbl[c] = pd.to_numeric(tbl[c], errors="coerce").round(4)
-                                table = t_ax.table(
-                                    cellText=tbl.values,
-                                    colLabels=tbl.columns,
-                                    loc="center",
-                                )
-                                style_pdf_table(table, len(tbl.columns))
-                                pdf.savefig(fig, bbox_inches="tight")
-                                plt.close(fig)
-
-                            # Overall page for rider
-                            ov = pd.DataFrame()
-                            if rider_event_peaks:
-                                ov_all = pd.concat(rider_event_peaks, ignore_index=True)
-                                num_cols = [
-                                    "Segment Rank",
-                                    "Field Size",
-                                    "Rank %",
-                                    "Delta (s)",
-                                    "Delta (% ref)",
-                                    "Rider Segment Time (s)",
-                                    "Runs Used (n)",
-                                ]
-                                for c in num_cols:
-                                    ov_all[c] = pd.to_numeric(ov_all[c], errors="coerce")
-                                grp_cols = ["Rider", "Segment", "Segment Short"]
-                                ov = ov_all.groupby(grp_cols, dropna=False)[
-                                    ["Segment Rank", "Field Size", "Rank %", "Delta (s)", "Delta (% ref)", "Rider Segment Time (s)"]
-                                ].mean(numeric_only=True).reset_index()
-                                ov_ref_mode = (
-                                    ov_all.groupby(grp_cols, dropna=False)["Reference Mode"]
-                                    .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else clean_spaces(str(s.iloc[0])) if len(s) else "")
-                                    .reset_index(name="Reference Mode")
-                                )
-                                ov_runs = (
-                                    ov_all.groupby(grp_cols, dropna=False)["Runs Used (n)"]
-                                    .sum(min_count=1)
-                                    .reset_index(name="Runs Used (n)")
-                                )
-                                ov_var = (
-                                    ov_all.groupby(grp_cols, dropna=False)["Rider Segment Time (s)"]
-                                    .agg(lambda s: (s.max() - s.min()) / 2 if s.notna().sum() > 1 else 0.0)
-                                    .reset_index(name="Rider Segment Variation (±s)")
-                                )
-                                ev_used = (
-                                    ov_all.groupby(grp_cols, dropna=False)["event_id"]
-                                    .nunique()
-                                    .reset_index(name="Events Used (n)")
-                                )
-                                loc_used = (
-                                    ov_all.groupby(grp_cols, dropna=False)["event_location"]
-                                    .nunique()
-                                    .reset_index(name="Locations Used (n)")
-                                )
-                                ov = (
-                                    ov.merge(ov_ref_mode, on=grp_cols, how="left")
-                                    .merge(ov_runs, on=grp_cols, how="left")
-                                    .merge(ov_var, on=grp_cols, how="left")
-                                    .merge(ev_used, on=grp_cols, how="left")
-                                    .merge(loc_used, on=grp_cols, how="left")
-                                )
-                                ov = ov.sort_values(
-                                    "Segment",
-                                    key=lambda s: s.map(export_seg_idx).fillna(999),
-                                )
-                            if not ov.empty:
-                                fig = plt.figure(figsize=(8.27, 11.69))
-                                ax = plt.subplot(211, projection="polar")
-                                _draw_radar(ax, ov.rename(columns={"Segment": "Segment", "Segment Rank": "Segment Rank"}), "Overall Peak Segment Radar")
-                                fig.text(0.08, 0.50, f"Rider: {rider}", fontsize=9, weight="bold")
-                                fig.text(0.08, 0.48, "Aussen = besser (Rank 1).", fontsize=8)
-                                t_ax = plt.subplot(212)
-                                t_ax.axis("off")
-                                ov_tbl = ov[[
-                                    "Segment",
-                                    "Segment Rank",
-                                    "Field Size",
-                                    "Rank %",
-                                    "Delta (s)",
-                                    "Delta (% ref)",
-                                    "Rider Segment Variation (±s)",
-                                    "Runs Used (n)",
-                                    "Locations Used (n)",
-                                    "Events Used (n)",
-                                ]].copy()
-                                ov_tbl["seg_idx"] = ov_tbl["Segment"].map(export_seg_idx)
-                                ov_tbl = ov_tbl.sort_values("seg_idx", na_position="last").drop(columns=["seg_idx"])
-                                base_segments = pd.DataFrame({"Segment": export_segment_order})
-                                ov_tbl = base_segments.merge(ov_tbl, on="Segment", how="left")
-                                ov_tbl["Segment"] = ov_tbl["Segment"].apply(segment_short_label)
-                                ov_tbl = ov_tbl.rename(
-                                    columns={
-                                        "Segment Rank": "Rank",
-                                        "Field Size": "Field",
-                                        "Rank %": "Rank %",
-                                        "Delta (s)": "Delta\n(s)",
-                                        "Delta (% ref)": "Delta\n(% ref)",
-                                        "Rider Segment Variation (±s)": "Rider Var\n(±s)",
-                                        "Runs Used (n)": "Runs",
-                                        "Locations Used (n)": "Locs",
-                                        "Events Used (n)": "Events",
-                                    }
-                                )
-                                ov_tbl["Rank"] = ov_tbl["Rank"].apply(format_rank_value)
-                                for c in ["Field", "Runs", "Locs", "Events"]:
-                                    ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(0).astype("Int64").astype(str)
-                                for c in ["Rank %", "Delta\n(s)", "Delta\n(% ref)", "Rider Var\n(±s)"]:
-                                    ov_tbl[c] = pd.to_numeric(ov_tbl[c], errors="coerce").round(4)
-                                table = t_ax.table(cellText=ov_tbl.values, colLabels=ov_tbl.columns, loc="center")
-                                style_pdf_table(table, len(ov_tbl.columns))
-                                pdf.savefig(fig, bbox_inches="tight")
-                                plt.close(fig)
-                    pdf_bytes = pdf_buffer.getvalue()
-                    y_lbl = "-".join(str(y) for y in sorted(sel_years)) if sel_years else "all"
-                    c_lbl = "_".join(x.lower() for x in sel_categories) if sel_categories else "all"
-                    g_lbl = "_".join(x.lower() for x in sel_gender) if sel_gender else "all"
-                    out_name = f"PeakRadar_{c_lbl}_{g_lbl}_{y_lbl}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-                    st.download_button(
-                        label="Download Peak Segment Radar PDF",
-                        data=pdf_bytes,
-                        file_name=out_name,
-                        mime="application/pdf",
-                        key="dl_peak_radar_pdf",
-                    )
-
-        peak_table = peak_df.copy()
-        for col in ["Delta (s)", "Delta (% ref)", "Rider Segment Time (s)", "Reference Segment Time (s)", "Rank %"]:
-            peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").round(4)
-        peak_table["Segment Rank"] = pd.to_numeric(peak_table["Segment Rank"], errors="coerce").round(2)
-        for col in ["Field Size", "Runs Used (n)", "Locations Used (n)"]:
-            peak_table[col] = pd.to_numeric(peak_table[col], errors="coerce").round(0).astype("Int64")
-        st.dataframe(peak_table, use_container_width=True, hide_index=True)
-        cov_df = pd.DataFrame(coverage_rows)
-        if not cov_df.empty:
-            cov_df["missing_reason"] = np.where(cov_df["n_valid"] == 0, "Keine gueltigen Kombinationen aus Delta+SegmentTime+Reference", "")
-            st.dataframe(
-                cov_df.sort_values(["Segment", "rider_short"] if "rider_short" in cov_df.columns else ["Segment"]),
-                use_container_width=True,
-                hide_index=True,
-            )
-        st.caption("Peak wird pro Rider × Segment unabhaengig berechnet (Top-Auswahl je Segment, danach Median).")
-    st.markdown("**Start Delta vs Finish Delta**")
-    scat = runs_sel.dropna(subset=["start_delta", "finish_delta"]).copy()
-    if not scat.empty:
-        # Keep axes readable for coaching use: fixed windows.
-        x_min, x_max = 0.0, 0.5
-        y_min, y_max = 0.0, 3.0
-        scat_plot = scat[
-            (scat["start_delta"] >= x_min)
-            & (scat["start_delta"] <= x_max)
-            & (scat["finish_delta"] >= y_min)
-            & (scat["finish_delta"] <= y_max)
-        ].copy()
-        if scat_plot.empty:
-            st.info("Keine Punkte im Bereich Start 0.0-0.5s und Finish 0.0-3.0s.")
-        else:
-            diag = pd.DataFrame({"x": [x_min, x_max], "y": [x_min, x_max]})
-            scatter = (
-                alt.Chart(scat_plot)
-                .mark_circle(opacity=0.75)
-                .encode(
-                    x=alt.X("start_delta:Q", title="Start Delta (s)", scale=alt.Scale(domain=[x_min, x_max])),
-                    y=alt.Y("finish_delta:Q", title="Finish Delta (s)", scale=alt.Scale(domain=[y_min, y_max])),
-                    color=alt.Color("rider_short:N", title="Rider"),
-                    tooltip=["rider_short:N", "event_label:N", "round_title:N", "heat_title:N", "start_delta:Q", "finish_delta:Q"],
-                )
-                .properties(height=320)
-            )
-            diag_line = alt.Chart(diag).mark_line(strokeDash=[4, 4], color="gray").encode(x="x:Q", y="y:Q")
-            st.altair_chart(scatter + diag_line, use_container_width=True)
-
 elif ai_active_section == "Segment Profile":
     st.subheader("Segment Profile")
 
@@ -2993,253 +1778,378 @@ elif ai_active_section == "Segment Profile":
         sd2["ref_col"] = ref_col
         segment_profile_available.append(sd2)
 
-    segment_profile_label_map = {sd["label"]: segment_short_label(sd["label"]) for sd in segment_profile_available}
-    segment_profile_options = [segment_profile_label_map[sd["label"]] for sd in segment_profile_available]
-    segment_profile_default_keys = [
-        "BottomDelta",
-        "Bottom->T1Delta",
-        "T1->T2Delta",
-        "T2->T3Delta",
-        "T3->FinishDelta",
-    ]
-    segment_profile_default = [
-        segment_profile_label_map[x] for x in segment_profile_default_keys if x in segment_profile_label_map
-    ] or segment_profile_options
-    segment_profile_selected = st.multiselect(
-        "Segmente anzeigen",
-        options=segment_profile_options,
-        default=segment_profile_default,
-        key="segment_profile_box_segments",
-    )
-    segment_profile_comparison_mode = st.selectbox(
-        "Vergleichsmodus",
-        ["Athlet", "Runde", "Jahr", "Event"],
-        index=0,
-        key="segment_profile_compare_mode",
-    )
-    segment_profile_metric = st.selectbox(
-        "Boxplot-Wert",
-        ["Segment Delta", "Segment Rank"],
-        index=0,
-        key="segment_profile_box_metric",
-    )
-    if segment_profile_metric == "Segment Rank" and segment_profile_comparison_mode == "Runde":
-        st.caption("Segment Rank bleibt eventbasiert (Best of the Day pro Event), auch wenn Vergleichsmodus `Runde` gewaehlt ist.")
-    segment_profile_delta_mode = None
-    if segment_profile_metric == "Segment Delta":
-        segment_profile_delta_mode = st.selectbox(
-            "Delta-Werte",
-            ["Alle Werte", "Nur bester Wert pro Event"],
-            index=0,
-            key="segment_profile_delta_mode",
-        )
-
-    def _segment_profile_round_value(df: pd.DataFrame) -> pd.Series:
-        base = df["round_short"].fillna("").astype(str).str.strip()
-        fallback = df["round_title"].fillna("").astype(str).str.strip()
-        return base.where(base != "", fallback).replace("", "Unknown")
-
-    def _segment_profile_event_value(df: pd.DataFrame) -> pd.Series:
-        base = df["event_short"].fillna(df["location"]).fillna("Unknown").astype(str)
-        year_txt = pd.to_numeric(df["year"], errors="coerce").astype("Int64").astype(str)
-        if len(sel_years) == 1:
-            event_val = base
-        else:
-            event_val = base + " " + year_txt.replace("<NA>", "")
-        dup = event_val.groupby(event_val).transform("size") > 1
-        date_txt = pd.to_datetime(df["event_dt"], errors="coerce").dt.strftime("%Y-%m-%d").fillna(df["event_id"].astype(str))
-        return np.where(dup, event_val + " " + date_txt, event_val)
-
-    def _apply_segment_grouping(df: pd.DataFrame) -> pd.DataFrame:
-        out = df.copy()
-        if out.empty:
-            out["group_value"] = pd.Series(dtype="object")
-            out["group_sort"] = pd.Series(dtype="float")
-            out["x_label"] = pd.Series(dtype="object")
-            return out
-        effective_mode = segment_profile_comparison_mode
-        if segment_profile_metric == "Segment Rank" and segment_profile_comparison_mode == "Runde":
-            effective_mode = "Event"
-        if effective_mode == "Athlet":
-            out["group_value"] = out["rider_short"].fillna("Unknown")
-            out["group_sort"] = 0.0
-        elif effective_mode == "Runde":
-            out["group_value"] = out["rider_short"].fillna("Unknown") + " / " + _segment_profile_round_value(out)
-            out["group_sort"] = pd.to_numeric(out["round_sort"], errors="coerce").fillna(999)
-        elif effective_mode == "Jahr":
-            year_num = pd.to_numeric(out["year"], errors="coerce")
-            year_txt = year_num.astype("Int64").astype(str).replace("<NA>", "Unknown")
-            out["group_value"] = out["rider_short"].fillna("Unknown") + " / " + year_txt
-            out["group_sort"] = year_num.fillna(9999)
-        else:
-            out["group_value"] = out["rider_short"].fillna("Unknown") + " / " + _segment_profile_event_value(out)
-            out["group_sort"] = pd.to_datetime(out["event_dt"], errors="coerce").view("int64").astype(float)
-            out.loc[pd.isna(pd.to_datetime(out["event_dt"], errors="coerce")), "group_sort"] = np.inf
-        out["x_label"] = out["group_value"].astype(str) + " / " + out["Segment Short"].astype(str)
-        return out
-
-    segment_profile_rows = []
-    seg_display_order = [x for x in segment_profile_selected if x in segment_profile_options]
-    selected_rider_set = set(runs_sel["rider_id"].dropna().astype(str).tolist())
-
-    common_cols = [
-        "rider_id",
-        "rider_short",
-        "display_name",
-        "event_id",
-        "event_dt",
-        "event_short",
-        "location",
-        "round_sort",
-        "round_short",
-        "round_title",
-        "heat_title",
-        "group_id",
-        "category",
-        "gender",
-        "year",
-    ]
-
-    for sd in segment_profile_available:
-        seg_short = segment_profile_label_map[sd["label"]]
-        if seg_short not in segment_profile_selected:
-            continue
-
-        if segment_profile_metric == "Segment Delta":
-            seg_df = segment_profile_src[
-                common_cols + [sd["delta_use_col"], sd["time_col"], sd["ref_col"]]
-            ].copy()
-            ref_seg_df = segment_profile_rank_src[
-                common_cols + [sd["delta_use_col"], sd["time_col"], sd["ref_col"]]
-            ].copy()
-            seg_df["source_row_id"] = seg_df.index.astype(str)
-            seg_df = seg_df.rename(columns={
-                sd["delta_use_col"]: "metric_value",
-                sd["time_col"]: "segment_time",
-                sd["ref_col"]: "reference_time",
-            })
-            ref_seg_df = ref_seg_df.rename(columns={
-                sd["delta_use_col"]: "metric_value",
-                sd["time_col"]: "segment_time",
-                sd["ref_col"]: "reference_time",
-            })
-            seg_df["metric_value"] = pd.to_numeric(seg_df["metric_value"], errors="coerce")
-            seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
-            seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
-            ref_seg_df["metric_value"] = pd.to_numeric(ref_seg_df["metric_value"], errors="coerce")
-            ref_seg_df["segment_time"] = pd.to_numeric(ref_seg_df["segment_time"], errors="coerce")
-            ref_seg_df["reference_time"] = pd.to_numeric(ref_seg_df["reference_time"], errors="coerce")
-            if ref_key in {"event_topn", "event_top4", "event_best"} and int(event_top_n) == 1:
-                seg_df = apply_event_top1_adjustment(
-                    seg_df,
-                    ref_seg_df,
-                    time_col="segment_time",
-                    reference_time_col="reference_time",
-                    delta_col="metric_value",
-                    group_cols=["event_id", "group_id"],
-                    rider_col="rider_id",
-                    use_rider_best=(segment_profile_delta_mode == "Nur bester Wert pro Event"),
-                )
-            seg_df = seg_df.dropna(subset=["metric_value"]).copy()
-            if seg_df.empty:
-                continue
-            seg_df["Segment"] = sd["label"]
-            seg_df["Segment Short"] = seg_short
-            seg_df = _apply_segment_grouping(seg_df)
-            if segment_profile_delta_mode == "Nur bester Wert pro Event":
-                best_keys = ["rider_id", "event_id", "Segment Short"]
-                if segment_profile_comparison_mode == "Runde":
-                    best_keys.append("group_value")
-                seg_df = seg_df.sort_values(["metric_value", "event_dt", "round_sort"], ascending=[True, True, True])
-                seg_df = seg_df.drop_duplicates(subset=best_keys, keep="first")
-        else:
-            seg_df = segment_profile_rank_src[
-                common_cols + [sd["time_col"]]
-            ].copy()
-            seg_df["source_row_id"] = seg_df.index.astype(str)
-            seg_df = seg_df.rename(columns={sd["time_col"]: "segment_time"})
-            seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
-            seg_df = seg_df.dropna(subset=["segment_time"]).copy()
-            if seg_df.empty:
-                continue
-            seg_df = seg_df.sort_values(["segment_time", "event_dt", "round_sort"], ascending=[True, True, True])
-            seg_df = seg_df.drop_duplicates(subset=["rider_id", "event_id"], keep="first")
-            seg_df["metric_value"] = seg_df.groupby(
-                ["event_id", "category", "gender"], dropna=False
-            )["segment_time"].rank(method="min", ascending=True)
-            seg_df = seg_df[seg_df["rider_id"].astype(str).isin(selected_rider_set)].copy()
-            if seg_df.empty:
-                continue
-            seg_df["Segment"] = sd["label"]
-            seg_df["Segment Short"] = seg_short
-            seg_df["reference_time"] = np.nan
-            seg_df = _apply_segment_grouping(seg_df)
-            seg_df = seg_df.dropna(subset=["metric_value"]).copy()
-
-        if seg_df.empty:
-            continue
-        seg_df["point_id"] = (
-            seg_df["rider_id"].astype(str)
-            + "|"
-            + seg_df["event_id"].astype(str)
-            + "|"
-            + seg_df["Segment Short"].astype(str)
-            + "|"
-            + seg_df["source_row_id"].astype(str)
-        )
-        segment_profile_rows.append(seg_df)
-
-    segment_profile_df = pd.concat(segment_profile_rows, ignore_index=True) if segment_profile_rows else pd.DataFrame()
-    if segment_profile_df.empty:
+    if not segment_profile_available:
         st.info("Keine Daten fuer Segment Profile in der aktuellen Auswahl.")
-    elif go is None:
-        st.warning("Plotly ist fuer den Segment-Boxplot nicht verfuegbar.")
     else:
-        segment_profile_view_signature = build_view_signature(
-            "segment_profile",
-            {
-                "selected_ids": sorted(str(x) for x in selected_rider_set),
-                "segments": seg_display_order,
-                "comparison_mode": segment_profile_comparison_mode,
-                "metric": segment_profile_metric,
-                "delta_mode": segment_profile_delta_mode,
-                "ref_key": ref_key,
-                "event_top_n": event_top_n,
-                "years": sel_years,
-                "event_types": sel_event_types,
-                "categories": sel_categories,
-                "gender": sel_gender,
-                "locations": sel_locations,
-                "rounds": sel_rounds,
-            },
+        segment_profile_label_map = {sd["label"]: segment_short_label(sd["label"]) for sd in segment_profile_available}
+        segment_profile_options = [segment_profile_label_map[sd["label"]] for sd in segment_profile_available]
+        bottom_default = segment_profile_label_map.get("BottomDelta")
+        segment_profile_default = [bottom_default] if bottom_default else segment_profile_options[:1]
+
+        rider_meta = (
+            segment_profile_src[["rider_id", "rider_label", "rider_short"]]
+            .dropna(subset=["rider_id"])
+            .drop_duplicates(subset=["rider_id"])
+            .copy()
         )
-        segment_profile_exclusion_state = sync_exclusion_state(
-            "ai_segment_profile_exclusions", segment_profile_view_signature
+        rider_meta["rider_label"] = rider_meta["rider_label"].fillna(rider_meta["rider_short"])
+        rider_meta["rider_label"] = rider_meta["rider_label"].fillna(rider_meta["rider_id"].astype(str))
+        rider_options = rider_meta["rider_label"].dropna().astype(str).tolist()
+        rider_label_to_ids = (
+            rider_meta.groupby("rider_label")["rider_id"]
+            .apply(lambda s: [str(x) for x in s.dropna().tolist()])
+            .to_dict()
         )
-        segment_profile_df = apply_point_exclusions(segment_profile_df, segment_profile_exclusion_state)
-        if segment_profile_df.empty:
-            st.info("Alle Punkte der aktuellen Segment-Profile-Ansicht sind ausgeschlossen.")
-            seg_cols = st.columns([1, 1, 1, 2])
-            if seg_cols[2].button(
-                "Alle Ausschluesse zuruecksetzen",
-                key="segment_profile_reset_exclusions_empty",
-            ):
-                segment_profile_exclusion_state["excluded_ids"] = []
-                segment_profile_exclusion_state["undo_stack"] = []
-                st.session_state["ai_segment_profile_exclusions"] = segment_profile_exclusion_state
+        rider_id_to_short = (
+            rider_meta.assign(rider_id_str=rider_meta["rider_id"].astype(str))
+            .drop_duplicates(subset=["rider_id_str"])
+            .set_index("rider_id_str")["rider_short"]
+            .to_dict()
+        )
+
+        profile_ids_key = "segment_profile_profile_ids"
+        if profile_ids_key not in st.session_state or not st.session_state[profile_ids_key]:
+            st.session_state[profile_ids_key] = [1]
+        profile_ids = list(st.session_state[profile_ids_key])
+
+        def _profile_key(profile_id: int, suffix: str) -> str:
+            return f"segment_profile_{suffix}_{profile_id}"
+
+        def _profile_defaults() -> dict:
+            return {
+                "riders": list(rider_options),
+                "segments": list(segment_profile_default),
+                "comparison_mode": "Athlet",
+                "metric": "Segment Delta",
+                "delta_mode": "Alle Werte",
+            }
+
+        def _ensure_profile_state(profile_id: int, source_profile_id=None) -> None:
+            defaults = _profile_defaults()
+            if source_profile_id is not None:
+                defaults = {
+                    "riders": list(st.session_state.get(_profile_key(source_profile_id, "riders"), defaults["riders"])),
+                    "segments": list(st.session_state.get(_profile_key(source_profile_id, "segments"), defaults["segments"])),
+                    "comparison_mode": st.session_state.get(_profile_key(source_profile_id, "comparison_mode"), defaults["comparison_mode"]),
+                    "metric": st.session_state.get(_profile_key(source_profile_id, "metric"), defaults["metric"]),
+                    "delta_mode": st.session_state.get(_profile_key(source_profile_id, "delta_mode"), defaults["delta_mode"]),
+                }
+            for field, value in defaults.items():
+                key = _profile_key(profile_id, field)
+                if key not in st.session_state:
+                    st.session_state[key] = value
+
+        def _clear_profile_state(profile_id: int) -> None:
+            for suffix in ["riders", "segments", "comparison_mode", "metric", "delta_mode"]:
+                st.session_state.pop(_profile_key(profile_id, suffix), None)
+            st.session_state.pop(f"ai_segment_profile_exclusions_{profile_id}", None)
+
+        first_profile_id = profile_ids[0]
+        _ensure_profile_state(first_profile_id)
+
+        add_col, spacer_col = st.columns([1, 5])
+        if add_col.button("Weiteres Profil hinzufuegen", key="segment_profile_add_profile"):
+            new_profile_id = max(profile_ids) + 1
+            _ensure_profile_state(new_profile_id, source_profile_id=first_profile_id)
+            st.session_state[profile_ids_key] = profile_ids + [new_profile_id]
+            st.rerun()
+
+        def _segment_profile_round_value(df: pd.DataFrame) -> pd.Series:
+            base = df["round_short"].fillna("").astype(str).str.strip()
+            fallback = df["round_title"].fillna("").astype(str).str.strip()
+            return base.where(base != "", fallback).replace("", "Unknown")
+
+        def _segment_profile_event_value(df: pd.DataFrame) -> pd.Series:
+            base = df["event_short"].fillna(df["location"]).fillna("Unknown").astype(str)
+            year_txt = pd.to_numeric(df["year"], errors="coerce").astype("Int64").astype(str)
+            if len(sel_years) == 1:
+                event_val = base
+            else:
+                event_val = base + " " + year_txt.replace("<NA>", "")
+            dup = event_val.groupby(event_val).transform("size") > 1
+            date_txt = pd.to_datetime(df["event_dt"], errors="coerce").dt.strftime("%Y-%m-%d").fillna(df["event_id"].astype(str))
+            return np.where(dup, event_val + " " + date_txt, event_val)
+
+        def _apply_segment_grouping(df: pd.DataFrame, comparison_mode: str, metric_label: str) -> pd.DataFrame:
+            out = df.copy()
+            if out.empty:
+                out["group_value"] = pd.Series(dtype="object")
+                out["group_sort"] = pd.Series(dtype="float")
+                out["x_label"] = pd.Series(dtype="object")
+                return out
+            effective_mode = comparison_mode
+            if metric_label == "Segment Rank" and comparison_mode == "Runde":
+                effective_mode = "Event"
+            if effective_mode == "Athlet":
+                out["group_value"] = out["rider_short"].fillna("Unknown")
+                out["group_sort"] = 0.0
+            elif effective_mode == "Runde":
+                out["group_value"] = out["rider_short"].fillna("Unknown") + " / " + _segment_profile_round_value(out)
+                out["group_sort"] = pd.to_numeric(out["round_sort"], errors="coerce").fillna(999)
+            elif effective_mode == "Jahr":
+                year_num = pd.to_numeric(out["year"], errors="coerce")
+                year_txt = year_num.astype("Int64").astype(str).replace("<NA>", "Unknown")
+                out["group_value"] = out["rider_short"].fillna("Unknown") + " / " + year_txt
+                out["group_sort"] = year_num.fillna(9999)
+            else:
+                out["group_value"] = out["rider_short"].fillna("Unknown") + " / " + _segment_profile_event_value(out)
+                out["group_sort"] = pd.to_datetime(out["event_dt"], errors="coerce").view("int64").astype(float)
+                out.loc[pd.isna(pd.to_datetime(out["event_dt"], errors="coerce")), "group_sort"] = np.inf
+            out["x_label"] = out["group_value"].astype(str) + " / " + out["Segment Short"].astype(str)
+            return out
+
+        common_cols = [
+            "rider_id",
+            "rider_short",
+            "display_name",
+            "event_id",
+            "event_dt",
+            "event_short",
+            "location",
+            "round_sort",
+            "round_short",
+            "round_title",
+            "heat_title",
+            "group_id",
+            "category",
+            "gender",
+            "year",
+        ]
+
+        for idx, profile_id in enumerate(profile_ids, start=1):
+            _ensure_profile_state(profile_id, source_profile_id=first_profile_id if profile_id != first_profile_id else None)
+            riders_key = _profile_key(profile_id, "riders")
+            segments_key = _profile_key(profile_id, "segments")
+            comparison_key = _profile_key(profile_id, "comparison_mode")
+            metric_key = _profile_key(profile_id, "metric")
+            delta_key = _profile_key(profile_id, "delta_mode")
+
+            header_cols = st.columns([6, 1])
+            header_cols[0].markdown(f"**Segment Profile {idx}**")
+            remove_clicked = False
+            if profile_id != first_profile_id:
+                remove_clicked = header_cols[1].button("Entfernen", key=f"segment_profile_remove_{profile_id}")
+            if remove_clicked:
+                updated_ids = [pid for pid in profile_ids if pid != profile_id]
+                st.session_state[profile_ids_key] = updated_ids or [first_profile_id]
+                _clear_profile_state(profile_id)
                 st.rerun()
-            st.caption(
-                f"Aktuell ausgeschlossen: {len(excluded_id_set(segment_profile_exclusion_state))} Punkt(e)."
+
+            with st.expander(f"Filter Segment Profile {idx}", expanded=(idx == 1)):
+                selected_profile_riders = st.multiselect(
+                    "Athleten",
+                    options=rider_options,
+                    default=st.session_state[riders_key],
+                    key=riders_key,
+                )
+                selected_profile_segments = st.multiselect(
+                    "Segmente anzeigen",
+                    options=segment_profile_options,
+                    default=st.session_state[segments_key],
+                    key=segments_key,
+                )
+                profile_comparison_mode = st.selectbox(
+                    "Vergleichsmodus",
+                    ["Athlet", "Runde", "Jahr", "Event"],
+                    index=["Athlet", "Runde", "Jahr", "Event"].index(st.session_state[comparison_key]),
+                    key=comparison_key,
+                )
+                profile_metric = st.selectbox(
+                    "Boxplot-Wert",
+                    ["Segment Delta", "Segment Rank"],
+                    index=["Segment Delta", "Segment Rank"].index(st.session_state[metric_key]),
+                    key=metric_key,
+                )
+                profile_delta_mode = None
+                if profile_metric == "Segment Delta":
+                    profile_delta_mode = st.selectbox(
+                        "Delta-Werte",
+                        ["Alle Werte", "Nur bester Wert pro Event"],
+                        index=["Alle Werte", "Nur bester Wert pro Event"].index(st.session_state[delta_key]),
+                        key=delta_key,
+                    )
+                else:
+                    st.session_state[delta_key] = "Alle Werte"
+                if profile_metric == "Segment Rank" and profile_comparison_mode == "Runde":
+                    st.caption("Segment Rank bleibt eventbasiert (Best of the Day pro Event), auch wenn Vergleichsmodus `Runde` gewaehlt ist.")
+
+            selected_profile_riders = st.session_state.get(riders_key, list(rider_options))
+            selected_profile_segments = st.session_state.get(segments_key, list(segment_profile_default))
+            profile_comparison_mode = st.session_state.get(comparison_key, "Athlet")
+            profile_metric = st.session_state.get(metric_key, "Segment Delta")
+            profile_delta_mode = st.session_state.get(delta_key, "Alle Werte") if profile_metric == "Segment Delta" else None
+
+            selected_profile_ids = []
+            for rider_label in selected_profile_riders:
+                selected_profile_ids.extend(rider_label_to_ids.get(rider_label, []))
+            selected_profile_ids = list(dict.fromkeys(selected_profile_ids))
+            if not selected_profile_ids:
+                st.info(f"Segment Profile {idx}: Bitte mindestens einen Athleten auswaehlen.")
+                continue
+
+            segment_profile_rows = []
+            seg_display_order = [x for x in selected_profile_segments if x in segment_profile_options]
+            if not seg_display_order:
+                st.info(f"Segment Profile {idx}: Bitte mindestens ein Segment auswaehlen.")
+                continue
+
+            segment_profile_src_local = segment_profile_src[
+                segment_profile_src["rider_id"].astype(str).isin(selected_profile_ids)
+            ].copy()
+            if segment_profile_src_local.empty:
+                st.info(f"Segment Profile {idx}: Keine Daten fuer die gewaehlteten Athleten in der aktuellen Auswahl.")
+                continue
+
+            for sd in segment_profile_available:
+                seg_short = segment_profile_label_map[sd["label"]]
+                if seg_short not in selected_profile_segments:
+                    continue
+
+                if profile_metric == "Segment Delta":
+                    seg_df = segment_profile_src_local[
+                        common_cols + [sd["delta_use_col"], sd["time_col"], sd["ref_col"]]
+                    ].copy()
+                    ref_seg_df = segment_profile_rank_src[
+                        common_cols + [sd["delta_use_col"], sd["time_col"], sd["ref_col"]]
+                    ].copy()
+                    seg_df["source_row_id"] = seg_df.index.astype(str)
+                    seg_df = seg_df.rename(columns={
+                        sd["delta_use_col"]: "metric_value",
+                        sd["time_col"]: "segment_time",
+                        sd["ref_col"]: "reference_time",
+                    })
+                    ref_seg_df = ref_seg_df.rename(columns={
+                        sd["delta_use_col"]: "metric_value",
+                        sd["time_col"]: "segment_time",
+                        sd["ref_col"]: "reference_time",
+                    })
+                    seg_df["metric_value"] = pd.to_numeric(seg_df["metric_value"], errors="coerce")
+                    seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
+                    seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
+                    ref_seg_df["metric_value"] = pd.to_numeric(ref_seg_df["metric_value"], errors="coerce")
+                    ref_seg_df["segment_time"] = pd.to_numeric(ref_seg_df["segment_time"], errors="coerce")
+                    ref_seg_df["reference_time"] = pd.to_numeric(ref_seg_df["reference_time"], errors="coerce")
+                    if ref_key in {"event_topn", "event_top4", "event_best"} and int(event_top_n) == 1:
+                        seg_df = apply_event_top1_adjustment(
+                            seg_df,
+                            ref_seg_df,
+                            time_col="segment_time",
+                            reference_time_col="reference_time",
+                            delta_col="metric_value",
+                            group_cols=["event_id", "group_id"],
+                            rider_col="rider_id",
+                            use_rider_best=(profile_delta_mode == "Nur bester Wert pro Event"),
+                        )
+                    seg_df = seg_df.dropna(subset=["metric_value"]).copy()
+                    if seg_df.empty:
+                        continue
+                    seg_df["Segment"] = sd["label"]
+                    seg_df["Segment Short"] = seg_short
+                    seg_df = _apply_segment_grouping(seg_df, profile_comparison_mode, profile_metric)
+                    if profile_delta_mode == "Nur bester Wert pro Event":
+                        best_keys = ["rider_id", "event_id", "Segment Short"]
+                        if profile_comparison_mode == "Runde":
+                            best_keys.append("group_value")
+                        seg_df = seg_df.sort_values(["metric_value", "event_dt", "round_sort"], ascending=[True, True, True])
+                        seg_df = seg_df.drop_duplicates(subset=best_keys, keep="first")
+                else:
+                    seg_df = segment_profile_rank_src[
+                        common_cols + [sd["time_col"]]
+                    ].copy()
+                    seg_df["source_row_id"] = seg_df.index.astype(str)
+                    seg_df = seg_df.rename(columns={sd["time_col"]: "segment_time"})
+                    seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
+                    seg_df = seg_df.dropna(subset=["segment_time"]).copy()
+                    if seg_df.empty:
+                        continue
+                    seg_df = seg_df.sort_values(["segment_time", "event_dt", "round_sort"], ascending=[True, True, True])
+                    seg_df = seg_df.drop_duplicates(subset=["rider_id", "event_id"], keep="first")
+                    seg_df["metric_value"] = seg_df.groupby(
+                        ["event_id", "category", "gender"], dropna=False
+                    )["segment_time"].rank(method="min", ascending=True)
+                    seg_df = seg_df[seg_df["rider_id"].astype(str).isin(selected_profile_ids)].copy()
+                    if seg_df.empty:
+                        continue
+                    seg_df["Segment"] = sd["label"]
+                    seg_df["Segment Short"] = seg_short
+                    seg_df["reference_time"] = np.nan
+                    seg_df = _apply_segment_grouping(seg_df, profile_comparison_mode, profile_metric)
+                    seg_df = seg_df.dropna(subset=["metric_value"]).copy()
+
+                if seg_df.empty:
+                    continue
+                seg_df["point_id"] = (
+                    seg_df["rider_id"].astype(str)
+                    + "|"
+                    + seg_df["event_id"].astype(str)
+                    + "|"
+                    + seg_df["Segment Short"].astype(str)
+                    + "|"
+                    + seg_df["source_row_id"].astype(str)
+                )
+                segment_profile_rows.append(seg_df)
+
+            segment_profile_df = pd.concat(segment_profile_rows, ignore_index=True) if segment_profile_rows else pd.DataFrame()
+            if segment_profile_df.empty:
+                st.info(f"Segment Profile {idx}: Keine Daten fuer die aktuelle Auswahl.")
+                continue
+            if go is None:
+                st.warning("Plotly ist fuer den Segment-Boxplot nicht verfuegbar.")
+                continue
+
+            segment_profile_view_signature = build_view_signature(
+                f"segment_profile_{profile_id}",
+                {
+                    "selected_ids": sorted(selected_profile_ids),
+                    "segments": seg_display_order,
+                    "comparison_mode": profile_comparison_mode,
+                    "metric": profile_metric,
+                    "delta_mode": profile_delta_mode,
+                    "ref_key": ref_key,
+                    "event_top_n": event_top_n,
+                    "years": sel_years,
+                    "event_types": sel_event_types,
+                    "categories": sel_categories,
+                    "gender": sel_gender,
+                    "locations": sel_locations,
+                    "rounds": sel_rounds,
+                },
             )
-        else:
-            rider_order = list(dict.fromkeys(runs_sel["rider_short"].dropna().tolist()))
-            if not rider_order:
-                rider_order = sorted(segment_profile_df["rider_short"].dropna().unique().tolist())
+            exclusions_state_key = f"ai_segment_profile_exclusions_{profile_id}"
+            segment_profile_exclusion_state = sync_exclusion_state(
+                exclusions_state_key, segment_profile_view_signature
+            )
+            segment_profile_df = apply_point_exclusions(segment_profile_df, segment_profile_exclusion_state)
+            if segment_profile_df.empty:
+                st.info(f"Segment Profile {idx}: Alle Punkte der aktuellen Ansicht sind ausgeschlossen.")
+                seg_cols = st.columns([1, 1, 1, 2])
+                if seg_cols[2].button(
+                    "Alle Ausschluesse zuruecksetzen",
+                    key=f"segment_profile_reset_exclusions_empty_{profile_id}",
+                ):
+                    segment_profile_exclusion_state["excluded_ids"] = []
+                    segment_profile_exclusion_state["undo_stack"] = []
+                    st.session_state[exclusions_state_key] = segment_profile_exclusion_state
+                    st.rerun()
+                st.caption(
+                    f"Aktuell ausgeschlossen: {len(excluded_id_set(segment_profile_exclusion_state))} Punkt(e)."
+                )
+                continue
+
+            selected_short_order = []
+            for rider_label in selected_profile_riders:
+                ids_for_label = rider_label_to_ids.get(rider_label, [])
+                for rider_id in ids_for_label:
+                    short_label = rider_id_to_short.get(str(rider_id))
+                    if short_label and short_label not in selected_short_order:
+                        selected_short_order.append(short_label)
+            if not selected_short_order:
+                selected_short_order = sorted(segment_profile_df["rider_short"].dropna().unique().tolist())
 
             def _group_sort_key(g: str):
                 sdf = segment_profile_df[segment_profile_df["group_value"] == g]
                 rider = str(sdf["rider_short"].dropna().iloc[0]) if not sdf["rider_short"].dropna().empty else ""
-                rider_idx = rider_order.index(rider) if rider in rider_order else len(rider_order)
+                rider_idx = selected_short_order.index(rider) if rider in selected_short_order else len(selected_short_order)
                 group_sort = pd.to_numeric(sdf["group_sort"], errors="coerce")
                 gsort = float(group_sort.min()) if group_sort.notna().any() else float("inf")
                 return (rider_idx, gsort, g)
@@ -3290,7 +2200,7 @@ elif ai_active_section == "Segment Profile":
                             "Rider: %{customdata[0]}<br>"
                             "Group: %{customdata[6]}<br>"
                             "Segment: %{customdata[5]}<br>"
-                            + ("Delta (s): %{y:.4f}<br>" if segment_profile_metric == "Segment Delta" else "Segment Rank: %{y:.0f}<br>")
+                            + ("Delta (s): %{y:.4f}<br>" if profile_metric == "Segment Delta" else "Segment Rank: %{y:.0f}<br>")
                             + "Date: %{customdata[1]}<br>"
                             + "Location: %{customdata[2]}<br>"
                             + "Round: %{customdata[3]}<br>"
@@ -3302,7 +2212,7 @@ elif ai_active_section == "Segment Profile":
             yaxis_range = None
             yaxis_tickvals = None
             metric_vals = pd.to_numeric(segment_profile_df["metric_value"], errors="coerce").dropna()
-            if segment_profile_metric == "Segment Rank":
+            if profile_metric == "Segment Rank":
                 if not metric_vals.empty:
                     rank_cap = int(np.ceil(metric_vals.quantile(0.95)))
                     rank_cap = max(8, min(48, rank_cap))
@@ -3324,9 +2234,9 @@ elif ai_active_section == "Segment Profile":
                 boxmode="overlay",
                 xaxis=dict(title="Athlet / Gruppe / Segment", tickangle=-90, categoryorder="array", categoryarray=x_order),
                 yaxis=dict(
-                    title="Delta (s)" if segment_profile_metric == "Segment Delta" else "Segment Rank",
+                    title="Delta (s)" if profile_metric == "Segment Delta" else "Segment Rank",
                     gridcolor="#e5e7eb",
-                    zeroline=(segment_profile_metric == "Segment Delta"),
+                    zeroline=(profile_metric == "Segment Delta"),
                     zerolinecolor="#cbd5e1",
                     range=yaxis_range,
                     tickvals=yaxis_tickvals,
@@ -3335,7 +2245,7 @@ elif ai_active_section == "Segment Profile":
             segment_profile_event = st.plotly_chart(
                 fig,
                 use_container_width=True,
-                key="ai_segment_profile_boxplot",
+                key=f"ai_segment_profile_boxplot_{profile_id}",
                 on_select="rerun",
                 selection_mode=("points", "box", "lasso"),
             )
@@ -3343,17 +2253,17 @@ elif ai_active_section == "Segment Profile":
             seg_cols = st.columns([1, 1, 1, 2])
             exclude_clicked = seg_cols[0].button(
                 "Ausgewaehlte Punkte ausschliessen",
-                key="segment_profile_exclude_selected",
+                key=f"segment_profile_exclude_selected_{profile_id}",
                 disabled=not selected_segment_profile_ids,
             )
             undo_clicked = seg_cols[1].button(
                 "Letzten Ausschluss rueckgaengig",
-                key="segment_profile_undo_exclusion",
+                key=f"segment_profile_undo_exclusion_{profile_id}",
                 disabled=not segment_profile_exclusion_state.get("undo_stack"),
             )
             reset_clicked = seg_cols[2].button(
                 "Alle Ausschluesse zuruecksetzen",
-                key="segment_profile_reset_exclusions",
+                key=f"segment_profile_reset_exclusions_{profile_id}",
                 disabled=not excluded_id_set(segment_profile_exclusion_state),
             )
             if exclude_clicked and selected_segment_profile_ids:
@@ -3362,23 +2272,22 @@ elif ai_active_section == "Segment Profile":
                 if new_ids:
                     segment_profile_exclusion_state["excluded_ids"] = sorted(excluded.union(new_ids))
                     segment_profile_exclusion_state.setdefault("undo_stack", []).append(new_ids)
-                    st.session_state["ai_segment_profile_exclusions"] = segment_profile_exclusion_state
+                    st.session_state[exclusions_state_key] = segment_profile_exclusion_state
                     st.rerun()
             if undo_clicked and segment_profile_exclusion_state.get("undo_stack"):
                 last_batch = segment_profile_exclusion_state["undo_stack"].pop()
                 remaining = [pid for pid in segment_profile_exclusion_state.get("excluded_ids", []) if pid not in set(last_batch)]
                 segment_profile_exclusion_state["excluded_ids"] = remaining
-                st.session_state["ai_segment_profile_exclusions"] = segment_profile_exclusion_state
+                st.session_state[exclusions_state_key] = segment_profile_exclusion_state
                 st.rerun()
             if reset_clicked:
                 segment_profile_exclusion_state["excluded_ids"] = []
                 segment_profile_exclusion_state["undo_stack"] = []
-                st.session_state["ai_segment_profile_exclusions"] = segment_profile_exclusion_state
+                st.session_state[exclusions_state_key] = segment_profile_exclusion_state
                 st.rerun()
             st.caption(
                 f"Aktuell ausgeschlossen: {len(excluded_id_set(segment_profile_exclusion_state))} Punkt(e)."
             )
-
 elif ai_active_section == "Results Trend":
     st.subheader("Results Trend")
     show_boxplot = st.toggle("Boxplot statt Liniengrafik", value=False, key="results_trend_show_boxplot")
