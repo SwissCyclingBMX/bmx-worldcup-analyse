@@ -696,36 +696,76 @@ def make_event_label(df: pd.DataFrame) -> pd.Series:
     )
 
 
-def second_best_rider_best_segment_time(
+def build_second_best_reference(
     df: pd.DataFrame,
     *,
     time_col: str = "segment_time",
     group_cols: Optional[List[str]] = None,
-    rider_col: str = "rider_id",
-) -> pd.Series:
+    rider_col: Optional[str] = None,
+    value_name: str = "rank2_ref_event",
+) -> pd.DataFrame:
     if group_cols is None:
         group_cols = ["event_id", "group_id"]
-    if df.empty or time_col not in df.columns or rider_col not in df.columns:
-        return pd.Series(np.nan, index=df.index, dtype="float64")
+    if df.empty or time_col not in df.columns:
+        return pd.DataFrame(columns=group_cols + [value_name])
 
     work = df.copy()
     work[time_col] = pd.to_numeric(work[time_col], errors="coerce")
-    rider_best = (
-        work.dropna(subset=[time_col, rider_col])
-        .groupby(group_cols + [rider_col], dropna=False, as_index=False)[time_col]
-        .min()
-    )
-    if rider_best.empty:
-        return pd.Series(np.nan, index=df.index, dtype="float64")
+    work = work.dropna(subset=[time_col]).copy()
+    if rider_col is not None:
+        if rider_col not in work.columns:
+            return pd.DataFrame(columns=group_cols + [value_name])
+        work = (
+            work.dropna(subset=[rider_col])
+            .groupby(group_cols + [rider_col], dropna=False, as_index=False)[time_col]
+            .min()
+        )
+    if work.empty:
+        return pd.DataFrame(columns=group_cols + [value_name])
 
-    second_best = (
-        rider_best.groupby(group_cols, dropna=False)[time_col]
+    return (
+        work.groupby(group_cols, dropna=False)[time_col]
         .apply(lambda s: s.nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan)
-        .rename("rank2_ref_event")
+        .rename(value_name)
         .reset_index()
     )
-    merged = work[group_cols].merge(second_best, on=group_cols, how="left")
-    return pd.Series(merged["rank2_ref_event"].to_numpy(), index=df.index, dtype="float64")
+
+
+def apply_event_top1_adjustment(
+    target_df: pd.DataFrame,
+    reference_df: pd.DataFrame,
+    *,
+    time_col: str = "segment_time",
+    reference_time_col: str = "reference_time",
+    delta_col: str = "delta_display",
+    group_cols: Optional[List[str]] = None,
+    rider_col: str = "rider_id",
+    use_rider_best: bool = False,
+    ref_display_col: Optional[str] = None,
+) -> pd.DataFrame:
+    if group_cols is None:
+        group_cols = ["event_id", "group_id"]
+    if target_df.empty:
+        return target_df
+
+    second_ref = build_second_best_reference(
+        reference_df,
+        time_col=time_col,
+        group_cols=group_cols,
+        rider_col=(rider_col if use_rider_best else None),
+        value_name="rank2_ref_event",
+    )
+    out = target_df.drop(columns=["rank2_ref_event"], errors="ignore").merge(second_ref, on=group_cols, how="left")
+    is_best_row = (
+        out[time_col].notna()
+        & out[reference_time_col].notna()
+        & np.isclose(out[time_col], out[reference_time_col], atol=1e-6)
+    )
+    use_rank2 = is_best_row & out["rank2_ref_event"].notna()
+    if ref_display_col:
+        out.loc[use_rank2, ref_display_col] = out.loc[use_rank2, "rank2_ref_event"]
+    out.loc[use_rank2, delta_col] = out.loc[use_rank2, time_col] - out.loc[use_rank2, "rank2_ref_event"]
+    return out
 
 
 def apply_reference(
@@ -1784,27 +1824,24 @@ with tabs[0]:
         )["segment_time"].transform(
             lambda s: s.dropna().nsmallest(2).iloc[-1] if s.notna().sum() >= 2 else np.nan
         )
-        seg_df["rank2_ref_event"] = second_best_rider_best_segment_time(
-            seg_df,
-            time_col="segment_time",
-            group_cols=["event_id", "group_id"],
-            rider_col="rider_id",
-        )
         seg_df["ref_time_display"] = seg_df["reference_time"]
         seg_df["ref_display_type"] = "Aktive Referenz"
         seg_df["delta_display"] = seg_df["delta_value"]
         if show_delta_vs_rank2:
-            is_best_row = (
-                seg_df["segment_time"].notna()
-                & seg_df["reference_time"].notna()
-                & np.isclose(seg_df["segment_time"], seg_df["reference_time"], atol=1e-6)
+            ref_seg_df = rank_pool_src[seg_cols].copy().rename(columns=rename_map)
+            ref_seg_df["segment_time"] = pd.to_numeric(ref_seg_df["segment_time"], errors="coerce")
+            seg_df = apply_event_top1_adjustment(
+                seg_df,
+                ref_seg_df,
+                time_col="segment_time",
+                reference_time_col="reference_time",
+                delta_col="delta_display",
+                group_cols=["event_id", "group_id"],
+                rider_col="rider_id",
+                use_rider_best=False,
+                ref_display_col="ref_time_display",
             )
-            use_rank2 = is_best_row & seg_df["rank2_ref_event"].notna()
-            seg_df.loc[use_rank2, "ref_time_display"] = seg_df.loc[use_rank2, "rank2_ref_event"]
-            seg_df.loc[use_rank2, "ref_display_type"] = "Rank 2 (Event, nur Referenz-Rider)"
-            seg_df.loc[use_rank2, "delta_display"] = (
-                seg_df.loc[use_rank2, "segment_time"] - seg_df.loc[use_rank2, "rank2_ref_event"]
-            )
+            seg_df.loc[seg_df["ref_time_display"].notna() & (seg_df["ref_time_display"] != seg_df["reference_time"]), "ref_display_type"] = "Rank 2 (Event, nur Referenz-Rider)"
         seg_df["is_valid_peak_row"] = (
             seg_df["delta_display"].notna() & seg_df["segment_time"].notna() & seg_df["ref_time_display"].notna()
         )
@@ -1942,24 +1979,19 @@ with tabs[0]:
             rseg["delta_value"] = pd.to_numeric(rseg["delta_value"], errors="coerce")
             rseg["segment_time"] = pd.to_numeric(rseg["segment_time"], errors="coerce")
             rseg["reference_time"] = pd.to_numeric(rseg["reference_time"], errors="coerce")
-            rseg["rank2_ref_event"] = second_best_rider_best_segment_time(
-                rseg,
-                time_col="segment_time",
-                group_cols=["event_id", "group_id"],
-                rider_col="rider_id",
-            )
             rseg["ref_time_display"] = rseg["reference_time"]
             rseg["delta_display"] = rseg["delta_value"]
             if show_delta_vs_rank2:
-                is_best_row = (
-                    rseg["segment_time"].notna()
-                    & rseg["reference_time"].notna()
-                    & np.isclose(rseg["segment_time"], rseg["reference_time"], atol=1e-6)
-                )
-                use_rank2 = is_best_row & rseg["rank2_ref_event"].notna()
-                rseg.loc[use_rank2, "ref_time_display"] = rseg.loc[use_rank2, "rank2_ref_event"]
-                rseg.loc[use_rank2, "delta_display"] = (
-                    rseg.loc[use_rank2, "segment_time"] - rseg.loc[use_rank2, "rank2_ref_event"]
+                rseg = apply_event_top1_adjustment(
+                    rseg,
+                    rseg,
+                    time_col="segment_time",
+                    reference_time_col="reference_time",
+                    delta_col="delta_display",
+                    group_cols=["event_id", "group_id"],
+                    rider_col="rider_id",
+                    use_rider_best=False,
+                    ref_display_col="ref_time_display",
                 )
             rseg = rseg.dropna(subset=["delta_display", "segment_time", "ref_time_display"])
             if rseg.empty:
@@ -2389,22 +2421,17 @@ with tabs[0]:
                     s["delta_value"] = pd.to_numeric(s["delta_value"], errors="coerce")
                     s["segment_time"] = pd.to_numeric(s["segment_time"], errors="coerce")
                     s["reference_time"] = pd.to_numeric(s["reference_time"], errors="coerce")
-                    s["rank2_ref_event"] = second_best_rider_best_segment_time(
-                        s,
-                        time_col="segment_time",
-                        group_cols=["event_id", "group_id"],
-                        rider_col="rider_id",
-                    )
                     s["delta_display"] = s["delta_value"]
                     if show_delta_vs_rank2:
-                        is_best_row = (
-                            s["segment_time"].notna()
-                            & s["reference_time"].notna()
-                            & np.isclose(s["segment_time"], s["reference_time"], atol=1e-6)
-                        )
-                        use_rank2 = is_best_row & s["rank2_ref_event"].notna()
-                        s.loc[use_rank2, "delta_display"] = (
-                            s.loc[use_rank2, "segment_time"] - s.loc[use_rank2, "rank2_ref_event"]
+                        s = apply_event_top1_adjustment(
+                            s,
+                            rank_pool_slice[cols].copy().rename(columns=rnm),
+                            time_col="segment_time",
+                            reference_time_col="reference_time",
+                            delta_col="delta_display",
+                            group_cols=["event_id", "group_id"],
+                            rider_col="rider_id",
+                            use_rider_best=False,
                         )
                     s = s.dropna(subset=["delta_display", "segment_time", "reference_time"])
                     if s.empty:
@@ -2417,22 +2444,17 @@ with tabs[0]:
                     rp["delta_value"] = pd.to_numeric(rp["delta_value"], errors="coerce")
                     rp["segment_time"] = pd.to_numeric(rp["segment_time"], errors="coerce")
                     rp["reference_time"] = pd.to_numeric(rp["reference_time"], errors="coerce")
-                    rp["rank2_ref_event"] = second_best_rider_best_segment_time(
-                        rp,
-                        time_col="segment_time",
-                        group_cols=["event_id", "group_id"],
-                        rider_col="rider_id",
-                    )
                     rp["delta_display"] = rp["delta_value"]
                     if show_delta_vs_rank2:
-                        is_best_row = (
-                            rp["segment_time"].notna()
-                            & rp["reference_time"].notna()
-                            & np.isclose(rp["segment_time"], rp["reference_time"], atol=1e-6)
-                        )
-                        use_rank2 = is_best_row & rp["rank2_ref_event"].notna()
-                        rp.loc[use_rank2, "delta_display"] = (
-                            rp.loc[use_rank2, "segment_time"] - rp.loc[use_rank2, "rank2_ref_event"]
+                        rp = apply_event_top1_adjustment(
+                            rp,
+                            rp,
+                            time_col="segment_time",
+                            reference_time_col="reference_time",
+                            delta_col="delta_display",
+                            group_cols=["event_id", "group_id"],
+                            rider_col="rider_id",
+                            use_rider_best=False,
                         )
                     rp = rp.dropna(subset=["delta_display", "segment_time", "reference_time"])
                     if rp.empty:
@@ -3015,7 +3037,15 @@ with tabs[1]:
             seg_df = segment_profile_src[
                 common_cols + [sd["delta_use_col"], sd["time_col"], sd["ref_col"]]
             ].copy()
+            ref_seg_df = segment_profile_rank_src[
+                common_cols + [sd["delta_use_col"], sd["time_col"], sd["ref_col"]]
+            ].copy()
             seg_df = seg_df.rename(columns={
+                sd["delta_use_col"]: "metric_value",
+                sd["time_col"]: "segment_time",
+                sd["ref_col"]: "reference_time",
+            })
+            ref_seg_df = ref_seg_df.rename(columns={
                 sd["delta_use_col"]: "metric_value",
                 sd["time_col"]: "segment_time",
                 sd["ref_col"]: "reference_time",
@@ -3023,21 +3053,19 @@ with tabs[1]:
             seg_df["metric_value"] = pd.to_numeric(seg_df["metric_value"], errors="coerce")
             seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
             seg_df["reference_time"] = pd.to_numeric(seg_df["reference_time"], errors="coerce")
+            ref_seg_df["metric_value"] = pd.to_numeric(ref_seg_df["metric_value"], errors="coerce")
+            ref_seg_df["segment_time"] = pd.to_numeric(ref_seg_df["segment_time"], errors="coerce")
+            ref_seg_df["reference_time"] = pd.to_numeric(ref_seg_df["reference_time"], errors="coerce")
             if ref_key in {"event_topn", "event_top4", "event_best"} and int(event_top_n) == 1:
-                seg_df["rank2_ref_event"] = second_best_rider_best_segment_time(
+                seg_df = apply_event_top1_adjustment(
                     seg_df,
+                    ref_seg_df,
                     time_col="segment_time",
+                    reference_time_col="reference_time",
+                    delta_col="metric_value",
                     group_cols=["event_id", "group_id"],
                     rider_col="rider_id",
-                )
-                is_best_row = (
-                    seg_df["segment_time"].notna()
-                    & seg_df["reference_time"].notna()
-                    & np.isclose(seg_df["segment_time"], seg_df["reference_time"], atol=1e-6)
-                )
-                use_rank2 = is_best_row & seg_df["rank2_ref_event"].notna()
-                seg_df.loc[use_rank2, "metric_value"] = (
-                    seg_df.loc[use_rank2, "segment_time"] - seg_df.loc[use_rank2, "rank2_ref_event"]
+                    use_rider_best=(segment_profile_delta_mode == "Nur bester Wert pro Event"),
                 )
             seg_df = seg_df.dropna(subset=["metric_value"]).copy()
             if seg_df.empty:
