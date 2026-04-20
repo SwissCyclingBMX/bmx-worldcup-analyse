@@ -768,6 +768,72 @@ def apply_event_top1_adjustment(
     return out
 
 
+def get_plotly_selected_point_ids(event, point_id_idx: int = -1) -> List[str]:
+    if event is None:
+        return []
+    selection = getattr(event, "selection", None)
+    if selection is None and isinstance(event, dict):
+        selection = event.get("selection")
+    if selection is None:
+        return []
+    points = getattr(selection, "points", None)
+    if points is None and isinstance(selection, dict):
+        points = selection.get("points")
+    if not points:
+        return []
+    out: List[str] = []
+    for point in points:
+        customdata = None
+        if isinstance(point, dict):
+            customdata = point.get("customdata")
+        else:
+            customdata = getattr(point, "customdata", None)
+        if customdata is None:
+            continue
+        try:
+            point_id = customdata[point_id_idx]
+        except Exception:
+            continue
+        if point_id is None:
+            continue
+        point_id = str(point_id)
+        if point_id and point_id not in out:
+            out.append(point_id)
+    return out
+
+
+def sync_exclusion_state(state_key: str, view_signature: str) -> dict:
+    state = st.session_state.get(state_key)
+    if not isinstance(state, dict) or state.get("view_signature") != view_signature:
+        state = {
+            "view_signature": view_signature,
+            "excluded_ids": [],
+            "undo_stack": [],
+        }
+        st.session_state[state_key] = state
+    else:
+        state.setdefault("excluded_ids", [])
+        state.setdefault("undo_stack", [])
+    return state
+
+
+def excluded_id_set(state: dict) -> set[str]:
+    return {str(x) for x in state.get("excluded_ids", []) if str(x)}
+
+
+def apply_point_exclusions(df: pd.DataFrame, state: dict, point_col: str = "point_id") -> pd.DataFrame:
+    if df.empty or point_col not in df.columns:
+        return df
+    excluded = excluded_id_set(state)
+    if not excluded:
+        return df
+    return df[~df[point_col].astype(str).isin(excluded)].copy()
+
+
+def build_view_signature(name: str, payload: dict) -> str:
+    return json.dumps({"name": name, "payload": payload}, sort_keys=True, default=str)
+
+
 def apply_reference(
     df: pd.DataFrame,
     ref_key: str,
@@ -3040,6 +3106,7 @@ with tabs[1]:
             ref_seg_df = segment_profile_rank_src[
                 common_cols + [sd["delta_use_col"], sd["time_col"], sd["ref_col"]]
             ].copy()
+            seg_df["source_row_id"] = seg_df.index.astype(str)
             seg_df = seg_df.rename(columns={
                 sd["delta_use_col"]: "metric_value",
                 sd["time_col"]: "segment_time",
@@ -3083,6 +3150,7 @@ with tabs[1]:
             seg_df = segment_profile_rank_src[
                 common_cols + [sd["time_col"]]
             ].copy()
+            seg_df["source_row_id"] = seg_df.index.astype(str)
             seg_df = seg_df.rename(columns={sd["time_col"]: "segment_time"})
             seg_df["segment_time"] = pd.to_numeric(seg_df["segment_time"], errors="coerce")
             seg_df = seg_df.dropna(subset=["segment_time"]).copy()
@@ -3104,6 +3172,15 @@ with tabs[1]:
 
         if seg_df.empty:
             continue
+        seg_df["point_id"] = (
+            seg_df["rider_id"].astype(str)
+            + "|"
+            + seg_df["event_id"].astype(str)
+            + "|"
+            + seg_df["Segment Short"].astype(str)
+            + "|"
+            + seg_df["source_row_id"].astype(str)
+        )
         segment_profile_rows.append(seg_df)
 
     segment_profile_df = pd.concat(segment_profile_rows, ignore_index=True) if segment_profile_rows else pd.DataFrame()
@@ -3112,106 +3189,189 @@ with tabs[1]:
     elif go is None:
         st.warning("Plotly ist fuer den Segment-Boxplot nicht verfuegbar.")
     else:
-        rider_order = list(dict.fromkeys(runs_sel["rider_short"].dropna().tolist()))
-        if not rider_order:
-            rider_order = sorted(segment_profile_df["rider_short"].dropna().unique().tolist())
-
-        def _group_sort_key(g: str):
-            sdf = segment_profile_df[segment_profile_df["group_value"] == g]
-            rider = str(sdf["rider_short"].dropna().iloc[0]) if not sdf["rider_short"].dropna().empty else ""
-            rider_idx = rider_order.index(rider) if rider in rider_order else len(rider_order)
-            group_sort = pd.to_numeric(sdf["group_sort"], errors="coerce")
-            gsort = float(group_sort.min()) if group_sort.notna().any() else float("inf")
-            return (rider_idx, gsort, g)
-
-        group_value_order = sorted(segment_profile_df["group_value"].dropna().unique().tolist(), key=_group_sort_key)
-        x_order = []
-        for g in group_value_order:
-            for seg_short in seg_display_order:
-                x_label = f"{g} / {seg_short}"
-                if x_label in segment_profile_df["x_label"].values:
-                    x_order.append(x_label)
-        x_order = list(dict.fromkeys(x_order))
-
-        fig = go.Figure()
-        for x_label in x_order:
-            rdf = segment_profile_df[segment_profile_df["x_label"] == x_label].copy()
-            if rdf.empty:
-                continue
-            customdata = np.column_stack([
-                rdf["display_name"].fillna(rdf["event_id"]).to_numpy(),
-                rdf["event_dt"].dt.strftime("%Y-%m-%d").fillna("").to_numpy(),
-                rdf["location"].fillna("").to_numpy(),
-                rdf["round_short"].fillna(rdf["round_title"]).to_numpy(),
-                rdf["heat_title"].fillna("").to_numpy(),
-                rdf["Segment Short"].to_numpy(),
-                rdf["group_value"].fillna("").to_numpy(),
-            ])
-            fig.add_trace(
-                go.Box(
-                    y=rdf["metric_value"],
-                    x=[x_label] * len(rdf),
-                    name=x_label,
-                    boxpoints="all",
-                    jitter=0.42,
-                    pointpos=0,
-                    width=0.42,
-                    whiskerwidth=0.8,
-                    marker=dict(
-                        size=10,
-                        color="rgba(0,0,0,0)",
-                        line=dict(color="rgba(120,120,120,0.85)", width=1.4),
-                    ),
-                    line=dict(color="rgba(25,25,25,0.95)", width=1.8),
-                    fillcolor="rgba(0,0,0,0)",
-                    customdata=customdata,
-                    hovertemplate=(
-                        "Rider: %{customdata[0]}<br>"
-                        "Group: %{customdata[6]}<br>"
-                        "Segment: %{customdata[5]}<br>"
-                        + ("Delta (s): %{y:.4f}<br>" if segment_profile_metric == "Segment Delta" else "Segment Rank: %{y:.0f}<br>")
-                        + "Date: %{customdata[1]}<br>"
-                        + "Location: %{customdata[2]}<br>"
-                        + "Round: %{customdata[3]}<br>"
-                        + "Heat: %{customdata[4]}<extra></extra>"
-                    ),
-                    showlegend=False,
-                )
-            )
-        yaxis_range = None
-        yaxis_tickvals = None
-        metric_vals = pd.to_numeric(segment_profile_df["metric_value"], errors="coerce").dropna()
-        if segment_profile_metric == "Segment Rank":
-            if not metric_vals.empty:
-                rank_cap = int(np.ceil(metric_vals.quantile(0.95)))
-                rank_cap = max(8, min(48, rank_cap))
-                yaxis_range = [rank_cap + 0.5, 0.5]
-                yaxis_tickvals = sorted(set([x for x in [1, 4, 8, 16, 32, 48] if x <= rank_cap]))
-        elif not metric_vals.empty:
-            upper_cap = float(metric_vals.quantile(0.95))
-            lower_bound = float(metric_vals.min())
-            if np.isfinite(upper_cap) and np.isfinite(lower_bound):
-                if upper_cap <= lower_bound:
-                    upper_cap = lower_bound + 1e-6
-                pad = max((upper_cap - lower_bound) * 0.05, 1e-6)
-                yaxis_range = [lower_bound - pad, upper_cap + pad]
-        fig.update_layout(
-            height=620,
-            margin=dict(l=40, r=20, t=10, b=40),
-            plot_bgcolor="white",
-            paper_bgcolor="white",
-            boxmode="overlay",
-            xaxis=dict(title="Athlet / Gruppe / Segment", tickangle=-90, categoryorder="array", categoryarray=x_order),
-            yaxis=dict(
-                title="Delta (s)" if segment_profile_metric == "Segment Delta" else "Segment Rank",
-                gridcolor="#e5e7eb",
-                zeroline=(segment_profile_metric == "Segment Delta"),
-                zerolinecolor="#cbd5e1",
-                range=yaxis_range,
-                tickvals=yaxis_tickvals,
-            ),
+        segment_profile_view_signature = build_view_signature(
+            "segment_profile",
+            {
+                "selected_ids": sorted(str(x) for x in selected_rider_set),
+                "segments": seg_display_order,
+                "comparison_mode": segment_profile_comparison_mode,
+                "metric": segment_profile_metric,
+                "delta_mode": segment_profile_delta_mode,
+                "ref_key": ref_key,
+                "event_top_n": event_top_n,
+                "years": sel_years,
+                "event_types": sel_event_types,
+                "categories": sel_categories,
+                "gender": sel_gender,
+                "locations": sel_locations,
+                "rounds": sel_rounds,
+            },
         )
-        st.plotly_chart(fig, use_container_width=True)
+        segment_profile_exclusion_state = sync_exclusion_state(
+            "ai_segment_profile_exclusions", segment_profile_view_signature
+        )
+        segment_profile_df = apply_point_exclusions(segment_profile_df, segment_profile_exclusion_state)
+        if segment_profile_df.empty:
+            st.info("Alle Punkte der aktuellen Segment-Profile-Ansicht sind ausgeschlossen.")
+            seg_cols = st.columns([1, 1, 1, 2])
+            if seg_cols[2].button(
+                "Alle Ausschluesse zuruecksetzen",
+                key="segment_profile_reset_exclusions_empty",
+            ):
+                segment_profile_exclusion_state["excluded_ids"] = []
+                segment_profile_exclusion_state["undo_stack"] = []
+                st.session_state["ai_segment_profile_exclusions"] = segment_profile_exclusion_state
+                st.rerun()
+            st.caption(
+                f"Aktuell ausgeschlossen: {len(excluded_id_set(segment_profile_exclusion_state))} Punkt(e)."
+            )
+        else:
+            rider_order = list(dict.fromkeys(runs_sel["rider_short"].dropna().tolist()))
+            if not rider_order:
+                rider_order = sorted(segment_profile_df["rider_short"].dropna().unique().tolist())
+
+            def _group_sort_key(g: str):
+                sdf = segment_profile_df[segment_profile_df["group_value"] == g]
+                rider = str(sdf["rider_short"].dropna().iloc[0]) if not sdf["rider_short"].dropna().empty else ""
+                rider_idx = rider_order.index(rider) if rider in rider_order else len(rider_order)
+                group_sort = pd.to_numeric(sdf["group_sort"], errors="coerce")
+                gsort = float(group_sort.min()) if group_sort.notna().any() else float("inf")
+                return (rider_idx, gsort, g)
+
+            group_value_order = sorted(segment_profile_df["group_value"].dropna().unique().tolist(), key=_group_sort_key)
+            x_order = []
+            for g in group_value_order:
+                for seg_short in seg_display_order:
+                    x_label = f"{g} / {seg_short}"
+                    if x_label in segment_profile_df["x_label"].values:
+                        x_order.append(x_label)
+            x_order = list(dict.fromkeys(x_order))
+
+            fig = go.Figure()
+            for x_label in x_order:
+                rdf = segment_profile_df[segment_profile_df["x_label"] == x_label].copy()
+                if rdf.empty:
+                    continue
+                customdata = np.column_stack([
+                    rdf["display_name"].fillna(rdf["event_id"]).to_numpy(),
+                    rdf["event_dt"].dt.strftime("%Y-%m-%d").fillna("").to_numpy(),
+                    rdf["location"].fillna("").to_numpy(),
+                    rdf["round_short"].fillna(rdf["round_title"]).to_numpy(),
+                    rdf["heat_title"].fillna("").to_numpy(),
+                    rdf["Segment Short"].to_numpy(),
+                    rdf["group_value"].fillna("").to_numpy(),
+                    rdf["point_id"].astype(str).to_numpy(),
+                ])
+                fig.add_trace(
+                    go.Box(
+                        y=rdf["metric_value"],
+                        x=[x_label] * len(rdf),
+                        name=x_label,
+                        boxpoints="all",
+                        jitter=0.42,
+                        pointpos=0,
+                        width=0.42,
+                        whiskerwidth=0.8,
+                        marker=dict(
+                            size=10,
+                            color="rgba(0,0,0,0)",
+                            line=dict(color="rgba(120,120,120,0.85)", width=1.4),
+                        ),
+                        line=dict(color="rgba(25,25,25,0.95)", width=1.8),
+                        fillcolor="rgba(0,0,0,0)",
+                        customdata=customdata,
+                        hovertemplate=(
+                            "Rider: %{customdata[0]}<br>"
+                            "Group: %{customdata[6]}<br>"
+                            "Segment: %{customdata[5]}<br>"
+                            + ("Delta (s): %{y:.4f}<br>" if segment_profile_metric == "Segment Delta" else "Segment Rank: %{y:.0f}<br>")
+                            + "Date: %{customdata[1]}<br>"
+                            + "Location: %{customdata[2]}<br>"
+                            + "Round: %{customdata[3]}<br>"
+                            + "Heat: %{customdata[4]}<extra></extra>"
+                        ),
+                        showlegend=False,
+                    )
+                )
+            yaxis_range = None
+            yaxis_tickvals = None
+            metric_vals = pd.to_numeric(segment_profile_df["metric_value"], errors="coerce").dropna()
+            if segment_profile_metric == "Segment Rank":
+                if not metric_vals.empty:
+                    rank_cap = int(np.ceil(metric_vals.quantile(0.95)))
+                    rank_cap = max(8, min(48, rank_cap))
+                    yaxis_range = [rank_cap + 0.5, 0.5]
+                    yaxis_tickvals = sorted(set([x for x in [1, 4, 8, 16, 32, 48] if x <= rank_cap]))
+            elif not metric_vals.empty:
+                upper_cap = float(metric_vals.quantile(0.95))
+                lower_bound = float(metric_vals.min())
+                if np.isfinite(upper_cap) and np.isfinite(lower_bound):
+                    if upper_cap <= lower_bound:
+                        upper_cap = lower_bound + 1e-6
+                    pad = max((upper_cap - lower_bound) * 0.05, 1e-6)
+                    yaxis_range = [lower_bound - pad, upper_cap + pad]
+            fig.update_layout(
+                height=620,
+                margin=dict(l=40, r=20, t=10, b=40),
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                boxmode="overlay",
+                xaxis=dict(title="Athlet / Gruppe / Segment", tickangle=-90, categoryorder="array", categoryarray=x_order),
+                yaxis=dict(
+                    title="Delta (s)" if segment_profile_metric == "Segment Delta" else "Segment Rank",
+                    gridcolor="#e5e7eb",
+                    zeroline=(segment_profile_metric == "Segment Delta"),
+                    zerolinecolor="#cbd5e1",
+                    range=yaxis_range,
+                    tickvals=yaxis_tickvals,
+                ),
+            )
+            segment_profile_event = st.plotly_chart(
+                fig,
+                use_container_width=True,
+                key="ai_segment_profile_boxplot",
+                on_select="rerun",
+                selection_mode=("points", "box", "lasso"),
+            )
+            selected_segment_profile_ids = get_plotly_selected_point_ids(segment_profile_event)
+            seg_cols = st.columns([1, 1, 1, 2])
+            exclude_clicked = seg_cols[0].button(
+                "Ausgewaehlte Punkte ausschliessen",
+                key="segment_profile_exclude_selected",
+                disabled=not selected_segment_profile_ids,
+            )
+            undo_clicked = seg_cols[1].button(
+                "Letzten Ausschluss rueckgaengig",
+                key="segment_profile_undo_exclusion",
+                disabled=not segment_profile_exclusion_state.get("undo_stack"),
+            )
+            reset_clicked = seg_cols[2].button(
+                "Alle Ausschluesse zuruecksetzen",
+                key="segment_profile_reset_exclusions",
+                disabled=not excluded_id_set(segment_profile_exclusion_state),
+            )
+            if exclude_clicked and selected_segment_profile_ids:
+                excluded = excluded_id_set(segment_profile_exclusion_state)
+                new_ids = [pid for pid in selected_segment_profile_ids if pid not in excluded]
+                if new_ids:
+                    segment_profile_exclusion_state["excluded_ids"] = sorted(excluded.union(new_ids))
+                    segment_profile_exclusion_state.setdefault("undo_stack", []).append(new_ids)
+                    st.session_state["ai_segment_profile_exclusions"] = segment_profile_exclusion_state
+                    st.rerun()
+            if undo_clicked and segment_profile_exclusion_state.get("undo_stack"):
+                last_batch = segment_profile_exclusion_state["undo_stack"].pop()
+                remaining = [pid for pid in segment_profile_exclusion_state.get("excluded_ids", []) if pid not in set(last_batch)]
+                segment_profile_exclusion_state["excluded_ids"] = remaining
+                st.session_state["ai_segment_profile_exclusions"] = segment_profile_exclusion_state
+                st.rerun()
+            if reset_clicked:
+                segment_profile_exclusion_state["excluded_ids"] = []
+                segment_profile_exclusion_state["undo_stack"] = []
+                st.session_state["ai_segment_profile_exclusions"] = segment_profile_exclusion_state
+                st.rerun()
+            st.caption(
+                f"Aktuell ausgeschlossen: {len(excluded_id_set(segment_profile_exclusion_state))} Punkt(e)."
+            )
 
 with tabs[2]:
     st.subheader("Positions & Overtakes")
@@ -3566,6 +3726,7 @@ with tabs[7]:
     )
     rider_event = rider_event.merge(event_rank_map, on=["rider_id", "event_id"], how="left")
     rider_event["final_rank"] = pd.to_numeric(rider_event["final_rank_event"], errors="coerce")
+    rider_event["point_id"] = rider_event["rider_id"].astype(str) + "|" + rider_event["event_id"].astype(str)
     rider_event = rider_event.sort_values(["event_dt", "event_id", "rider_short"])
 
     if rider_event.empty:
@@ -3685,9 +3846,42 @@ with tabs[7]:
 
             if show_boxplot:
                 box_df = plot_df.dropna(subset=["final_rank_raw", "rider_short"]).copy()
+                box_df["point_id"] = box_df["rider_id"].astype(str) + "|" + box_df["event_id"].astype(str)
+                results_trend_view_signature = build_view_signature(
+                    "results_trend",
+                    {
+                        "selected_ids": sorted(str(x) for x in selected_ids),
+                        "years": sel_years,
+                        "event_types": sel_event_types,
+                        "categories": sel_categories,
+                        "gender": sel_gender,
+                        "locations": sel_locations,
+                        "rounds": sel_rounds,
+                        "show_boxplot": show_boxplot,
+                    },
+                )
+                results_trend_exclusion_state = sync_exclusion_state(
+                    "ai_results_trend_exclusions", results_trend_view_signature
+                )
+                box_df = apply_point_exclusions(box_df, results_trend_exclusion_state)
                 rider_order = sorted(box_df["rider_short"].dropna().unique().tolist())
                 if go is None:
                     st.warning("Plotly ist fuer den Boxplot nicht verfuegbar.")
+                elif box_df.empty:
+                    rider_event = rider_event.iloc[0:0].copy()
+                    st.info("Alle Punkte der aktuellen Results-Trend-Ansicht sind ausgeschlossen.")
+                    rt_cols = st.columns([1, 1, 1, 2])
+                    if rt_cols[2].button(
+                        "Alle Ausschluesse zuruecksetzen",
+                        key="results_trend_reset_exclusions_empty",
+                    ):
+                        results_trend_exclusion_state["excluded_ids"] = []
+                        results_trend_exclusion_state["undo_stack"] = []
+                        st.session_state["ai_results_trend_exclusions"] = results_trend_exclusion_state
+                        st.rerun()
+                    st.caption(
+                        f"Aktuell ausgeschlossen: {len(excluded_id_set(results_trend_exclusion_state))} Punkt(e)."
+                    )
                 else:
                     rider_colors = [
                         "#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c",
@@ -3703,6 +3897,7 @@ with tabs[7]:
                             rdf["location"].fillna("").to_numpy(),
                             rdf["reached_phase"].fillna("").to_numpy(),
                             rdf["overflow_clamped"].fillna("no").to_numpy(),
+                            rdf["point_id"].astype(str).to_numpy(),
                         ])
                         fig.add_trace(
                             go.Box(
@@ -3746,7 +3941,53 @@ with tabs[7]:
                         xaxis=dict(title="Rider", tickangle=-90, categoryorder="array", categoryarray=rider_order, tickson="boundaries"),
                         yaxis=dict(title="Final Rank", range=[48, 1], tickmode="array", tickvals=[1, 4, 8, 16, 32, 48], gridcolor="#e5e7eb"),
                     )
-                    st.plotly_chart(fig, use_container_width=True)
+                    results_trend_event = st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                        key="ai_results_trend_boxplot",
+                        on_select="rerun",
+                        selection_mode=("points", "box", "lasso"),
+                    )
+                    selected_results_ids = get_plotly_selected_point_ids(results_trend_event)
+                    rt_cols = st.columns([1, 1, 1, 2])
+                    exclude_clicked = rt_cols[0].button(
+                        "Ausgewaehlte Punkte ausschliessen",
+                        key="results_trend_exclude_selected",
+                        disabled=not selected_results_ids,
+                    )
+                    undo_clicked = rt_cols[1].button(
+                        "Letzten Ausschluss rueckgaengig",
+                        key="results_trend_undo_exclusion",
+                        disabled=not results_trend_exclusion_state.get("undo_stack"),
+                    )
+                    reset_clicked = rt_cols[2].button(
+                        "Alle Ausschluesse zuruecksetzen",
+                        key="results_trend_reset_exclusions",
+                        disabled=not excluded_id_set(results_trend_exclusion_state),
+                    )
+                    if exclude_clicked and selected_results_ids:
+                        excluded = excluded_id_set(results_trend_exclusion_state)
+                        new_ids = [pid for pid in selected_results_ids if pid not in excluded]
+                        if new_ids:
+                            results_trend_exclusion_state["excluded_ids"] = sorted(excluded.union(new_ids))
+                            results_trend_exclusion_state.setdefault("undo_stack", []).append(new_ids)
+                            st.session_state["ai_results_trend_exclusions"] = results_trend_exclusion_state
+                            st.rerun()
+                    if undo_clicked and results_trend_exclusion_state.get("undo_stack"):
+                        last_batch = results_trend_exclusion_state["undo_stack"].pop()
+                        remaining = [pid for pid in results_trend_exclusion_state.get("excluded_ids", []) if pid not in set(last_batch)]
+                        results_trend_exclusion_state["excluded_ids"] = remaining
+                        st.session_state["ai_results_trend_exclusions"] = results_trend_exclusion_state
+                        st.rerun()
+                    if reset_clicked:
+                        results_trend_exclusion_state["excluded_ids"] = []
+                        results_trend_exclusion_state["undo_stack"] = []
+                        st.session_state["ai_results_trend_exclusions"] = results_trend_exclusion_state
+                        st.rerun()
+                    st.caption(
+                        f"Aktuell ausgeschlossen: {len(excluded_id_set(results_trend_exclusion_state))} Punkt(e)."
+                    )
+                    rider_event = rider_event[~rider_event["point_id"].astype(str).isin(excluded_id_set(results_trend_exclusion_state))].copy()
             else:
                 line = base_line.mark_line()
                 points = base_line.transform_filter("datum.is_overflow == false").mark_point(size=65)
