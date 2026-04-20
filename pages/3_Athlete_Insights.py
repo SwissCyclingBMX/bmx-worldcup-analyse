@@ -1,6 +1,6 @@
 import sqlite3
 import unicodedata
-from typing import Optional
+from typing import List, Optional
 import re
 import json
 import textwrap
