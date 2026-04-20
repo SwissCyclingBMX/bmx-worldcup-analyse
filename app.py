@@ -23,6 +23,10 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(APP_DIR, "bmx.db")
 DB_URL_ZIP = "https://github.com/SwissCyclingBMX/bmx-worldcup-analyse/releases/download/db-latest/bmx_db.zip"
 DB_PATH_CLOUD = "/tmp/bmx.db"
+ACTIVE_HEAT_ANALYZER_EVENT_PATH = os.environ.get(
+    "ACTIVE_HEAT_ANALYZER_EVENT_PATH",
+    os.path.join(APP_DIR, "state", "active_heat_analyzer_event.json"),
+)
 
 GROUP_MAP = {
     91: "Elite Men",
@@ -69,6 +73,37 @@ def norm_name(s: str) -> str:
     s = s.upper()
     s = " ".join(s.split())
     return s
+
+
+def persist_active_heat_analyzer_event(event_id: str, event_label: str, event_date: Any = "") -> None:
+    event_id_str = str(event_id or "").strip()
+    if not event_id_str:
+        return
+    event_date_compact = ""
+    raw_event_date = str(event_date or "").strip()
+    if raw_event_date:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_event_date):
+            event_date_compact = raw_event_date.replace("-", "")
+        elif re.fullmatch(r"\d{8}", raw_event_date):
+            event_date_compact = raw_event_date
+    if not event_date_compact and len(event_id_str) >= 8 and event_id_str[:8].isdigit():
+        event_date_compact = event_id_str[:8]
+    payload = {
+        "event_id": event_id_str,
+        "event_label": str(event_label or "").strip(),
+        "event_date": event_date_compact,
+        "updated_at": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "source": "heat_analyzer_sidebar",
+    }
+    try:
+        os.makedirs(os.path.dirname(ACTIVE_HEAT_ANALYZER_EVENT_PATH), exist_ok=True)
+        tmp_path = ACTIVE_HEAT_ANALYZER_EVENT_PATH + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+        os.replace(tmp_path, ACTIVE_HEAT_ANALYZER_EVENT_PATH)
+    except Exception:
+        pass
 
 
 def norm_name_key(s: str) -> str:
@@ -716,7 +751,7 @@ def normalize_picks_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     # Ensure required columns exist
-    for c in ["group_id", "round_key", "round_title", "heat_id", "heat_title", "heat_status", "start_time_string"]:
+    for c in ["group_id", "round_key", "round_title", "heat_id", "heat_title", "heat_status", "start_time_string", "start_time_first_seen_at", "start_time_last_seen_at"]:
         if c not in df.columns:
             df[c] = None
 
@@ -1219,12 +1254,12 @@ def heat_label_row(r: pd.Series) -> str:
 
 def class_tag_from_group_id(group_id: Optional[int]) -> Optional[str]:
     mapping = {
-        91: "ME",
-        92: "WE",
-        93: "MU",
-        94: "WU",
-        95: "MJ",
-        96: "WJ",
+        91: "EliteMen",
+        92: "EliteWomen",
+        93: "U23Men",
+        94: "U23Women",
+        95: "JuniorMen",
+        96: "JuniorWomen",
     }
     if group_id is None:
         return None
@@ -1244,15 +1279,15 @@ def round_tag_from_title(round_title: Optional[str]) -> Optional[str]:
     if rt_lower in {"lcq", "last chance", "last chance qualifier"}:
         return "LCQ"
     if "1/32" in rt_lower:
-        return "1/32"
+        return "1/32Final"
     if "1/16" in rt_lower:
-        return "1/16"
+        return "1/16Final"
     if "1/8" in rt_lower:
-        return "1/8"
+        return "1/8Final"
     if "1/4" in rt_lower:
-        return "1/4"
+        return "1/4Final"
     if "1/2" in rt_lower:
-        return "1/2"
+        return "1/2Final"
     if rt_lower == "final" or rt_lower.endswith(" final") or rt_lower.endswith(" finale"):
         return "Final"
     m = re.search(r"\b(?:round|runde)\s*(\d+)\b", rt_lower)
@@ -1315,6 +1350,166 @@ def heat_tag_from_context(heat_title: Optional[str], heat_id: Optional[int]) -> 
     if n is None:
         return None, None
     return f"Heat {n}", f"Heat{n}"
+
+
+def parse_clock_hms(value: Any) -> Optional[int]:
+    s = str(value or "").strip()
+    if not s:
+        return None
+    m = re.search(r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?\b", s)
+    if not m:
+        return None
+    try:
+        hh = int(m.group(1))
+        mm = int(m.group(2))
+        ss = int(m.group(3) or 0)
+    except Exception:
+        return None
+    if not (0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
+        return None
+    return hh * 3600 + mm * 60 + ss
+
+
+def format_match_delta(seconds: Optional[int]) -> str:
+    if seconds is None:
+        return "-"
+    try:
+        sec = abs(int(seconds))
+    except Exception:
+        return "-"
+    mm, ss = divmod(sec, 60)
+    hh, mm = divmod(mm, 60)
+    if hh:
+        return f"{hh}:{mm:02d}:{ss:02d}"
+    return f"{mm}:{ss:02d}"
+
+
+def parse_tag_csv(value: Any) -> set:
+    raw = str(value or "").strip()
+    if not raw:
+        return set()
+    parts = re.split(r"[,;\n]+", raw)
+    return {str(part).strip().lower() for part in parts if str(part).strip()}
+
+
+def build_heat_context(df_event: pd.DataFrame, heat_row: pd.Series) -> pd.DataFrame:
+    rk = int(heat_row["round_key"])
+    hid = int(heat_row["heat_id"])
+    gid = int(heat_row["group_id"]) if pd.notna(heat_row.get("group_id")) else None
+    chosen_round_title = heat_row.get("round_title")
+    chosen_heat_title = heat_row.get("heat_title")
+
+    df_heat_ctx = df_event[(df_event["round_key"] == rk) & (df_event["heat_id"] == hid)].copy()
+    if gid is not None:
+        df_heat_ctx = df_heat_ctx[df_heat_ctx["group_id"] == gid].copy()
+    if chosen_round_title:
+        df_heat_ctx = df_heat_ctx[df_heat_ctx["round_title"] == chosen_round_title].copy()
+    if chosen_heat_title:
+        df_heat_ctx = df_heat_ctx[df_heat_ctx["heat_title"] == chosen_heat_title].copy()
+    if "name" in df_heat_ctx.columns:
+        df_heat_ctx = df_heat_ctx[df_heat_ctx["name"].fillna("").astype(str).str.strip() != ""].copy()
+    if "pick_order" in df_heat_ctx.columns:
+        df_heat_ctx = df_heat_ctx.sort_values(["pick_order"], na_position="last", kind="stable")
+    return df_heat_ctx
+
+
+def build_heat_tag_payload(df_event: pd.DataFrame, heat_row: pd.Series) -> Tuple[pd.DataFrame, List[Dict[str, str]], List[Dict[str, str]]]:
+    df_heat_ctx = build_heat_context(df_event, heat_row)
+
+    athlete_tags: List[Dict[str, str]] = []
+    if not df_heat_ctx.empty and "name" in df_heat_ctx.columns:
+        tag_src = df_heat_ctx.copy()
+        tag_src["name_clean"] = tag_src["name"].fillna("").astype(str).str.strip()
+        tag_src = tag_src[tag_src["name_clean"] != ""].copy()
+        if not tag_src.empty:
+            nation_src = (
+                tag_src["nation"]
+                if "nation" in tag_src.columns
+                else pd.Series([""] * len(tag_src), index=tag_src.index)
+            )
+            tag_src["nation_clean"] = nation_src.fillna("").astype(str).str.upper()
+            tag_src["is_sui"] = (tag_src["nation_clean"] == "SUI").astype(int)
+            tag_src = tag_src.reset_index(drop=True)
+            tag_src["ord"] = range(len(tag_src))
+            tag_src = (
+                tag_src.sort_values(["is_sui", "ord"], ascending=[False, True], kind="stable")
+                .drop_duplicates(subset=["name_clean"], keep="first")
+            )
+        names = tag_src["name_clean"].tolist() if not tag_src.empty else []
+        seen_tags = set()
+        for n in names:
+            tag_val = coachnow_athlete_tag(n)
+            if not tag_val or tag_val in seen_tags:
+                continue
+            seen_tags.add(tag_val)
+            athlete_tags.append({"label": tag_val, "value": tag_val})
+
+    meta_tags: List[Dict[str, str]] = []
+    round_tag = round_tag_from_title(heat_row.get("round_title"))
+    if round_tag:
+        meta_tags.append({"label": round_tag, "value": round_tag})
+
+    heat_tag_label, heat_tag_value = heat_tag_from_context(
+        heat_row.get("heat_title"),
+        heat_row.get("heat_id"),
+    )
+    if heat_tag_value:
+        meta_tags.append({"label": heat_tag_label, "value": heat_tag_value})
+
+    class_tag = class_tag_from_group_id(
+        int(heat_row["group_id"]) if pd.notna(heat_row.get("group_id")) else None
+    )
+    if class_tag:
+        meta_tags.append({"label": class_tag, "value": class_tag})
+
+    return df_heat_ctx, athlete_tags, meta_tags
+
+
+def build_heat_match_candidates(
+    heats_f: pd.DataFrame,
+    df_event: pd.DataFrame,
+    video_time: Any,
+    existing_tags_csv: Any = "",
+    time_source: str = "start_time_string",
+) -> List[Dict[str, Any]]:
+    target_seconds = parse_clock_hms(video_time)
+    if target_seconds is None or heats_f is None or heats_f.empty:
+        return []
+
+    existing_tags = parse_tag_csv(existing_tags_csv)
+    candidates: List[Dict[str, Any]] = []
+    for _, row in heats_f.iterrows():
+        time_source_key = "start_time_first_seen_at" if str(time_source or "").strip() == "start_time_first_seen_at" else "start_time_string"
+        start_time = str(row.get(time_source_key) or "").strip()[:8]
+        if not start_time:
+            start_time = str(row.get("start_time_string") or "").strip()[:8]
+        start_seconds = parse_clock_hms(start_time)
+        if start_seconds is None:
+            continue
+        _, athlete_tags, meta_tags = build_heat_tag_payload(df_event, row)
+        tag_values = [str(t.get("value", "")).strip() for t in athlete_tags + meta_tags if str(t.get("value", "")).strip()]
+        overlap = len({t.lower() for t in tag_values} & existing_tags) if existing_tags else 0
+        diff_seconds = abs(start_seconds - target_seconds)
+        candidates.append(
+            {
+                "option": heat_label_row(row),
+                "label": heat_label_row(row),
+                "start_time": start_time,
+                "time_source": time_source_key,
+                "diff_seconds": diff_seconds,
+                "tag_overlap": overlap,
+                "tag_values": tag_values,
+            }
+        )
+
+    candidates.sort(
+        key=lambda item: (
+            item["diff_seconds"],
+            -item["tag_overlap"],
+            item["label"],
+        )
+    )
+    return candidates
 
 
 def has_lane_pick_data(event_id: str) -> bool:
@@ -1728,8 +1923,14 @@ except Exception:
 event_default = page_prefs.get("event_label_current")
 event_index = event_options.index(event_default) if event_default in event_options else default_event_index
 event_label_current = st.sidebar.selectbox("Event", event_options, index=event_index, key="ha_event_current")
-event_id = df_current_pool.loc[df_current_pool["label_analysis"] == event_label_current, "event_id"].iloc[0]
+selected_event_row = df_current_pool.loc[df_current_pool["label_analysis"] == event_label_current].iloc[0]
+event_id = selected_event_row["event_id"]
 st.sidebar.caption(f"Aktives Event: {event_id}")
+persist_active_heat_analyzer_event(
+    str(event_id),
+    str(event_label_current),
+    selected_event_row.get("event_date", ""),
+)
 
 # Analyse selection (directly under Event)
 default_analysis_labels = []
@@ -1870,11 +2071,6 @@ else:
     for gid, cat in GROUP_MAP.items():
         if cat in labels:
             allowed_group_ids.append(gid)
-
-# Preload analysis history for race stats (used later)
-df_hist_all = load_picks_for_events(analysis_event_ids) if analysis_event_ids else pd.DataFrame()
-if not df_hist_all.empty and allowed_group_ids:
-    df_hist_all = df_hist_all[df_hist_all["group_id"].isin(allowed_group_ids)].copy()
 
 # Apply category filters to current event (empty selection = show all)
 if allowed_group_ids and not df_event.empty and "group_id" in df_event.columns:
@@ -2328,74 +2524,60 @@ if "heat_choice" not in st.session_state:
     st.session_state["heat_choice"] = options[0] if options else None
 if st.session_state["heat_choice"] not in options:
     st.session_state["heat_choice"] = options[0] if options else None
+
 choice = st.selectbox("Heat auswählen", options, index=options.index(st.session_state["heat_choice"]), key="heat_choice")
 chosen = heats_f.iloc[options.index(choice)]
+
+# Selected-heat base dataframe (single source of truth for Startliste + Tagging)
 rk = int(chosen["round_key"])
 hid = int(chosen["heat_id"])
 gid = int(chosen["group_id"]) if pd.notna(chosen.get("group_id")) else None
 chosen_round_title = chosen.get("round_title")
 chosen_heat_title = chosen.get("heat_title")
+df_heat_ctx, athlete_tags, meta_tags = build_heat_tag_payload(df_event, chosen)
 
-# Selected-heat base dataframe (single source of truth for Startliste + Tagging)
-df_heat_ctx = df_event[(df_event["round_key"] == rk) & (df_event["heat_id"] == hid)].copy()
-if gid is not None:
-    df_heat_ctx = df_heat_ctx[df_heat_ctx["group_id"] == gid].copy()
-if chosen_round_title:
-    df_heat_ctx = df_heat_ctx[df_heat_ctx["round_title"] == chosen_round_title].copy()
-if chosen_heat_title:
-    df_heat_ctx = df_heat_ctx[df_heat_ctx["heat_title"] == chosen_heat_title].copy()
-if "name" in df_heat_ctx.columns:
-    df_heat_ctx = df_heat_ctx[df_heat_ctx["name"].fillna("").astype(str).str.strip() != ""].copy()
+def prepare_selected_heat_df() -> pd.DataFrame:
+    df_heat_local = df_heat_ctx.copy()
+    df_heat_local["name_norm"] = df_heat_local["name"].apply(norm_name)
+    df_heat_local["name_key"] = df_heat_local["name_norm"].apply(
+        lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else ""
+    )
+    return df_heat_local
 
-if "pick_order" in df_heat_ctx.columns:
-    df_heat_ctx = df_heat_ctx.sort_values(["pick_order"], na_position="last", kind="stable")
+_analysis_hist_cache: Dict[str, Any] = {"loaded": False, "df": pd.DataFrame()}
+
+def get_analysis_history() -> pd.DataFrame:
+    if not _analysis_hist_cache["loaded"]:
+        df_hist = load_picks_for_events(analysis_event_ids) if analysis_event_ids else pd.DataFrame()
+        if not df_hist.empty and allowed_group_ids:
+            df_hist = df_hist[df_hist["group_id"].isin(allowed_group_ids)].copy()
+        _analysis_hist_cache["df"] = df_hist
+        _analysis_hist_cache["loaded"] = True
+    return _analysis_hist_cache["df"].copy()
 
 # Tagging payload from current heat only (no archive/analysis event merge)
-athlete_tags: List[Dict[str, str]] = []
-if not df_heat_ctx.empty and "name" in df_heat_ctx.columns:
-    tag_src = df_heat_ctx.copy()
-    tag_src["name_clean"] = tag_src["name"].fillna("").astype(str).str.strip()
-    tag_src = tag_src[tag_src["name_clean"] != ""].copy()
-    if not tag_src.empty:
-        nation_src = (
-            tag_src["nation"]
-            if "nation" in tag_src.columns
-            else pd.Series([""] * len(tag_src), index=tag_src.index)
-        )
-        tag_src["nation_clean"] = nation_src.fillna("").astype(str).str.upper()
-        tag_src["is_sui"] = (tag_src["nation_clean"] == "SUI").astype(int)
-        tag_src = tag_src.reset_index(drop=True)
-        tag_src["ord"] = range(len(tag_src))
-        # Swiss riders first, then keep original heat/startlist order.
-        tag_src = (
-            tag_src.sort_values(["is_sui", "ord"], ascending=[False, True], kind="stable")
-            .drop_duplicates(subset=["name_clean"], keep="first")
-        )
-    names = tag_src["name_clean"].tolist()
-    seen_tags = set()
-    athlete_tags = []
-    for n in names:
-        tag_val = coachnow_athlete_tag(n)
-        if not tag_val or tag_val in seen_tags:
-            continue
-        seen_tags.add(tag_val)
-        athlete_tags.append({"label": tag_val, "value": tag_val})
+round_tag = next((t["value"] for t in meta_tags if t["value"] in {"LCQ", "1/32Final", "1/16Final", "1/8Final", "1/4Final", "1/2Final", "Final"} or t["value"].startswith("Round")), None)
+heat_tag_value = next((t["value"] for t in meta_tags if str(t["value"]).startswith("Heat")), None)
+heat_tag_label = next((t["label"] for t in meta_tags if str(t["value"]).startswith("Heat")), None)
+class_tag = next((t["value"] for t in meta_tags if t["value"] in {"EliteMen", "EliteWomen", "U23Men", "U23Women", "JuniorMen", "JuniorWomen"}), None)
 
-round_tag = round_tag_from_title(chosen_round_title)
-heat_tag_label, heat_tag_value = heat_tag_from_context(chosen_heat_title, hid)
-class_tag = class_tag_from_group_id(gid)
+section_options = ["Startliste - Gate Pick", "Time Analyse", "Tagging"]
+section_default = page_prefs.get("active_section", section_options[0])
+if section_default not in section_options:
+    section_default = section_options[0]
+selected_heat_section = st.segmented_control(
+    "Ansicht",
+    section_options,
+    default=section_default,
+    key="ha_active_section",
+)
+update_page_prefs("heat_analyzer", {"active_section": selected_heat_section})
 
-# Startlist (PickOrder / Lane)
-tab_start, tab_rounds, tab_tagging = st.tabs(["Startliste - Gate Pick", "Time Analyse", "Tagging"])
-
-with tab_start:
+if selected_heat_section == "Startliste - Gate Pick":
     lane_pick_enabled = has_lane_pick_data(event_id)
     st.subheader("Startliste - Lane Pick" if lane_pick_enabled else "Startliste")
 
-    df_heat = df_heat_ctx.copy()
-    df_heat["name_norm"] = df_heat["name"].apply(norm_name)
-    df_heat["name_key"] = df_heat["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
-
+    df_heat = prepare_selected_heat_df()
     df_heat = df_heat.sort_values(["pick_order"], na_position="last", kind="stable")
 
     start_cols = ["nation", "bib", "name", "pick_order", "rank", "chosen_lane"]
@@ -2512,6 +2694,7 @@ with tab_start:
                     training_source_note = "Training-Zeiten: Fallback vorheriges Event gleiche Location (gleiches Jahr, gleiche Serie)"
 
         if is_round1:
+            df_hist_all = get_analysis_history()
             df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
             if prev_is_same_loc_year and prev_event_id:
                 if df_race_hist.empty or prev_event_id not in df_race_hist["event_id"].unique():
@@ -2785,7 +2968,7 @@ with tab_start:
         st.table(start_df_simple)
 
     # --- startlist tab: analysis tables in requested order ---
-    df_hist_heat = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
+    df_hist_heat = get_analysis_history() if lane_pick_enabled else pd.DataFrame()
     if lane_pick_enabled and (not df_hist_heat.empty) and (not df_heat.empty):
         heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
         df_hist_heat = df_hist_heat[df_hist_heat["name_norm"].isin(heat_riders_norm)].copy()
@@ -2878,7 +3061,8 @@ with tab_start:
         else:
             st.info("Keine Lane-/Zusammenfassung verfügbar (Heat-Auswahl oder Picks fehlen).")
 
-with tab_rounds:
+elif selected_heat_section == "Time Analyse":
+    df_heat = prepare_selected_heat_df()
     st.markdown("<div id='time-analyse-anchor'></div>", unsafe_allow_html=True)
     col_m1, col_m2 = st.columns([5, 1])
     with col_m1:
@@ -3157,7 +3341,7 @@ with tab_rounds:
     if not analysis_event_ids:
         st.info("Wähle links mindestens ein Analyse-Event aus.")
     else:
-        df_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
+        df_hist = get_analysis_history()
         if df_hist.empty:
             st.warning("Keine Picks für die ausgewählten Analyse-Events gefunden.")
         else:
@@ -3261,9 +3445,68 @@ with tab_rounds:
                     st.dataframe(rs_view, use_container_width=True, height=auto_height(rs_view), hide_index=True)
                     st.caption("Race-Zeiten: ausgewählte Analyse-Events")
 
-with tab_tagging:
+elif selected_heat_section == "Tagging":
     st.subheader("Tagging")
     st.caption("One-Tap Copy für CoachNow (pro Tap genau ein Tag ins Clipboard).")
+
+    video_match_time = st.session_state.get("video_match_time", "")
+    video_match_tags = st.session_state.get("video_match_tags", "")
+    with st.expander("CoachNow Match Debug / Backfill", expanded=False):
+        st.caption(
+            "Nur fuer gezielte CoachNow-Matches oder Backfill. Im Live-Betrieb normalerweise nicht noetig."
+        )
+        match_col_1, match_col_2 = st.columns([2, 3])
+        with match_col_1:
+            video_match_time = st.text_input(
+                "Videozeit (HH:MM:SS)",
+                value=video_match_time,
+                placeholder="15:38:50",
+                key="video_match_time",
+                help="Nutze den Zeit-Tag des CoachNow-Videos als Heat-Anker.",
+            )
+        with match_col_2:
+            video_match_tags = st.text_input(
+                "CoachNow Tags (optional CSV)",
+                value=video_match_tags,
+                placeholder="RossCullen, Final, EliteMen",
+                key="video_match_tags",
+                help="Hilft bei identischen Startzeiten. Athlete-/Meta-Tags werden gegen den Heat verglichen.",
+            )
+
+        match_candidates = build_heat_match_candidates(
+            heats_f,
+            df_event,
+            video_match_time,
+            video_match_tags,
+            time_source="start_time_string",
+        )
+        if video_match_time.strip():
+            if not match_candidates:
+                st.info("Keine Heats mit gueltiger Uhrzeit im aktuellen Filter gefunden.")
+            else:
+                best = match_candidates[0]
+                tied = [
+                    cand
+                    for cand in match_candidates
+                    if cand["diff_seconds"] == best["diff_seconds"] and cand["tag_overlap"] == best["tag_overlap"]
+                ]
+                if len(tied) == 1:
+                    st.caption(
+                        f"Bester Match: {best['label']} | Delta {format_match_delta(best['diff_seconds'])} | Tag-Overlap {best['tag_overlap']} | Quelle {best['time_source']}"
+                    )
+                else:
+                    st.warning(
+                        "Mehrere Heats sind gleich gut passend. Nutze die Buttons unten, um den richtigen Heat zu waehlen."
+                    )
+
+                for idx, candidate in enumerate(match_candidates[:5], start=1):
+                    c_info, c_delta, c_overlap, c_action = st.columns([7, 2, 2, 2])
+                    c_info.write(candidate["label"])
+                    c_delta.write(f"Δ {format_match_delta(candidate['diff_seconds'])}")
+                    c_overlap.write(f"{candidate['tag_overlap']} Tags")
+                    if c_action.button("Waehlen", key=f"video_match_select_{idx}_{candidate['option']}"):
+                        st.session_state["heat_choice"] = candidate["option"]
+                        st.rerun()
 
     any_section = False
     meta_tags: List[Dict[str, str]] = []
@@ -3278,9 +3521,6 @@ with tab_tagging:
     # 2) Round, 3) Heat, 4) Class (direkt unter Athleten)
     if round_tag:
         meta_tags.append({"label": round_tag, "value": round_tag})
-
-    if heat_tag_value:
-        meta_tags.append({"label": heat_tag_label, "value": heat_tag_value})
 
     if class_tag:
         meta_tags.append({"label": class_tag, "value": class_tag})
