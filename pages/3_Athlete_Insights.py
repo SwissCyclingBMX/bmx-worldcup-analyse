@@ -2995,8 +2995,15 @@ elif ai_active_section == "Segment Profile":
 
     segment_profile_label_map = {sd["label"]: segment_short_label(sd["label"]) for sd in segment_profile_available}
     segment_profile_options = [segment_profile_label_map[sd["label"]] for sd in segment_profile_available]
+    segment_profile_default_keys = [
+        "BottomDelta",
+        "Bottom->T1Delta",
+        "T1->T2Delta",
+        "T2->T3Delta",
+        "T3->FinishDelta",
+    ]
     segment_profile_default = [
-        segment_profile_label_map[x] for x in default_segments if x in segment_profile_label_map
+        segment_profile_label_map[x] for x in segment_profile_default_keys if x in segment_profile_label_map
     ] or segment_profile_options
     segment_profile_selected = st.multiselect(
         "Segmente anzeigen",
