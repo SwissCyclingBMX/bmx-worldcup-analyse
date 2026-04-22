@@ -2230,11 +2230,13 @@ if training_live:
             lambda r: extract_clock_time(r.get("gate"), r.get("source_file"), r.get("start"), r.get("t1")),
             axis=1,
         )
+        frame["training_block_id"] = frame["training_block_id"].fillna("").astype(str).str.strip()
         frame["start_label"] = frame.apply(
             lambda r: training_datetime_label(r.get("training_block_label"), r.get("training_block_time"), r.get("clock_time")),
             axis=1,
         )
-        frame["start_id"] = frame["gate_label"]
+        frame["start_id"] = frame["training_block_id"]
+        frame.loc[frame["start_id"] == "", "start_id"] = frame["gate_label"]
         frame.loc[frame["start_id"] == "", "start_id"] = frame["clock_time"]
         frame.loc[frame["start_id"] == "", "start_id"] = "Training"
         frame["start_num"] = pd.to_numeric(
@@ -2294,18 +2296,37 @@ if training_live:
         .sort_values(["category_label", "metric_s", "name"], kind="stable")
     )
     athlete_best_df["segment_rank_best"] = athlete_best_df.groupby("category_label").cumcount() + 1
+    athlete_best_by_rider = (
+        df_live_scope.groupby(["name"], as_index=False)["metric_s"]
+        .min()
+        .sort_values(["metric_s", "name"], kind="stable")
+    )
     athlete_best_map = {
         str(r.name): {
-            "category_label": str(r.category_label),
             "best_metric": float(r.metric_s),
-            "best_rank": int(r.segment_rank_best),
+            "best_rank": int(
+                athlete_best_df.loc[athlete_best_df["name"] == r.name, "segment_rank_best"].min()
+                if not athlete_best_df.loc[athlete_best_df["name"] == r.name, "segment_rank_best"].empty
+                else 1
+            ),
         }
-        for r in athlete_best_df.itertuples()
+        for r in athlete_best_by_rider.itertuples()
     }
     category_best_map = (
         athlete_best_df.groupby("category_label")["metric_s"].min().to_dict()
         if not athlete_best_df.empty
         else {}
+    )
+
+    start_sort_mode = st.selectbox(
+        "Start-Uebersicht sortieren:",
+        options=[
+            "Nach Datum / Uhrzeit",
+            "Nach Schnellster Zeit (aufsteigend)",
+            "Nach Schnellster Zeit (absteigend)",
+        ],
+        index=0,
+        key="training_live_start_sort_mode",
     )
 
     start_summary = (
@@ -2325,14 +2346,32 @@ if training_live:
             _sort_num=("start_num", "min"),
             _sort_time=("training_block_time", lambda s: next((x for x in s if str(x).strip()), "")),
         )
-        .sort_values(["_sort_time", "_sort_num", "DatumZeit"], na_position="last", kind="stable")
     )
     start_summary["Schnellste"] = start_summary["Kategorie"].map(category_best_map)
+    if start_sort_mode == "Nach Schnellster Zeit (aufsteigend)":
+        start_summary = start_summary.sort_values(
+            ["Schnellste", "_sort_time", "DatumZeit"],
+            ascending=[True, True, True],
+            na_position="last",
+            kind="stable",
+        )
+    elif start_sort_mode == "Nach Schnellster Zeit (absteigend)":
+        start_summary = start_summary.sort_values(
+            ["Schnellste", "_sort_time", "DatumZeit"],
+            ascending=[False, True, True],
+            na_position="last",
+            kind="stable",
+        )
+    else:
+        start_summary = start_summary.sort_values(
+            ["_sort_time", "_sort_num", "DatumZeit"],
+            na_position="last",
+            kind="stable",
+        )
     start_matrix = (
         df_live_focus[df_live_focus["name"].isin(riders)]
-        .groupby(["start_id", "category_label", "name"])["metric_s"]
+        .groupby(["start_id", "name"], as_index=False)["metric_s"]
         .min()
-        .reset_index()
     )
 
     start_rows = []
@@ -2351,7 +2390,7 @@ if training_live:
                 row_data[rider] = ""
                 continue
             metric_val = rider_row.iloc[0]["metric_s"]
-            category_label = str(rider_row.iloc[0]["category_label"] or "")
+            category_label = str(row.Kategorie or "")
             seg_rank = session_rank_map.get((str(row.start_id), category_label, rider))
             metric_txt = format_seconds_3(metric_val)
             rank_txt = format_rank_tag(seg_rank)
