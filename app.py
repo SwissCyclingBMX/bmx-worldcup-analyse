@@ -2475,6 +2475,15 @@ if training_live:
             .agg(
                 label=("training_block_label", lambda s: next((x for x in s if str(x).strip()), "Training")),
                 block_time=("training_block_time", lambda s: next((x for x in s if str(x).strip()), "")),
+                athletes=(
+                    "name",
+                    lambda s: ", ".join(
+                        [
+                            n
+                            for n in pd.unique([str(x).strip() for x in s if str(x).strip()])
+                        ][:3]
+                    ),
+                ),
                 athlete_count=("name", lambda s: len(pd.unique([str(x).strip() for x in s if str(x).strip()]))),
             )
             .sort_values(["block_time", "label"], na_position="last", kind="stable")
@@ -2485,8 +2494,9 @@ if training_live:
             block_label_map = {}
             for _, row in training_block_summary.iterrows():
                 label = training_datetime_label(row.get("label"), row.get("block_time"), "Training")
+                athlete_names = str(row.get("athletes") or "").strip()
                 athletes_txt = f"{int(row.get('athlete_count') or 0)} Athleten"
-                pretty = f"{label} | {athletes_txt}"
+                pretty = f"{label} | {athlete_names} | {athletes_txt}" if athlete_names else f"{label} | {athletes_txt}"
                 block_label_map[str(row["training_block_id"])] = pretty
 
             selected_training_block_id = st.selectbox(
