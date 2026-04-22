@@ -2190,9 +2190,10 @@ if training_live:
 
     metric_options = {
         "Start to Kink": "kink",
-        "Start to Bottom": "bottom",
-        "Start to Turn 1": "t1",
-        "Split first Straight": "split_t1",
+        "Split Kink to Bottom": "bottom",
+        "Start to Bottom": "start",
+        "Split first Straight Bottom to T1": "t1_in",
+        "Start to first Straight": "t1",
     }
     metric_label = st.selectbox("Rundenzeit anzeigen:", list(metric_options.keys()), index=0, key="live_metric")
     metric_col = metric_options[metric_label]
@@ -2205,7 +2206,7 @@ if training_live:
 
     df_live_scope = df_live_scope.copy()
     df_live_scope["split_t1"] = df_live_scope["t1_s"] - df_live_scope["start_s"]
-    if metric_col in ["kink", "bottom", "start", "t1"]:
+    if metric_col in ["kink", "bottom", "start", "t1_in", "t1"]:
         df_live_scope["metric_s"] = df_live_scope[metric_col + "_s"]
     else:
         df_live_scope["metric_s"] = df_live_scope[metric_col]
@@ -2312,6 +2313,15 @@ if training_live:
         .agg(
             DatumZeit=("start_label", lambda s: next((x for x in s if str(x).strip()), "Training")),
             Kategorie=("category_label", lambda s: next((x for x in s if str(x).strip()), "")),
+            Athleten=(
+                "name",
+                lambda s: ", ".join(
+                    [
+                        n
+                        for n in pd.unique([str(x).strip() for x in s if str(x).strip()])
+                    ][:3]
+                ),
+            ),
             _sort_num=("start_num", "min"),
             _sort_time=("training_block_time", lambda s: next((x for x in s if str(x).strip()), "")),
         )
@@ -2421,7 +2431,9 @@ if training_live:
 
     start_display_map = {}
     for _, row in start_summary.iterrows():
-        start_display_map[str(row.get("start_id"))] = str(row.get("DatumZeit") or "Training")
+        dt_label = str(row.get("DatumZeit") or "Training")
+        athlete_label = str(row.get("Athleten") or "").strip()
+        start_display_map[str(row.get("start_id"))] = f"{dt_label} | {athlete_label}" if athlete_label else dt_label
 
     start_options = start_summary["start_id"].tolist()
     selected_start_id = st.selectbox(
