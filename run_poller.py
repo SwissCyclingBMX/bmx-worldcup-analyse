@@ -28,6 +28,7 @@ chronorace:
   WORKERS (optional, default 6)
 
 bmxracer:
+  URL currently only supported for weinfelden.bmx-racer.com
   URL (required)
   EVENT_ID (required)
   DISPLAY_NAME (optional)

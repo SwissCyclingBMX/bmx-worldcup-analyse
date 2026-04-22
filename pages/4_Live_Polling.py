@@ -283,7 +283,7 @@ require_page_access(["admin"], "Live Polling")
 render_sidebar_nav()
 
 st.title("Live Polling")
-st.caption("Mehrere Polling-Services parallel starten (Sqorz, JSTiming, Chronorace, BMX-Racer).")
+st.caption("Mehrere Polling-Services parallel starten (Sqorz, JSTiming, Chronorace, BMX-Racer Weinfelden).")
 
 if not running_on_systemd_host() or not systemctl_available():
     st.error("Diese Seite funktioniert nur auf dem VPS mit systemd.")
@@ -374,8 +374,8 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
     with st.expander(f"Konfiguration {i}", expanded=(i == 1)):
         source_key = f"poll_src_{fid}"
         ensure_state(source_key, "sqorz")
-        source_label = st.selectbox("Quelle", ["Sqorz", "JSTiming", "Chronorace", "BMX-Racer"], key=f"poll_src_label_{fid}")
-        source = {"Sqorz": "sqorz", "JSTiming": "jstiming", "Chronorace": "chronorace", "BMX-Racer": "bmxracer"}[source_label]
+        source_label = st.selectbox("Quelle", ["Sqorz", "JSTiming", "Chronorace", "BMX-Racer Weinfelden"], key=f"poll_src_label_{fid}")
+        source = {"Sqorz": "sqorz", "JSTiming": "jstiming", "Chronorace": "chronorace", "BMX-Racer Weinfelden": "bmxracer"}[source_label]
 
         ensure_state(f"poll_name_{fid}", f"{source}-{fid}")
         raw_name = st.text_input("Service Name", key=f"poll_name_{fid}")
@@ -494,10 +494,10 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
             url = st.text_input(
                 "Display URL",
                 key=f"poll_bmxracer_url_{fid}",
-                placeholder="https://weinfelden.bmx-racer.com/display.php?nr=1",
+                value="https://weinfelden.bmx-racer.com/display.php?nr=1",
             ).strip()
             today = datetime.date.today().strftime("%Y%m%d")
-            default_event_id = f"{today}_other_bmxracer_bmx"
+            default_event_id = f"{today}_sui_weinfelden_bmxracer_bmx"
             event_id = st.text_input(
                 "Ziel event_id in DB",
                 key=f"poll_bmxracer_event_id_{fid}",
@@ -518,10 +518,13 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
                 key=f"poll_bmxracer_country_{fid}",
                 value="SUI",
             ).strip().upper()
+            st.caption("Dieser Mapper ist aktuell nur für weinfelden.bmx-racer.com gültig.")
             if not url:
                 errors.append("Display URL fehlt.")
             if not event_id:
                 errors.append("Ziel event_id fehlt.")
+            if "weinfelden.bmx-racer.com" not in url.lower():
+                errors.append("Aktuell wird nur weinfelden.bmx-racer.com unterstützt.")
             env_values["URL"] = url
             env_values["EVENT_ID"] = event_id
             env_values["DISPLAY_NAME"] = display_name

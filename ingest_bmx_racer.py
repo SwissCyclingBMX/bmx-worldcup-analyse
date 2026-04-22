@@ -24,6 +24,7 @@ from ingest import DEFAULT_DB_PATH, init_db, now_iso, upsert_event
 from ingest_jstiming import upsert_training_times
 
 HEADERS = {"user-agent": "HeatScout/1.0"}
+ALLOWED_HOSTS = {"weinfelden.bmx-racer.com"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +39,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def fetch_html(url: str) -> str:
+    host = (urlparse(url).hostname or "").strip().lower()
+    if host not in ALLOWED_HOSTS:
+        raise RuntimeError(
+            f"Unsupported BMX-Racer host '{host}'. This mapper is currently only valid for Weinfelden."
+        )
     resp = requests.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
     return resp.text
