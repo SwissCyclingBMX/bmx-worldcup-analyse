@@ -966,7 +966,10 @@ def filter_training_metric_outliers(
     if df_train.empty or metric_col not in df_train.columns or category_col not in df_train.columns:
         return df_train, {}
 
-    keep_mask = pd.Series(True, index=df_train.index)
+    metric_all = pd.to_numeric(df_train[metric_col], errors="coerce")
+    # Non-positive times are always invalid training measurements and should be removed
+    # even when a category does not have enough samples for percentile-based filtering.
+    keep_mask = df_train[metric_col].isna() | (metric_all > 0)
     stats: Dict[str, Dict[str, float]] = {}
 
     for category_label, grp in df_train.groupby(category_col, dropna=False):
@@ -995,7 +998,7 @@ def filter_training_metric_outliers(
             lower_bound = max(lower_bound, cluster_start)
 
         grp_keep = grp[metric_col].isna() | (pd.to_numeric(grp[metric_col], errors="coerce") >= lower_bound)
-        keep_mask.loc[grp.index] = grp_keep
+        keep_mask.loc[grp.index] = keep_mask.loc[grp.index] & grp_keep
         stats[str(category_label or "")] = {
             "lower_bound": lower_bound,
             "removed": float((~grp_keep).sum()),
