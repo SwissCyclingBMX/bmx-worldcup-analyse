@@ -405,6 +405,9 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
           interim TEXT,
           t1_in TEXT,
           total TEXT,
+          training_block_id TEXT,
+          training_block_label TEXT,
+          training_block_time TEXT,
           start TEXT,
           t1 TEXT,
           source_kind TEXT,
@@ -422,6 +425,9 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
         "interim": "TEXT",
         "t1_in": "TEXT",
         "total": "TEXT",
+        "training_block_id": "TEXT",
+        "training_block_label": "TEXT",
+        "training_block_time": "TEXT",
         "source_kind": "TEXT",
     }
     for col, col_type in wanted.items():
@@ -456,10 +462,12 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
         INSERT OR IGNORE INTO training_times (
           event_id, category, bib, name, nation, gate,
           kink, bottom, interim, t1_in, total,
+          training_block_id, training_block_label, training_block_time,
           start, t1, source_kind, source_file, ingested_at
         ) VALUES (
           :event_id, :category, :bib, :name, :nation, :gate,
           :kink, :bottom, :interim, :t1_in, :total,
+          :training_block_id, :training_block_label, :training_block_time,
           :start, :t1, :source_kind, :source_file, :ingested_at
         )
         """,
@@ -637,10 +645,28 @@ def ingest_race_event(conn: sqlite3.Connection, url: str, event_id: str) -> int:
 def ingest_training_props(conn: sqlite3.Connection, props: Dict[str, Any], event_id: str) -> int:
     heats = props.get("heats") or []
     rows = []
+    source_file = props.get("activeRoundSlug") or "gate-practice"
     for h in heats:
         class_code = (h.get("class_code") or "").strip()
         # keep all classes in training (will be filtered later)
         heat_name = h.get("name") or ""
+        explicit_block_time = ""
+        for cand in [h.get("result_time"), h.get("start_time"), heat_name, source_file]:
+            s = str(cand or "").strip()
+            m = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b", s)
+            if m:
+                explicit_block_time = m.group(1)
+                break
+        block_label = heat_name.strip() or explicit_block_time or str(source_file)
+        block_id = "|".join(
+            [
+                "jstiming",
+                str(event_id or "").strip(),
+                str(source_file or "").strip(),
+                str(class_code or "").strip(),
+                str(block_label or "").strip(),
+            ]
+        )
         for r in parse_riders(h):
             if not r["name"]:
                 continue
@@ -652,9 +678,18 @@ def ingest_training_props(conn: sqlite3.Connection, props: Dict[str, Any], event
                     "name": r["name"],
                     "nation": r["nation"],
                     "gate": heat_name,
+                    "kink": None,
+                    "bottom": None,
+                    "interim": None,
+                    "t1_in": None,
+                    "total": None,
+                    "training_block_id": block_id,
+                    "training_block_label": block_label,
+                    "training_block_time": explicit_block_time,
                     "start": r["start"].strip() if isinstance(r["start"], str) else r["start"],
                     "t1": r["t1"].strip() if isinstance(r["t1"], str) else r["t1"],
-                    "source_file": props.get("activeRoundSlug") or "gate-practice",
+                    "source_kind": "jstiming",
+                    "source_file": source_file,
                     "ingested_at": now_iso(),
                 }
             )

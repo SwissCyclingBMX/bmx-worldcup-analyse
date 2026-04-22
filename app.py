@@ -860,6 +860,42 @@ def extract_clock_time(*values: Any) -> str:
     return ""
 
 
+def build_training_tag_payload(df_block: pd.DataFrame) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    athlete_tags: List[Dict[str, str]] = []
+    if df_block is not None and not df_block.empty and "name" in df_block.columns:
+        tag_src = df_block.copy()
+        tag_src["name_clean"] = tag_src["name"].fillna("").astype(str).str.strip()
+        tag_src = tag_src[tag_src["name_clean"] != ""].copy()
+        if not tag_src.empty:
+            nation_src = (
+                tag_src["nation"]
+                if "nation" in tag_src.columns
+                else pd.Series([""] * len(tag_src), index=tag_src.index)
+            )
+            tag_src["nation_clean"] = nation_src.fillna("").astype(str).str.upper()
+            tag_src["is_sui"] = (tag_src["nation_clean"] == "SUI").astype(int)
+            tag_src = tag_src.reset_index(drop=True)
+            tag_src["ord"] = range(len(tag_src))
+            tag_src = (
+                tag_src.sort_values(["is_sui", "ord"], ascending=[False, True], kind="stable")
+                .drop_duplicates(subset=["name_clean"], keep="first")
+            )
+        names = tag_src["name_clean"].tolist() if not tag_src.empty else []
+        seen_tags = set()
+        for n in names:
+            tag_val = coachnow_athlete_tag(n)
+            if not tag_val or tag_val in seen_tags:
+                continue
+            seen_tags.add(tag_val)
+            athlete_tags.append({"label": tag_val, "value": tag_val})
+
+    meta_tags = [
+        {"label": "Training", "value": "Training"},
+        {"label": "Gate", "value": "Gate"},
+    ]
+    return athlete_tags, meta_tags
+
+
 def training_category_label(category: Any, gate: Any = "") -> str:
     code = str(category or "").strip().upper()
     gate_text = str(gate or "").strip()
@@ -1012,7 +1048,11 @@ def load_training_for_events(event_ids: List[str], rider_names: Optional[List[st
     try:
         df = pd.read_sql_query(
             f"""
-            SELECT DISTINCT event_id, category, bib, name, nation, gate, start, t1
+            SELECT DISTINCT
+              event_id, category, bib, name, nation, gate,
+              kink, bottom, interim, t1_in, total,
+              training_block_id, training_block_label, training_block_time,
+              source_kind, source_file, start, t1
             FROM training_times
             WHERE {where_sql}
             """,
@@ -1031,8 +1071,56 @@ def load_training_for_events(event_ids: List[str], rider_names: Optional[List[st
     df["name_key"] = df["name_norm"].apply(lambda s: " ".join(sorted(s.split())) if isinstance(s, str) else "")
     df["start_s"] = df["start"].apply(parse_time_to_seconds)
     df["t1_s"] = df["t1"].apply(parse_time_to_seconds)
+    if "kink" in df.columns:
+        df["kink_s"] = df["kink"].apply(parse_time_to_seconds)
+    if "bottom" in df.columns:
+        df["bottom_s"] = df["bottom"].apply(parse_time_to_seconds)
+    if "interim" in df.columns:
+        df["interim_s"] = df["interim"].apply(parse_time_to_seconds)
+    if "t1_in" in df.columns:
+        df["t1_in_s"] = df["t1_in"].apply(parse_time_to_seconds)
+    if "total" in df.columns:
+        df["total_s"] = df["total"].apply(parse_time_to_seconds)
     df["category_label"] = df.apply(lambda r: training_category_label(r.get("category"), r.get("gate")), axis=1)
     df["training_group_label"] = df.apply(lambda r: infer_training_group_label(r.get("category"), r.get("gate")), axis=1)
+    if "training_block_id" not in df.columns:
+        df["training_block_id"] = ""
+    if "training_block_label" not in df.columns:
+        df["training_block_label"] = ""
+    if "training_block_time" not in df.columns:
+        df["training_block_time"] = ""
+
+    df["training_block_time"] = df["training_block_time"].fillna("").astype(str).str.strip()
+    df["training_block_label"] = df["training_block_label"].fillna("").astype(str).str.strip()
+    df["training_block_id"] = df["training_block_id"].fillna("").astype(str).str.strip()
+    fallback_time = df.apply(
+        lambda r: extract_clock_time(
+            r.get("training_block_time"),
+            r.get("training_block_label"),
+            r.get("gate"),
+            r.get("source_file"),
+            r.get("start"),
+            r.get("t1"),
+        ),
+        axis=1,
+    )
+    df.loc[df["training_block_time"] == "", "training_block_time"] = fallback_time[df["training_block_time"] == ""]
+    fallback_label = df["training_block_label"].copy()
+    fallback_label = fallback_label.where(fallback_label.str.strip().ne(""), df["gate"].fillna("").astype(str).str.strip())
+    fallback_label = fallback_label.where(fallback_label.str.strip().ne(""), df["training_block_time"].fillna("").astype(str).str.strip())
+    fallback_label = fallback_label.where(fallback_label.str.strip().ne(""), "Training")
+    df["training_block_label"] = fallback_label
+    fallback_id = (
+        "train|"
+        + df["event_id"].fillna("").astype(str)
+        + "|"
+        + df["source_file"].fillna("").astype(str)
+        + "|"
+        + df["training_block_label"].fillna("").astype(str)
+        + "|"
+        + df["training_block_time"].fillna("").astype(str)
+    )
+    df.loc[df["training_block_id"] == "", "training_block_id"] = fallback_id[df["training_block_id"] == ""]
     return df
 
 
@@ -2350,6 +2438,88 @@ if training_live:
             }
         )
         st.dataframe(participants_view, use_container_width=True, hide_index=True)
+
+    training_tag_scope = df_live_focus.copy()
+    if not training_tag_scope.empty:
+        training_tag_scope["training_block_id"] = training_tag_scope["training_block_id"].fillna("").astype(str)
+        training_tag_scope["training_block_label"] = training_tag_scope["training_block_label"].fillna("").astype(str)
+        training_tag_scope["training_block_time"] = training_tag_scope["training_block_time"].fillna("").astype(str)
+        training_block_summary = (
+            training_tag_scope.groupby("training_block_id", as_index=False)
+            .agg(
+                label=("training_block_label", lambda s: next((x for x in s if str(x).strip()), "Training")),
+                block_time=("training_block_time", lambda s: next((x for x in s if str(x).strip()), "")),
+                athlete_count=("name", lambda s: len(pd.unique([str(x).strip() for x in s if str(x).strip()]))),
+            )
+            .sort_values(["block_time", "label"], na_position="last", kind="stable")
+        )
+        training_block_options = training_block_summary["training_block_id"].tolist()
+        if training_block_options:
+            st.markdown("**Training Tagging:**")
+            block_label_map = {}
+            for _, row in training_block_summary.iterrows():
+                label = str(row.get("label") or "Training")
+                time_txt = str(row.get("block_time") or "").strip()
+                athletes_txt = f"{int(row.get('athlete_count') or 0)} Athleten"
+                pretty = label
+                if time_txt and time_txt not in label:
+                    pretty = f"{label} | {time_txt}"
+                pretty = f"{pretty} | {athletes_txt}"
+                block_label_map[str(row["training_block_id"])] = pretty
+
+            selected_training_block_id = st.selectbox(
+                "Training-Block wählen",
+                options=training_block_options,
+                format_func=lambda bid: block_label_map.get(str(bid), str(bid)),
+                key="training_live_tagging_block_select",
+            )
+            df_training_block = training_tag_scope[
+                training_tag_scope["training_block_id"].astype(str) == str(selected_training_block_id)
+            ].copy()
+            df_training_block = df_training_block.sort_values(["name", "gate"], na_position="last", kind="stable")
+            athlete_tags_train, meta_tags_train = build_training_tag_payload(df_training_block)
+            if not df_training_block.empty:
+                block_cols = [c for c in ["category_label", "nation", "name", "gate"] if c in df_training_block.columns]
+                if block_cols:
+                    st.dataframe(
+                        df_training_block[block_cols].rename(
+                            columns={
+                                "category_label": "Kategorie",
+                                "nation": "Nation",
+                                "name": "Name",
+                                "gate": "Gate",
+                            }
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+            if athlete_tags_train:
+                render_copy_buttons("Athleten", athlete_tags_train, section_style="athlete", columns=2)
+                render_copy_buttons(
+                    "",
+                    meta_tags_train,
+                    section_style="meta",
+                    columns=2,
+                    show_title=False,
+                    show_last_copied=False,
+                )
+                combined_training_values: List[str] = []
+                seen_training_values = set()
+                for t in athlete_tags_train + meta_tags_train:
+                    val = str(t.get("value", "")).strip()
+                    if not val or val in seen_training_values:
+                        continue
+                    seen_training_values.add(val)
+                    combined_training_values.append(val)
+                if combined_training_values:
+                    render_copy_buttons(
+                        "",
+                        [{"label": "Alle Begriffe (CSV)", "value": ", ".join(combined_training_values)}],
+                        section_style="meta",
+                        columns=1,
+                        show_title=False,
+                        show_last_copied=False,
+                    )
 
     best_per_category = (
         athlete_best_df.sort_values(["category_label", "metric_s", "name"], na_position="last", kind="stable")

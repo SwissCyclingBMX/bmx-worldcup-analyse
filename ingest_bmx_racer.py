@@ -146,6 +146,8 @@ def parse_training_rows(rows: List[List[str]], event_id: str, source_file: str) 
     latest_event_date: Optional[str] = None
     current_date: Optional[str] = None
     current_start_time: Optional[str] = None
+    current_block_label: Optional[str] = None
+    current_block_id: Optional[str] = None
     ingested_at = now_iso()
 
     for cells in rows[1:]:
@@ -156,6 +158,16 @@ def parse_training_rows(rows: List[List[str]], event_id: str, source_file: str) 
 
         if second == "GATE":
             current_date, current_start_time = parse_timestamp_cell(first)
+            current_block_label = first
+            current_block_id = "|".join(
+                [
+                    "bmxracer",
+                    str(event_id or "").strip(),
+                    str(source_file or "").strip(),
+                    str(current_date or "").strip(),
+                    str(current_start_time or "").strip(),
+                ]
+            )
             if current_date:
                 latest_event_date = max(latest_event_date or current_date, current_date)
             continue
@@ -186,6 +198,9 @@ def parse_training_rows(rows: List[List[str]], event_id: str, source_file: str) 
             "interim": interim,
             "t1_in": t1_in,
             "total": total,
+            "training_block_id": current_block_id or f"bmxracer|{event_id}|{source_file}|{gate_label}",
+            "training_block_label": current_block_label or gate_label,
+            "training_block_time": current_start_time,
             # Canonical app semantics: start = Startzeit, t1 = T1/Gesamt.
             "start": interim,
             "t1": total,
