@@ -391,6 +391,19 @@ def round_key_and_title(slug: str, fallback: str) -> Tuple[int, str]:
 def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> int:
     if not rows:
         return 0
+    def _sig(row: Dict[str, Any]) -> tuple:
+        return (
+            row.get("event_id") or "",
+            row.get("category") or "",
+            row.get("bib") if row.get("bib") is not None else -1,
+            row.get("name") or "",
+            row.get("nation") or "",
+            row.get("gate") or "",
+            row.get("start") or "",
+            row.get("t1") or "",
+            row.get("source_file") or "",
+        )
+
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS training_times (
@@ -441,62 +454,39 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
         ON training_times(event_id, category, bib, name, nation, gate, start, t1)
         """
     )
-    try:
-        conn.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_training_times_dedup
-            ON training_times(
-              event_id,
-              coalesce(category, ''),
-              coalesce(bib, -1),
-              coalesce(name, ''),
-              coalesce(nation, ''),
-              coalesce(gate, ''),
-              coalesce(start, ''),
-              coalesce(t1, ''),
-              coalesce(source_file, '')
+    event_ids = sorted({str(r.get("event_id") or "").strip() for r in rows if str(r.get("event_id") or "").strip()})
+    existing_sigs = set()
+    if event_ids:
+        placeholders = ",".join("?" for _ in event_ids)
+        for existing_row in conn.execute(
+            f"""
+            SELECT event_id, category, bib, name, nation, gate, start, t1, source_file
+            FROM training_times
+            WHERE event_id IN ({placeholders})
+            """,
+            event_ids,
+        ):
+            existing_sigs.add(
+                (
+                    existing_row[0] or "",
+                    existing_row[1] or "",
+                    existing_row[2] if existing_row[2] is not None else -1,
+                    existing_row[3] or "",
+                    existing_row[4] or "",
+                    existing_row[5] or "",
+                    existing_row[6] or "",
+                    existing_row[7] or "",
+                    existing_row[8] or "",
+                )
             )
-            """
-        )
-    except sqlite3.IntegrityError:
-        # Old productive DBs can contain exact duplicate training rows from before the
-        # dedupe index existed. Clean those up once, then retry the unique index build.
-        conn.execute(
-            """
-            DELETE FROM training_times
-            WHERE rowid NOT IN (
-              SELECT MIN(rowid)
-              FROM training_times
-              GROUP BY
-                event_id,
-                coalesce(category, ''),
-                coalesce(bib, -1),
-                coalesce(name, ''),
-                coalesce(nation, ''),
-                coalesce(gate, ''),
-                coalesce(start, ''),
-                coalesce(t1, ''),
-                coalesce(source_file, '')
-            )
-            """
-        )
-        conn.commit()
-        conn.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_training_times_dedup
-            ON training_times(
-              event_id,
-              coalesce(category, ''),
-              coalesce(bib, -1),
-              coalesce(name, ''),
-              coalesce(nation, ''),
-              coalesce(gate, ''),
-              coalesce(start, ''),
-              coalesce(t1, ''),
-              coalesce(source_file, '')
-            )
-            """
-        )
+    insert_rows: List[Dict[str, Any]] = []
+    batch_sigs = set()
+    for row in rows:
+        sig = _sig(row)
+        if sig in existing_sigs or sig in batch_sigs:
+            continue
+        insert_rows.append(row)
+        batch_sigs.add(sig)
     conn.executemany(
         """
         INSERT OR IGNORE INTO training_times (
@@ -511,9 +501,9 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
           :start, :t1, :source_kind, :source_file, :ingested_at
         )
         """,
-        rows,
+        insert_rows,
     )
-    return len(rows)
+    return len(insert_rows)
 
 
 def upsert_master_results(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) -> int:
