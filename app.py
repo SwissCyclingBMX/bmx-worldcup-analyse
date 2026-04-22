@@ -963,16 +963,29 @@ def filter_training_metric_outliers(
     metric_col: str,
     category_col: str = "category_label",
 ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
+    flagged_df, stats = flag_training_metric_outliers(df_train, metric_col, category_col=category_col)
+    if flagged_df.empty or "measurement_flagged" not in flagged_df.columns:
+        return flagged_df, stats
+    return flagged_df.loc[~flagged_df["measurement_flagged"]].copy(), stats
+
+
+def flag_training_metric_outliers(
+    df_train: pd.DataFrame,
+    metric_col: str,
+    category_col: str = "category_label",
+    athlete_col: str = "name",
+) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
     if df_train.empty or metric_col not in df_train.columns or category_col not in df_train.columns:
         return df_train, {}
 
-    metric_all = pd.to_numeric(df_train[metric_col], errors="coerce")
-    # Non-positive times are always invalid training measurements and should be removed
-    # even when a category does not have enough samples for percentile-based filtering.
-    keep_mask = df_train[metric_col].isna() | (metric_all > 0)
+    df_flagged = df_train.copy()
+    metric_all = pd.to_numeric(df_flagged[metric_col], errors="coerce")
+    df_flagged["measurement_flagged"] = metric_all.notna() & (metric_all <= 0)
+    df_flagged["measurement_flag_reason"] = np.where(df_flagged["measurement_flagged"], "non_positive", "")
+
     stats: Dict[str, Dict[str, float]] = {}
 
-    for category_label, grp in df_train.groupby(category_col, dropna=False):
+    for category_label, grp in df_flagged.groupby(category_col, dropna=False):
         metric_vals = pd.to_numeric(grp[metric_col], errors="coerce")
         metric_vals = metric_vals[np.isfinite(metric_vals) & (metric_vals > 0)]
         unique_vals = np.sort(metric_vals.unique())
@@ -997,14 +1010,49 @@ def filter_training_metric_outliers(
         if cluster_start is not None and cluster_start <= float(q50):
             lower_bound = max(lower_bound, cluster_start)
 
-        grp_keep = grp[metric_col].isna() | (pd.to_numeric(grp[metric_col], errors="coerce") >= lower_bound)
-        keep_mask.loc[grp.index] = keep_mask.loc[grp.index] & grp_keep
+        too_fast = pd.to_numeric(grp[metric_col], errors="coerce") < lower_bound
+        flagged_idx = grp.index[too_fast.fillna(False)]
+        df_flagged.loc[flagged_idx, "measurement_flagged"] = True
+        df_flagged.loc[
+            flagged_idx,
+            "measurement_flag_reason",
+        ] = df_flagged.loc[flagged_idx, "measurement_flag_reason"].replace("", "category_fast")
         stats[str(category_label or "")] = {
             "lower_bound": lower_bound,
-            "removed": float((~grp_keep).sum()),
+            "removed": float(too_fast.fillna(False).sum()),
         }
 
-    return df_train.loc[keep_mask].copy(), stats
+    if athlete_col in df_flagged.columns:
+        for athlete_name, grp in df_flagged.groupby(athlete_col, dropna=False):
+            metric_vals = pd.to_numeric(grp[metric_col], errors="coerce")
+            metric_vals = metric_vals[np.isfinite(metric_vals) & (metric_vals > 0)]
+            unique_vals = np.sort(metric_vals.unique())
+            if unique_vals.size < 5:
+                continue
+            aq25, aq50, aq75 = np.percentile(unique_vals, [25, 50, 75])
+            aiqr = max(float(aq75 - aq25), 0.001)
+            lower_bound = float(aq25 - max(0.08, 1.5 * aiqr, 0.04 * max(float(aq50), 1.0)))
+            upper_bound = float(aq75 + max(0.12, 1.5 * aiqr, 0.06 * max(float(aq50), 1.0)))
+            grp_metric = pd.to_numeric(grp[metric_col], errors="coerce")
+            too_fast = grp_metric < lower_bound
+            too_slow = grp_metric > upper_bound
+            fast_idx = grp.index[too_fast.fillna(False)]
+            slow_idx = grp.index[too_slow.fillna(False)]
+            df_flagged.loc[fast_idx, "measurement_flagged"] = True
+            df_flagged.loc[slow_idx, "measurement_flagged"] = True
+            df_flagged.loc[
+                fast_idx,
+                "measurement_flag_reason",
+            ] = df_flagged.loc[fast_idx, "measurement_flag_reason"].replace("", "athlete_fast")
+            df_flagged.loc[
+                slow_idx,
+                "measurement_flag_reason",
+            ] = df_flagged.loc[slow_idx, "measurement_flag_reason"].replace("", "athlete_slow")
+            stats.setdefault("__athlete_bounds__", {})
+            stats["__athlete_bounds__"][f"{str(athlete_name or '')}::lower_bound"] = lower_bound
+            stats["__athlete_bounds__"][f"{str(athlete_name or '')}::upper_bound"] = upper_bound
+
+    return df_flagged, stats
 
 
 def normalize_training_name(name: str) -> str:
@@ -2221,11 +2269,13 @@ if training_live:
 
     filtered_training_stats: Dict[str, Dict[str, float]] = {}
     if filter_bad_training:
-        before_count = len(df_live_scope)
-        df_live_scope, filtered_training_stats = filter_training_metric_outliers(df_live_scope, "metric_s")
-        removed_count = before_count - len(df_live_scope)
-        if removed_count > 0:
-            st.caption(f"Fehlmessungen ausgeblendet: {removed_count}")
+        df_live_scope, filtered_training_stats = flag_training_metric_outliers(df_live_scope, "metric_s")
+        flagged_count = int(df_live_scope["measurement_flagged"].fillna(False).sum())
+        if flagged_count > 0:
+            st.caption(f"Fehlmessungen markiert und aus Rankings ausgeschlossen: {flagged_count}")
+    else:
+        df_live_scope["measurement_flagged"] = False
+        df_live_scope["measurement_flag_reason"] = ""
 
     for frame in (df_live_scope,):
         frame["gate_label"] = frame["gate"].fillna("").astype(str).str.strip()
@@ -2253,13 +2303,14 @@ if training_live:
     if rider_live_selected:
         df_live_focus = df_live_focus[df_live_focus["name"].isin(rider_live_selected)]
     df_live_focus = df_live_focus[df_live_focus["metric_s"].notna()].copy()
+    df_live_focus_valid = df_live_focus.loc[~df_live_focus["measurement_flagged"].fillna(False)].copy()
 
     available_riders = sorted(df_live_focus["name"].dropna().astype(str).unique().tolist())
     if rider_live_selected:
         riders = [r for r in rider_live_selected if r in available_riders]
     else:
         riders = (
-            df_live_focus.groupby("name")["metric_s"]
+            df_live_focus_valid.groupby("name")["metric_s"]
             .min()
             .sort_values(kind="stable")
             .head(10)
@@ -2271,19 +2322,15 @@ if training_live:
         st.warning("Training Live zeigt maximal 10 Athleten. Es werden die ersten 10 deiner Auswahl verwendet.")
         riders = riders[:10]
     if not riders and not df_live_focus.empty:
-        riders = (
-            df_live_focus.groupby("name")["metric_s"]
-            .min()
-            .sort_values(kind="stable")
-            .head(10)
-            .index.tolist()
-        )
+        base_pick_df = df_live_focus_valid if not df_live_focus_valid.empty else df_live_focus
+        riders = base_pick_df.groupby("name")["metric_s"].min().sort_values(kind="stable").head(10).index.tolist()
     if df_live_focus.empty or not riders:
         st.info("Keine Athleten passend zu Nation-/Rider-Filter in der Start-Uebersicht.")
         st.stop()
 
     session_rank_df = (
-        df_live_scope.groupby(["start_id", "category_label", "name"], as_index=False)["metric_s"]
+        df_live_scope.loc[~df_live_scope["measurement_flagged"].fillna(False)]
+        .groupby(["start_id", "category_label", "name"], as_index=False)["metric_s"]
         .min()
         .sort_values(["category_label", "metric_s", "name", "start_id"], kind="stable")
     )
@@ -2294,13 +2341,15 @@ if training_live:
     }
 
     athlete_best_df = (
-        df_live_scope.groupby(["category_label", "name"], as_index=False)["metric_s"]
+        df_live_scope.loc[~df_live_scope["measurement_flagged"].fillna(False)]
+        .groupby(["category_label", "name"], as_index=False)["metric_s"]
         .min()
         .sort_values(["category_label", "metric_s", "name"], kind="stable")
     )
     athlete_best_df["segment_rank_best"] = athlete_best_df.groupby("category_label").cumcount() + 1
     athlete_best_by_rider = (
-        df_live_scope.groupby(["name"], as_index=False)["metric_s"]
+        df_live_scope.loc[~df_live_scope["measurement_flagged"].fillna(False)]
+        .groupby(["name"], as_index=False)["metric_s"]
         .min()
         .sort_values(["metric_s", "name"], kind="stable")
     )
@@ -2373,8 +2422,9 @@ if training_live:
         )
     start_matrix = (
         df_live_focus[df_live_focus["name"].isin(riders)]
-        .groupby(["start_id", "name"], as_index=False)["metric_s"]
-        .min()
+        .sort_values(["start_id", "name", "measurement_flagged", "metric_s"], ascending=[True, True, True, True], kind="stable")
+        .groupby(["start_id", "name"], as_index=False)
+        .first()[["start_id", "name", "metric_s", "measurement_flagged"]]
     )
 
     start_rows = []
@@ -2393,6 +2443,7 @@ if training_live:
                 row_data[rider] = ""
                 continue
             metric_val = rider_row.iloc[0]["metric_s"]
+            is_flagged_measurement = bool(rider_row.iloc[0].get("measurement_flagged", False))
             category_label = str(row.Kategorie or "")
             seg_rank = session_rank_map.get((str(row.start_id), category_label, rider))
             metric_txt = format_seconds_3(metric_val)
@@ -2403,7 +2454,13 @@ if training_live:
                     f"{html_lib.escape(metric_txt)} "
                     f"<span style='font-size:11px;color:#6b7280'>{html_lib.escape(rank_txt)}</span>"
                 )
-                if is_best_start:
+                if is_flagged_measurement:
+                    row_data[rider] = (
+                        "<span style='display:inline-block;padding:1px 4px;"
+                        "background:#fbe4e6;border-radius:4px;color:#991b1b'>"
+                        f"{content}</span>"
+                    )
+                elif is_best_start:
                     row_data[rider] = (
                         "<span style='display:inline-block;padding:1px 4px;"
                         "background:#e7f6ea;border-radius:4px'>"
@@ -2413,7 +2470,13 @@ if training_live:
                     row_data[rider] = content
             else:
                 plain = html_lib.escape(metric_txt)
-                if is_best_start and plain:
+                if is_flagged_measurement and plain:
+                    row_data[rider] = (
+                        "<span style='display:inline-block;padding:1px 4px;"
+                        "background:#fbe4e6;border-radius:4px;color:#991b1b'>"
+                        f"{plain}</span>"
+                    )
+                elif is_best_start and plain:
                     row_data[rider] = (
                         "<span style='display:inline-block;padding:1px 4px;"
                         "background:#e7f6ea;border-radius:4px'>"
@@ -2505,7 +2568,13 @@ if training_live:
                 "name": "Name",
             }
         )
-        st.dataframe(participants_view, use_container_width=True, hide_index=True)
+        participant_flags = df_start["measurement_flagged"].fillna(False).tolist()
+        def _highlight_participant_rows(row: pd.Series) -> List[str]:
+            row_pos = participants_view.index.get_loc(row.name)
+            style = "background-color: #fbe4e6; color: #991b1b;" if participant_flags[row_pos] else ""
+            return [style] * len(row)
+        participant_styler = participants_view.style.apply(_highlight_participant_rows, axis=1)
+        st.dataframe(participant_styler, use_container_width=True, hide_index=True)
 
     training_tag_scope = df_live_focus.copy()
     if not training_tag_scope.empty:
