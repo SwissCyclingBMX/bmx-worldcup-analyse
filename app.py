@@ -2178,8 +2178,19 @@ if st.sidebar.button("Cache leeren"):
 if training_live:
     st.subheader("Training Live – Zeiten (aktuelles Event)")
 
+    def training_datetime_label(raw_label: object, raw_time: object, fallback: object = "") -> str:
+        label = str(raw_label or "").strip()
+        time_txt = str(raw_time or "").strip()
+        fallback_txt = str(fallback or "").strip()
+        if label:
+            return label
+        if time_txt:
+            return time_txt
+        return fallback_txt
+
     metric_options = {
-        "Start to Bottom": "start",
+        "Start to Kink": "kink",
+        "Start to Bottom": "bottom",
         "Start to Turn 1": "t1",
         "Split first Straight": "split_t1",
     }
@@ -2194,7 +2205,7 @@ if training_live:
 
     df_live_scope = df_live_scope.copy()
     df_live_scope["split_t1"] = df_live_scope["t1_s"] - df_live_scope["start_s"]
-    if metric_col in ["start", "t1"]:
+    if metric_col in ["kink", "bottom", "start", "t1"]:
         df_live_scope["metric_s"] = df_live_scope[metric_col + "_s"]
     else:
         df_live_scope["metric_s"] = df_live_scope[metric_col]
@@ -2216,6 +2227,10 @@ if training_live:
         frame["gate_label"] = frame["gate"].fillna("").astype(str).str.strip()
         frame["clock_time"] = frame.apply(
             lambda r: extract_clock_time(r.get("gate"), r.get("source_file"), r.get("start"), r.get("t1")),
+            axis=1,
+        )
+        frame["start_label"] = frame.apply(
+            lambda r: training_datetime_label(r.get("training_block_label"), r.get("training_block_time"), r.get("clock_time")),
             axis=1,
         )
         frame["start_id"] = frame["gate_label"]
@@ -2295,12 +2310,12 @@ if training_live:
     start_summary = (
         df_live_focus.groupby("start_id", as_index=False)
         .agg(
-            Start=("gate_label", lambda s: next((x for x in s if str(x).strip()), "Training")),
-            Uhrzeit=("clock_time", lambda s: next((x for x in s if str(x).strip()), "")),
+            DatumZeit=("start_label", lambda s: next((x for x in s if str(x).strip()), "Training")),
             Kategorie=("category_label", lambda s: next((x for x in s if str(x).strip()), "")),
             _sort_num=("start_num", "min"),
+            _sort_time=("training_block_time", lambda s: next((x for x in s if str(x).strip()), "")),
         )
-        .sort_values(["_sort_num", "Start", "Uhrzeit"], na_position="last", kind="stable")
+        .sort_values(["_sort_time", "_sort_num", "DatumZeit"], na_position="last", kind="stable")
     )
     start_summary["Schnellste"] = start_summary["Kategorie"].map(category_best_map)
     start_matrix = (
@@ -2313,8 +2328,7 @@ if training_live:
     start_rows = []
     for row in start_summary.itertuples():
         row_data = {
-            "Start": str(row.Start or "Training"),
-            "Uhrzeit": str(row.Uhrzeit or ""),
+            "Datum / Uhrzeit": str(row.DatumZeit or "Training"),
             "Schnellste": format_seconds_3(row.Schnellste),
         }
         for rider in riders:
@@ -2358,16 +2372,14 @@ if training_live:
         start_rows.append(row_data)
 
     best_rank_row = {
-        "Start": "Segment Rank best start",
-        "Uhrzeit": "",
+        "Datum / Uhrzeit": "Segment Rank best start",
         "Schnellste": "",
     }
     for rider in riders:
         best_info = athlete_best_map.get(rider)
         best_rank_row[rider] = html_lib.escape(format_rank_tag(best_info.get("best_rank"))) if best_info else ""
 
-    show_clock_col = start_summary["Uhrzeit"].fillna("").astype(str).str.strip().ne("").any()
-    start_columns = ["Start"] + (["Uhrzeit"] if show_clock_col else []) + ["Schnellste"] + riders
+    start_columns = ["Datum / Uhrzeit", "Schnellste"] + riders
     start_html = [
         "<style>",
         ".training-live-table-wrap { max-height: 540px; overflow: auto; }",
@@ -2399,7 +2411,7 @@ if training_live:
         start_html.append("<tr>")
         for col in start_columns:
             cell = row_data.get(col, "")
-            if col in {"Start", "Uhrzeit", "Schnellste"}:
+            if col in {"Datum / Uhrzeit", "Schnellste"}:
                 cell = html_lib.escape(str(cell or ""))
             start_html.append(f"<td>{cell}</td>")
         start_html.append("</tr>")
@@ -2409,9 +2421,7 @@ if training_live:
 
     start_display_map = {}
     for _, row in start_summary.iterrows():
-        label = str(row.get("Start") or "Training")
-        clock = str(row.get("Uhrzeit") or "").strip()
-        start_display_map[str(row.get("start_id"))] = f"{label} | {clock}" if clock else label
+        start_display_map[str(row.get("start_id"))] = str(row.get("DatumZeit") or "Training")
 
     start_options = start_summary["start_id"].tolist()
     selected_start_id = st.selectbox(
@@ -2425,14 +2435,18 @@ if training_live:
     df_start = df_start.sort_values(["metric_s", "name"], na_position="last", kind="stable")
     if not df_start.empty:
         st.markdown("**Teilnehmer dieses Starts:**")
+        df_start["Datum / Uhrzeit"] = df_start.apply(
+            lambda r: training_datetime_label(r.get("training_block_label"), r.get("training_block_time"), r.get("clock_time")),
+            axis=1,
+        )
+        df_start["Kink"] = df_start["kink_s"].apply(format_seconds_3) if "kink_s" in df_start.columns else ""
         df_start["Start"] = df_start["start_s"].apply(format_seconds_3)
         df_start["Split"] = df_start["split_t1"].apply(format_seconds_3)
         df_start["T1"] = df_start["t1_s"].apply(format_seconds_3)
-        participant_cols = ["category_label", "nation", "name", "Start", "Split", "T1"]
+        participant_cols = ["Datum / Uhrzeit", "nation", "name", "Kink", "Start", "Split", "T1"]
         participant_cols = [c for c in participant_cols if c in df_start.columns]
         participants_view = df_start[participant_cols].rename(
             columns={
-                "category_label": "Kategorie",
                 "nation": "Nation",
                 "name": "Name",
             }
@@ -2458,13 +2472,9 @@ if training_live:
             st.markdown("**Training Tagging:**")
             block_label_map = {}
             for _, row in training_block_summary.iterrows():
-                label = str(row.get("label") or "Training")
-                time_txt = str(row.get("block_time") or "").strip()
+                label = training_datetime_label(row.get("label"), row.get("block_time"), "Training")
                 athletes_txt = f"{int(row.get('athlete_count') or 0)} Athleten"
-                pretty = label
-                if time_txt and time_txt not in label:
-                    pretty = f"{label} | {time_txt}"
-                pretty = f"{pretty} | {athletes_txt}"
+                pretty = f"{label} | {athletes_txt}"
                 block_label_map[str(row["training_block_id"])] = pretty
 
             selected_training_block_id = st.selectbox(
@@ -2479,15 +2489,17 @@ if training_live:
             df_training_block = df_training_block.sort_values(["name", "gate"], na_position="last", kind="stable")
             athlete_tags_train, meta_tags_train = build_training_tag_payload(df_training_block)
             if not df_training_block.empty:
-                block_cols = [c for c in ["category_label", "nation", "name", "gate"] if c in df_training_block.columns]
+                df_training_block["Datum / Uhrzeit"] = df_training_block.apply(
+                    lambda r: training_datetime_label(r.get("training_block_label"), r.get("training_block_time"), r.get("clock_time")),
+                    axis=1,
+                )
+                block_cols = [c for c in ["Datum / Uhrzeit", "nation", "name"] if c in df_training_block.columns]
                 if block_cols:
                     st.dataframe(
                         df_training_block[block_cols].rename(
                             columns={
-                                "category_label": "Kategorie",
                                 "nation": "Nation",
                                 "name": "Name",
-                                "gate": "Gate",
                             }
                         ),
                         use_container_width=True,
