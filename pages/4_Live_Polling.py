@@ -243,6 +243,19 @@ def resolve_event_label(source: str, env_vals: Dict[str, str]) -> str:
             return ""
     if source == "chronorace":
         return env_vals.get("EVENTS", "").splitlines()[0].strip()
+    if source == "bmxracer":
+        event_id = env_vals.get("EVENT_ID", "").strip()
+        db_path = env_vals.get("DB_PATH", DEFAULT_DB_PATH)
+        if event_id and db_path_exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                row = conn.execute("SELECT display_name FROM events WHERE event_id = ? LIMIT 1", (event_id,)).fetchone()
+                conn.close()
+                if row and row[0]:
+                    return str(row[0])
+            except Exception:
+                pass
+        return env_vals.get("DISPLAY_NAME", "").strip() or event_id
     return ""
 
 
@@ -270,7 +283,7 @@ require_page_access(["admin"], "Live Polling")
 render_sidebar_nav()
 
 st.title("Live Polling")
-st.caption("Mehrere Polling-Services parallel starten (Sqorz, JSTiming, Chronorace).")
+st.caption("Mehrere Polling-Services parallel starten (Sqorz, JSTiming, Chronorace, BMX-Racer).")
 
 if not running_on_systemd_host() or not systemctl_available():
     st.error("Diese Seite funktioniert nur auf dem VPS mit systemd.")
@@ -361,8 +374,8 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
     with st.expander(f"Konfiguration {i}", expanded=(i == 1)):
         source_key = f"poll_src_{fid}"
         ensure_state(source_key, "sqorz")
-        source_label = st.selectbox("Quelle", ["Sqorz", "JSTiming", "Chronorace"], key=f"poll_src_label_{fid}")
-        source = {"Sqorz": "sqorz", "JSTiming": "jstiming", "Chronorace": "chronorace"}[source_label]
+        source_label = st.selectbox("Quelle", ["Sqorz", "JSTiming", "Chronorace", "BMX-Racer"], key=f"poll_src_label_{fid}")
+        source = {"Sqorz": "sqorz", "JSTiming": "jstiming", "Chronorace": "chronorace", "BMX-Racer": "bmxracer"}[source_label]
 
         ensure_state(f"poll_name_{fid}", f"{source}-{fid}")
         raw_name = st.text_input("Service Name", key=f"poll_name_{fid}")
@@ -466,7 +479,7 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
             env_values["ALL_CLASSES"] = "1" if all_classes else "0"
             env_values["VERBOSE"] = "1" if verbose else "0"
 
-        else:
+        elif source == "chronorace":
             events = st.text_area(
                 "Events (slug/event-id, eine pro Zeile)",
                 key=f"poll_chrono_events_{fid}",
@@ -477,6 +490,43 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
                 errors.append("Mindestens ein Event ist nötig.")
             env_values["EVENTS"] = events
             env_values["WORKERS"] = str(workers)
+        else:
+            url = st.text_input(
+                "Display URL",
+                key=f"poll_bmxracer_url_{fid}",
+                placeholder="https://weinfelden.bmx-racer.com/display.php?nr=1",
+            ).strip()
+            today = datetime.date.today().strftime("%Y%m%d")
+            default_event_id = f"{today}_other_bmxracer_bmx"
+            event_id = st.text_input(
+                "Ziel event_id in DB",
+                key=f"poll_bmxracer_event_id_{fid}",
+                value=default_event_id,
+            ).strip()
+            display_name = st.text_input(
+                "Display Name",
+                key=f"poll_bmxracer_display_name_{fid}",
+                value="Weinfelden BMX-Racer Training",
+            ).strip()
+            location = st.text_input(
+                "Location",
+                key=f"poll_bmxracer_location_{fid}",
+                value="Weinfelden",
+            ).strip()
+            country = st.text_input(
+                "Country",
+                key=f"poll_bmxracer_country_{fid}",
+                value="SUI",
+            ).strip().upper()
+            if not url:
+                errors.append("Display URL fehlt.")
+            if not event_id:
+                errors.append("Ziel event_id fehlt.")
+            env_values["URL"] = url
+            env_values["EVENT_ID"] = event_id
+            env_values["DISPLAY_NAME"] = display_name
+            env_values["LOCATION"] = location
+            env_values["COUNTRY"] = country
 
         db_help = None
         if source == "jstiming" and st.session_state.get(f"poll_jst_all_{fid}", False):

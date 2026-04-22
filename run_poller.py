@@ -5,7 +5,7 @@ run_poller.py
 Generic background poller runner for systemd service instances.
 
 Environment variables:
-  POLLER_KIND: sqorz | jstiming | chronorace
+  POLLER_KIND: sqorz | jstiming | chronorace | bmxracer
   POLL_INTERVAL: seconds (default: 15)
   DB_PATH: sqlite path (default: bmx.db)
 
@@ -26,6 +26,13 @@ jstiming:
 chronorace:
   EVENTS (required, separated by newline/comma/semicolon)
   WORKERS (optional, default 6)
+
+bmxracer:
+  URL (required)
+  EVENT_ID (required)
+  DISPLAY_NAME (optional)
+  LOCATION (optional)
+  COUNTRY (optional)
 """
 
 from __future__ import annotations
@@ -138,6 +145,32 @@ def build_cmd() -> List[str]:
             "--workers",
             str(workers),
         ]
+        return cmd
+
+    if kind == "bmxracer":
+        url = str(os.getenv("URL", "")).strip()
+        event_id = str(os.getenv("EVENT_ID", "")).strip()
+        if not url or not event_id:
+            raise RuntimeError("bmxracer requires URL and EVENT_ID")
+        cmd = [
+            PYTHON_BIN,
+            os.path.join(REPO_DIR, "ingest_bmx_racer.py"),
+            "--url",
+            url,
+            "--event-id",
+            event_id,
+            "--db",
+            db_path,
+        ]
+        display_name = str(os.getenv("DISPLAY_NAME", "")).strip()
+        location = str(os.getenv("LOCATION", "")).strip()
+        country = str(os.getenv("COUNTRY", "")).strip()
+        if display_name:
+            cmd.extend(["--display-name", display_name])
+        if location:
+            cmd.extend(["--location", location])
+        if country:
+            cmd.extend(["--country", country])
         return cmd
 
     raise RuntimeError(f"Unsupported POLLER_KIND='{kind}'")
