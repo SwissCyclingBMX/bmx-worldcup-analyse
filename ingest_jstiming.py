@@ -400,14 +400,33 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
           name TEXT,
           nation TEXT,
           gate TEXT,
+          kink TEXT,
+          bottom TEXT,
+          interim TEXT,
+          t1_in TEXT,
+          total TEXT,
           start TEXT,
           t1 TEXT,
+          source_kind TEXT,
           source_file TEXT,
           ingested_at TEXT NOT NULL,
           PRIMARY KEY (event_id, category, bib, name, gate, start, t1, source_file)
         )
         """
     )
+    cur = conn.execute("PRAGMA table_info(training_times)")
+    existing = {row[1] for row in cur.fetchall()}
+    wanted = {
+        "kink": "TEXT",
+        "bottom": "TEXT",
+        "interim": "TEXT",
+        "t1_in": "TEXT",
+        "total": "TEXT",
+        "source_kind": "TEXT",
+    }
+    for col, col_type in wanted.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE training_times ADD COLUMN {col} {col_type}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_training_event ON training_times(event_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_training_event_name ON training_times(event_id, name)")
     conn.execute(
@@ -435,9 +454,13 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
     conn.executemany(
         """
         INSERT OR IGNORE INTO training_times (
-          event_id, category, bib, name, nation, gate, start, t1, source_file, ingested_at
+          event_id, category, bib, name, nation, gate,
+          kink, bottom, interim, t1_in, total,
+          start, t1, source_kind, source_file, ingested_at
         ) VALUES (
-          :event_id, :category, :bib, :name, :nation, :gate, :start, :t1, :source_file, :ingested_at
+          :event_id, :category, :bib, :name, :nation, :gate,
+          :kink, :bottom, :interim, :t1_in, :total,
+          :start, :t1, :source_kind, :source_file, :ingested_at
         )
         """,
         rows,

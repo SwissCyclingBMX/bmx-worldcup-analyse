@@ -123,6 +123,18 @@ def norm_time(raw: str) -> Optional[str]:
     return None
 
 
+def safe_delta(later: Optional[str], earlier: Optional[str]) -> Optional[str]:
+    try:
+        if later is None or earlier is None:
+            return None
+        val = round(float(later) - float(earlier), 3)
+        if val < 0:
+            return None
+        return f"{val:.3f}".rstrip("0").rstrip(".")
+    except Exception:
+        return None
+
+
 def parse_training_rows(rows: List[List[str]], event_id: str, source_file: str) -> Tuple[List[Dict[str, object]], Optional[str]]:
     out: List[Dict[str, object]] = []
     latest_event_date: Optional[str] = None
@@ -150,6 +162,12 @@ def parse_training_rows(rows: List[List[str]], event_id: str, source_file: str) 
         if not name:
             continue
 
+        kink = norm_time(cells[2])
+        interim = norm_time(cells[4])
+        total = norm_time(cells[6])
+        bottom = safe_delta(interim, kink)
+        t1_in = safe_delta(total, interim)
+
         row = {
             "event_id": event_id,
             "category": "",
@@ -157,8 +175,15 @@ def parse_training_rows(rows: List[List[str]], event_id: str, source_file: str) 
             "name": name,
             "nation": None,
             "gate": gate_label,
-            "start": norm_time(cells[2]),
-            "t1": norm_time(cells[5]),
+            "kink": kink,
+            "bottom": bottom,
+            "interim": interim,
+            "t1_in": t1_in,
+            "total": total,
+            # Canonical app semantics: start = Startzeit, t1 = T1/Gesamt.
+            "start": interim,
+            "t1": total,
+            "source_kind": "bmxracer",
             "source_file": source_file,
             "ingested_at": ingested_at,
         }
