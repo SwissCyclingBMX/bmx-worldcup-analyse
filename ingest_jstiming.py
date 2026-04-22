@@ -441,22 +441,62 @@ def upsert_training_times(conn: sqlite3.Connection, rows: List[Dict[str, Any]]) 
         ON training_times(event_id, category, bib, name, nation, gate, start, t1)
         """
     )
-    conn.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_training_times_dedup
-        ON training_times(
-          event_id,
-          coalesce(category, ''),
-          coalesce(bib, -1),
-          coalesce(name, ''),
-          coalesce(nation, ''),
-          coalesce(gate, ''),
-          coalesce(start, ''),
-          coalesce(t1, ''),
-          coalesce(source_file, '')
+    try:
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_training_times_dedup
+            ON training_times(
+              event_id,
+              coalesce(category, ''),
+              coalesce(bib, -1),
+              coalesce(name, ''),
+              coalesce(nation, ''),
+              coalesce(gate, ''),
+              coalesce(start, ''),
+              coalesce(t1, ''),
+              coalesce(source_file, '')
+            )
+            """
         )
-        """
-    )
+    except sqlite3.IntegrityError:
+        # Old productive DBs can contain exact duplicate training rows from before the
+        # dedupe index existed. Clean those up once, then retry the unique index build.
+        conn.execute(
+            """
+            DELETE FROM training_times
+            WHERE rowid NOT IN (
+              SELECT MIN(rowid)
+              FROM training_times
+              GROUP BY
+                event_id,
+                coalesce(category, ''),
+                coalesce(bib, -1),
+                coalesce(name, ''),
+                coalesce(nation, ''),
+                coalesce(gate, ''),
+                coalesce(start, ''),
+                coalesce(t1, ''),
+                coalesce(source_file, '')
+            )
+            """
+        )
+        conn.commit()
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_training_times_dedup
+            ON training_times(
+              event_id,
+              coalesce(category, ''),
+              coalesce(bib, -1),
+              coalesce(name, ''),
+              coalesce(nation, ''),
+              coalesce(gate, ''),
+              coalesce(start, ''),
+              coalesce(t1, ''),
+              coalesce(source_file, '')
+            )
+            """
+        )
     conn.executemany(
         """
         INSERT OR IGNORE INTO training_times (
