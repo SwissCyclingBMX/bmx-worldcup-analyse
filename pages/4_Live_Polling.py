@@ -497,7 +497,7 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
                 value="https://weinfelden.bmx-racer.com/display.php?nr=1",
             ).strip()
             today = datetime.date.today().strftime("%Y%m%d")
-            default_event_id = f"{today}_sui_weinfelden_bmxracer_bmx"
+            default_event_id = f"{today}_Weinfelden_Training"
             event_id = st.text_input(
                 "Ziel event_id in DB",
                 key=f"poll_bmxracer_event_id_{fid}",
@@ -506,7 +506,7 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
             display_name = st.text_input(
                 "Display Name",
                 key=f"poll_bmxracer_display_name_{fid}",
-                value="Weinfelden BMX-Racer Training",
+                value="Weinfelden Training",
             ).strip()
             location = st.text_input(
                 "Location",
