@@ -452,7 +452,8 @@ def ingest_payload(conn: sqlite3.Connection, payload: Dict[str, Any], args: argp
 def main() -> None:
     args = parse_args()
     payload = load_payload(args)
-    conn = sqlite3.connect(args.db)
+    conn = sqlite3.connect(args.db, timeout=60)
+    conn.execute("PRAGMA busy_timeout = 60000")
     init_db(conn)
     event_id, nrows = ingest_payload(conn, payload, args)
     conn.close()

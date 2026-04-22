@@ -239,7 +239,8 @@ def ingest_once(args: argparse.Namespace) -> int:
     source_file = f"display.php?nr={parse_board_id(args.url)}"
     training_rows, event_date = parse_training_rows(rows, args.event_id, source_file)
 
-    conn = sqlite3.connect(args.db)
+    conn = sqlite3.connect(args.db, timeout=60)
+    conn.execute('PRAGMA busy_timeout = 60000')
     try:
         init_db(conn)
         upsert_event(conn, build_event_meta(args, event_date))

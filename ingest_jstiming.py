@@ -808,7 +808,8 @@ def main() -> None:
     if not args.race and not args.training:
         raise SystemExit("Provide --race and/or --training URLs")
 
-    conn = sqlite3.connect(args.db)
+    conn = sqlite3.connect(args.db, timeout=60)
+    conn.execute("PRAGMA busy_timeout = 60000")
     init_db(conn)
 
     used_ids: Dict[str, int] = {}

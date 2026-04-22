@@ -435,7 +435,8 @@ def main():
     ap.add_argument("--quiet", action="store_true", help="Weniger Output")
     args = ap.parse_args()
 
-    conn = sqlite3.connect(args.db)
+    conn = sqlite3.connect(args.db, timeout=60)
+    conn.execute("PRAGMA busy_timeout = 60000")
     init_db(conn)
 
     if args.once:
