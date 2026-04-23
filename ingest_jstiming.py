@@ -189,7 +189,7 @@ def infer_series(name: str) -> str:
     n = (name or "").lower()
     if "european championships" in n or "european championship" in n:
         return "em"
-    if "european cup" in n:
+    if "european bmx cup" in n or "european cup" in n:
         return "euc"
     return "uec"
 

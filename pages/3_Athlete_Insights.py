@@ -65,11 +65,21 @@ ROUND_ORDER = {
 
 def infer_event_type(event_id: str, display_name: str = "") -> str:
     raw = str(event_id or "").strip()
-    display = str(display_name or "").lower()
-    if any(token in display for token in ["bundesliga", "championnat", "cup 1", "cup 2"]):
-        return "Other"
+    display = str(display_name or "").lower().strip()
     if raw.upper() in {"WC", "WM", "EC", "EM", "USABMX", "FFC", "SCC", "OTHER"}:
         return "Other" if raw.upper() == "OTHER" else raw.upper()
+    if any(token in display for token in ["bundesliga", "championnat", "training"]) or display == "tmp":
+        return "Other"
+    if any(token in display for token in ["winterthur", " scc ", "scc -", "- scc"]):
+        return "SCC"
+    if any(token in display for token in ["lone star", "usa bmx", "pro championship", "day 1", "day 2", "day 3"]):
+        return "USABMX"
+    if "european bmx cup" in display or "european cup" in display:
+        return "EC"
+    if "european championship" in display or "european championships" in display:
+        return "EM"
+    if "world championship" in display or "world championships" in display:
+        return "WM"
     e = raw.lower()
     if "_usap_" in e or "_usabmx_" in e:
         return "USABMX"
@@ -77,9 +87,9 @@ def infer_event_type(event_id: str, display_name: str = "") -> str:
         return "FFC"
     if "_scc_" in e:
         return "SCC"
-    if "_other_" in e or "_sqorz_" in e:
+    if "_other_" in e or "_sqorz_" in e or "tmp" in e:
         return "Other"
-    if "_euc_" in e:
+    if "_euc_" in e or "_uec_" in e:
         return "EC"
     if "_em_" in e:
         return "EM"

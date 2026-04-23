@@ -519,51 +519,87 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
     df["loc_clean"] = loc_clean
 
 
-    # Series detection
-    is_wch = (
-        df["event_id"].astype(str).str.contains("wch", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains("world championship", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains("world championships", case=False, regex=False)
-    )
-    is_em = (
-        df["event_id"].astype(str).str.contains("_em_", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains("european championship", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains("european championships", case=False, regex=False)
-    )
-    is_euc = (
-        df["event_id"].astype(str).str.contains("_euc_", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains("european cup", case=False, regex=False)
-    )
-    is_usap = (
-        df["event_id"].astype(str).str.contains("_usap_", case=False, regex=False)
-        | df["event_id"].astype(str).str.contains("_usabmx_", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains("usa bmx", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains("pro championship", case=False, regex=False)
-    )
-    is_ffc = (
-        df["event_id"].astype(str).str.contains("_ffc_", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains(r"\bffc\b", case=False, regex=True)
-    )
-    is_scc = (
-        df["event_id"].astype(str).str.contains("_scc_", case=False, regex=False)
-        | df["display_name"].fillna("").astype(str).str.contains(r"\bscc\b", case=False, regex=True)
-    )
-    is_other_series = (
-        df["event_id"].astype(str).str.contains("_other_", case=False, regex=False)
-        | df["event_id"].astype(str).str.contains("_sqorz_", case=False, regex=False)
-    )
-    is_wc = (
-        df["display_name"].fillna("").astype(str).str.contains("world cup", case=False, regex=False)
-    )
+    # Series detection: prefer explicit event_type, fall back to legacy inference only when missing.
+    event_type_norm = df["event_type"].fillna("").astype(str).str.strip().str.upper()
+    name_norm = df["display_name"].fillna("").astype(str)
+    event_id_norm = df["event_id"].astype(str)
 
-    df["series"] = "wc"
-    df.loc[is_euc, "series"] = "euc"
-    df.loc[is_em, "series"] = "em"
-    df.loc[is_wch, "series"] = "wch"
-    df.loc[is_usap, "series"] = "usap"
-    df.loc[is_ffc, "series"] = "ffc"
-    df.loc[is_scc, "series"] = "scc"
-    df.loc[is_other_series, "series"] = "other"
+    is_wch = event_type_norm.eq("WM")
+    is_em = event_type_norm.eq("EM")
+    is_euc = event_type_norm.eq("EC")
+    is_usap = event_type_norm.eq("USABMX")
+    is_ffc = event_type_norm.eq("FFC")
+    is_scc = event_type_norm.eq("SCC")
+    is_other_series = event_type_norm.eq("OTHER")
+    is_wc = event_type_norm.eq("WC")
+
+    missing_type = event_type_norm.eq("")
+    is_wch = is_wch | (missing_type & (
+        event_id_norm.str.contains("wch", case=False, regex=False)
+        | name_norm.str.contains("world championship", case=False, regex=False)
+        | name_norm.str.contains("world championships", case=False, regex=False)
+    ))
+    is_em = is_em | (missing_type & (
+        event_id_norm.str.contains("_em_", case=False, regex=False)
+        | name_norm.str.contains("european championship", case=False, regex=False)
+        | name_norm.str.contains("european championships", case=False, regex=False)
+    ))
+    is_euc = is_euc | (missing_type & (
+        event_id_norm.str.contains("_euc_", case=False, regex=False)
+        | name_norm.str.contains("european cup", case=False, regex=False)
+        | name_norm.str.contains("european bmx cup", case=False, regex=False)
+    ))
+    is_usap = is_usap | (missing_type & (
+        event_id_norm.str.contains("_usap_", case=False, regex=False)
+        | event_id_norm.str.contains("_usabmx_", case=False, regex=False)
+        | name_norm.str.contains("usa bmx", case=False, regex=False)
+        | name_norm.str.contains("pro championship", case=False, regex=False)
+        | name_norm.str.contains("lone star", case=False, regex=False)
+        | name_norm.str.contains("day 1", case=False, regex=False)
+        | name_norm.str.contains("day 2", case=False, regex=False)
+        | name_norm.str.contains("day 3", case=False, regex=False)
+    ))
+    is_ffc = is_ffc | (missing_type & (
+        event_id_norm.str.contains("_ffc_", case=False, regex=False)
+        | name_norm.str.contains(r"\bffc\b", case=False, regex=True)
+    ))
+    is_scc = is_scc | (missing_type & (
+        event_id_norm.str.contains("_scc_", case=False, regex=False)
+        | name_norm.str.contains(r"\bscc\b", case=False, regex=True)
+        | name_norm.str.contains("winterthur", case=False, regex=False)
+    ))
+    is_other_series = is_other_series | (missing_type & (
+        event_id_norm.str.contains("_other_", case=False, regex=False)
+        | event_id_norm.str.contains("_sqorz_", case=False, regex=False)
+        | event_id_norm.str.contains("tmp", case=False, regex=False)
+        | name_norm.str.fullmatch(r"\s*tmp\s*", case=False)
+        | name_norm.str.contains("bundesliga", case=False, regex=False)
+        | name_norm.str.contains("championnat", case=False, regex=False)
+        | name_norm.str.contains("training", case=False, regex=False)
+    ))
+    is_wc = is_wc | (missing_type & name_norm.str.contains("world cup", case=False, regex=False))
+
+    df["series"] = np.where(
+        is_wch,
+        "wch",
+        np.where(
+            is_em,
+            "em",
+            np.where(
+                is_euc,
+                "euc",
+                np.where(
+                    is_usap,
+                    "usap",
+                    np.where(
+                        is_ffc,
+                        "ffc",
+                        np.where(is_scc, "scc", np.where(is_other_series, "other", "wc")),
+                    ),
+                ),
+            ),
+        ),
+    )
 
     # Determine which events have race picks (avoid counting practice/training as rounds)
     race_event_ids = set()
@@ -583,21 +619,21 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
         except Exception:
             pass
 
-    # Assign sequential rounds per year and series (WC and EC separate)
+    # Assign sequential rounds only for real WC / EC race weekends. Other series keep display names.
     df["_event_day"] = pd.to_datetime(df["event_id"].astype(str).str.slice(0, 8), format="%Y%m%d", errors="coerce")
     df["round_num"] = pd.NA
-    mask_round = ~(is_wch | is_em)
+    mask_round = df["series"].isin(["wc", "euc"])
     if race_event_ids:
         mask_round = mask_round & df["event_id"].isin(race_event_ids)
     for (yr, series), grp in df.loc[mask_round].sort_values(["_event_day", "event_id"]).groupby(["year", "series"]):
         df.loc[grp.index, "round_num"] = range(1, len(grp) + 1)
 
-    df["label_short"] = "ROUND " + df["round_num"].astype("Int64").astype(str) + " - " + loc_clean
-    # European Cup prefix
-    df.loc[df["series"] == "euc", "label_short"] = (
-        "EC-" + df.loc[df["series"] == "euc", "label_short"]
+    round_label = "ROUND " + df["round_num"].astype("Int64").astype(str) + " - " + loc_clean
+    df["label_short"] = base
+    df.loc[mask_round & df["round_num"].notna(), "label_short"] = round_label.loc[mask_round & df["round_num"].notna()]
+    df.loc[(df["series"] == "euc") & df["round_num"].notna(), "label_short"] = (
+        "EC-" + round_label.loc[(df["series"] == "euc") & df["round_num"].notna()]
     )
-    df["label_short"] = df["label_short"].where(df["round_num"].notna(), df["display_name"])
     df["label_short"] = df["label_short"].str.strip()
     df["label_analysis"] = df["label_short"] + " - " + df["year"].astype(str)
 
