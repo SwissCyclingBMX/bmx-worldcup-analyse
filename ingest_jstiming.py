@@ -585,10 +585,9 @@ def parse_riders(heat: Dict[str, Any]) -> List[Dict[str, Any]]:
         start_val = add.get("c11")
         t1_val = add.get("c12")
         finish_val = add.get("c14")
-        # fallback to result if splits missing (common in gate practice)
+        # Race results may omit split columns. Do not backfill lap time into `start`,
+        # otherwise Athlete Insights interprets missing start splits as valid starts.
         res_val = r.get("result")
-        if start_val in (None, "") and res_val not in (None, ""):
-            start_val = res_val
         if finish_val in (None, "") and res_val not in (None, ""):
             finish_val = res_val
         out.append(
