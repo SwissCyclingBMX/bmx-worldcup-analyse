@@ -435,14 +435,25 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
     try:
         conn = sqlite3.connect(db_path)
         try:
-            df = pd.read_sql_query(
-                """
-                SELECT event_id, display_name, location, country, event_date, last_seen
-                FROM events
-                ORDER BY event_id DESC
-                """,
-                conn,
-            )
+            try:
+                df = pd.read_sql_query(
+                    """
+                    SELECT event_id, display_name, location, country, event_type, event_date, last_seen
+                    FROM events
+                    ORDER BY event_id DESC
+                    """,
+                    conn,
+                )
+            except Exception:
+                df = pd.read_sql_query(
+                    """
+                    SELECT event_id, display_name, location, country, event_date, last_seen
+                    FROM events
+                    ORDER BY event_id DESC
+                    """,
+                    conn,
+                )
+                df["event_type"] = ""
         finally:
             conn.close()
     except Exception:
@@ -1956,46 +1967,68 @@ if events.empty:
 
 # Robust series code for sidebar filtering (works even if cached events lacks 'series').
 events_work = events.copy()
-if "series" in events_work.columns:
-    series_code = events_work["series"].astype(str).str.lower().str.strip()
-else:
-    eid_l = events_work["event_id"].astype(str).str.lower()
-    name_l = events_work["display_name"].fillna("").astype(str).str.lower()
-    series_code = np.where(
-        eid_l.str.contains("wch", regex=False) | name_l.str.contains("world championship", regex=False),
-        "wch",
+event_type_l = events_work.get("event_type", pd.Series(index=events_work.index, dtype="object")).fillna("").astype(str).str.strip().str.upper()
+series_from_type = np.where(
+    event_type_l.eq("WM"), "wch",
+    np.where(
+        event_type_l.eq("EC"), "euc",
         np.where(
-            eid_l.str.contains("_em_", regex=False) | name_l.str.contains("european championship", regex=False),
-            "em",
+            event_type_l.eq("EM"), "em",
             np.where(
-                eid_l.str.contains("_euc_", regex=False) | name_l.str.contains("european cup", regex=False),
-                "euc",
+                event_type_l.eq("USABMX"), "usap",
                 np.where(
-                    eid_l.str.contains("_ffc_", regex=False)
-                    | name_l.str.contains(r"\bffc\b", regex=True),
-                    "ffc",
+                    event_type_l.eq("FFC"), "ffc",
                     np.where(
-                        eid_l.str.contains("_scc_", regex=False)
-                        | name_l.str.contains(r"\bscc\b", regex=True),
-                        "scc",
+                        event_type_l.eq("SCC"), "scc",
+                        np.where(event_type_l.eq("OTHER"), "other", np.where(event_type_l.eq("WC"), "wc", "")),
+                    ),
+                ),
+            ),
+        ),
+    ),
+)
+eid_l = events_work["event_id"].astype(str).str.lower()
+name_l = events_work["display_name"].fillna("").astype(str).str.lower()
+series_fallback = np.where(
+    name_l.str.contains("bundesliga", regex=False)
+    | name_l.str.contains("championnat", regex=False),
+    "other",
+    np.where(
+    eid_l.str.contains("wch", regex=False) | name_l.str.contains("world championship", regex=False),
+    "wch",
+    np.where(
+        eid_l.str.contains("_em_", regex=False) | name_l.str.contains("european championship", regex=False),
+        "em",
+        np.where(
+            eid_l.str.contains("_euc_", regex=False) | name_l.str.contains("european cup", regex=False),
+            "euc",
+            np.where(
+                eid_l.str.contains("_ffc_", regex=False)
+                | name_l.str.contains(r"\bffc\b", regex=True),
+                "ffc",
+                np.where(
+                    eid_l.str.contains("_scc_", regex=False)
+                    | name_l.str.contains(r"\bscc\b", regex=True),
+                    "scc",
+                    np.where(
+                        eid_l.str.contains("_other_", regex=False)
+                        | eid_l.str.contains("_sqorz_", regex=False),
+                        "other",
                         np.where(
-                            eid_l.str.contains("_other_", regex=False)
-                            | eid_l.str.contains("_sqorz_", regex=False),
-                            "other",
-                            np.where(
-                                eid_l.str.contains("_usap_", regex=False)
-                                | eid_l.str.contains("_usabmx_", regex=False)
-                                | name_l.str.contains("usa bmx", regex=False)
-                                | name_l.str.contains("pro championship", regex=False),
-                                "usap",
-                                "wc",
-                            ),
+                            eid_l.str.contains("_usap_", regex=False)
+                            | eid_l.str.contains("_usabmx_", regex=False)
+                            | name_l.str.contains("usa bmx", regex=False)
+                            | name_l.str.contains("pro championship", regex=False),
+                            "usap",
+                            "wc",
                         ),
                     ),
                 ),
             ),
         ),
-    )
+    )),
+)
+series_code = np.where(pd.Series(series_from_type, index=events_work.index).astype(str).str.strip().ne(""), series_from_type, series_fallback)
 events_work["_series_code"] = pd.Series(series_code, index=events_work.index)
 
 # Sidebar: Event Auswahl

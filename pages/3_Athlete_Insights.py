@@ -63,8 +63,14 @@ ROUND_ORDER = {
 }
 
 
-def infer_event_type(event_id: str) -> str:
-    e = str(event_id or "").lower()
+def infer_event_type(event_id: str, display_name: str = "") -> str:
+    raw = str(event_id or "").strip()
+    display = str(display_name or "").lower()
+    if any(token in display for token in ["bundesliga", "championnat", "cup 1", "cup 2"]):
+        return "Other"
+    if raw.upper() in {"WC", "WM", "EC", "EM", "USABMX", "FFC", "SCC", "OTHER"}:
+        return "Other" if raw.upper() == "OTHER" else raw.upper()
+    e = raw.lower()
     if "_usap_" in e or "_usabmx_" in e:
         return "USABMX"
     if "_ffc_" in e:
@@ -453,18 +459,33 @@ def bin_pos(pos: float) -> str:
 @st.cache_data(show_spinner=False)
 def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     conn = sqlite3.connect(db_path)
-    df = pd.read_sql_query(
-        """
-        SELECT
-          p.event_id, p.group_id, p.round_key, p.round_title, p.heat_id, p.heat_title,
-          p.name, p.nation, p.uci_id, p.rank,
-          p.start, p.t1, p.t2, p.t3, p.time,
-          e.display_name, e.location, e.country, e.event_date
-        FROM picks p
-        LEFT JOIN events e ON e.event_id = p.event_id
-        """,
-        conn,
-    )
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT
+              p.event_id, p.group_id, p.round_key, p.round_title, p.heat_id, p.heat_title,
+              p.name, p.nation, p.uci_id, p.rank,
+              p.start, p.t1, p.t2, p.t3, p.time,
+              e.display_name, e.location, e.country, e.event_date, e.event_type
+            FROM picks p
+            LEFT JOIN events e ON e.event_id = p.event_id
+            """,
+            conn,
+        )
+    except Exception:
+        df = pd.read_sql_query(
+            """
+            SELECT
+              p.event_id, p.group_id, p.round_key, p.round_title, p.heat_id, p.heat_title,
+              p.name, p.nation, p.uci_id, p.rank,
+              p.start, p.t1, p.t2, p.t3, p.time,
+              e.display_name, e.location, e.country, e.event_date
+            FROM picks p
+            LEFT JOIN events e ON e.event_id = p.event_id
+            """,
+            conn,
+        )
+        df["event_type"] = ""
     conn.close()
 
     if df.empty:
@@ -477,7 +498,15 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     df["finish"] = df["time"]
-    df["event_type"] = df["event_id"].apply(infer_event_type)
+    inferred_event_type = [
+        infer_event_type(eid, dn)
+        for eid, dn in zip(df["event_id"], df["display_name"])
+    ]
+    df["event_type"] = df["event_type"].where(
+        df["event_type"].notna() & (df["event_type"].astype(str).str.strip() != ""),
+        inferred_event_type,
+    )
+    df["event_type"] = [infer_event_type(et, dn) for et, dn in zip(df["event_type"], df["display_name"])]
     df["event_dt"] = [parse_event_date(ed, eid) for ed, eid in zip(df["event_date"], df["event_id"])]
     df["event_id_dt"] = pd.to_datetime(df["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce")
     df["year"] = pd.to_numeric(df["event_id"].astype(str).str[:4], errors="coerce").astype("Int64")

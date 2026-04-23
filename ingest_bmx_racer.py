@@ -227,6 +227,7 @@ def build_event_meta(args: argparse.Namespace, event_date: Optional[str]) -> Dic
         "display_name": display_name,
         "location": location,
         "country": args.country.strip().upper()[:3] or None,
+        "event_type": "Other",
         "event_date": event_date,
         "last_seen": now_iso(),
     }

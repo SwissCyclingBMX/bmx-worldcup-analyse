@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from ingest import init_db, upsert_event, upsert_picks, now_iso
+from ingest import init_db, normalize_event_type, upsert_event, upsert_picks, now_iso
 
 
 DEFAULT_ALLOWED_CLASSES = {"ME", "WE", "MU", "WU", "MJ", "WJ"}
@@ -194,6 +194,29 @@ def infer_series(name: str) -> str:
     return "uec"
 
 
+def infer_event_type_label(name: str) -> str:
+    return {
+        "em": "EM",
+        "euc": "EC",
+        "uec": "Other",
+    }.get(infer_series(name), "Other")
+
+
+def event_type_to_series_code(event_type: Optional[str], fallback: str) -> str:
+    event_type_norm = normalize_event_type(event_type)
+    mapping = {
+        "WC": "wc",
+        "WM": "wch",
+        "EC": "euc",
+        "EM": "em",
+        "USABMX": "usap",
+        "FFC": "ffc",
+        "SCC": "scc",
+        "Other": "other",
+    }
+    return mapping.get(event_type_norm or "", fallback)
+
+
 def build_event_id(date_yyyymmdd: str, series_code: str, used: Dict[str, int]) -> str:
     base = f"{date_yyyymmdd}_{series_code}_bmx"
     if base not in used:
@@ -338,17 +361,23 @@ def extract_props(payload: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def make_event_meta(props: Dict[str, Any], used_ids: Dict[str, int]) -> Tuple[str, str, str, str, str]:
+def make_event_meta(
+    props: Dict[str, Any],
+    used_ids: Dict[str, int],
+    event_type_override: Optional[str] = None,
+) -> Tuple[str, str, str, str, str, str]:
     event = props.get("event", {}) or {}
     name = clean_name(event.get("name", ""))
     city = event.get("city", "") or ""
     ioc = (event.get("ioc_code", "") or "").upper()
     date_raw = event.get("start_date") or event.get("end_date") or ""
     date_yyyymmdd = parse_date(date_raw) or dt.date.today().strftime("%Y%m%d")
-    series_code = infer_series(name)
+    inferred_series_code = infer_series(name)
+    event_type = normalize_event_type(event_type_override) or infer_event_type_label(name)
+    series_code = event_type_to_series_code(event_type, inferred_series_code)
     event_id = build_event_id(date_yyyymmdd, series_code, used_ids)
     display_name = name if name else f"{series_code.upper()} Event"
-    return event_id, display_name, city, date_yyyymmdd, ioc
+    return event_id, display_name, city, date_yyyymmdd, ioc, event_type
 
 
 def round_title_from_slug(slug: str, fallback: str) -> str:
@@ -788,6 +817,11 @@ def main() -> None:
     parser.add_argument("--race", action="append", default=[], help="Race round-1 URL (one per event)")
     parser.add_argument("--training", action="append", default=[], help="Gate practice URL")
     parser.add_argument(
+        "--event-type",
+        default="",
+        help="Optional Wettkampf Typ override: WC | WM | EC | EM | USABMX | FFC | SCC | Other",
+    )
+    parser.add_argument(
         "--all-classes",
         action="store_true",
         help="Ingest all JSTiming race classes into picks (for archive/backfill use).",
@@ -812,7 +846,11 @@ def main() -> None:
         except Exception as e:
             raise RuntimeError(f"Failed to load {race_url}: {e}") from e
         props = extract_props(payload)
-        event_id, display_name, city, date_yyyymmdd, country = make_event_meta(props, used_ids)
+        event_id, display_name, city, date_yyyymmdd, country, event_type = make_event_meta(
+            props,
+            used_ids,
+            event_type_override=args.event_type,
+        )
         base, seed_slug = split_event_root_and_seed_slug(race_url)
         upsert_event(
             conn,
@@ -821,6 +859,7 @@ def main() -> None:
                 "display_name": display_name,
                 "location": city,
                 "country": country,
+                "event_type": event_type,
                 "event_date": f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}",
                 "last_seen": now_iso(),
             },
@@ -884,7 +923,11 @@ def main() -> None:
     for train_url in args.training:
         payload = fetch_event_payload(train_url)
         props = extract_props(payload)
-        event_id, display_name, city, date_yyyymmdd, country = make_event_meta(props, used_ids)
+        event_id, display_name, city, date_yyyymmdd, country, event_type = make_event_meta(
+            props,
+            used_ids,
+            event_type_override=args.event_type,
+        )
         train_root, _ = split_event_root_and_seed_slug(train_url)
         train_uuid = event_uuid_from_props(props)
         # link to closest race event by city/date if possible
@@ -918,6 +961,7 @@ def main() -> None:
                     "display_name": display_name,
                     "location": city,
                     "country": country,
+                    "event_type": event_type,
                     "event_date": f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}",
                     "last_seen": now_iso(),
                 },
@@ -939,6 +983,7 @@ def main() -> None:
                         "display_name": display_name,
                         "location": city,
                         "country": country,
+                        "event_type": event_type,
                         "event_date": f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:8]}",
                         "last_seen": now_iso(),
                     },

@@ -118,6 +118,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         display_name TEXT,
         location TEXT,
         country TEXT,
+        event_type TEXT,
         event_date TEXT,
         last_seen TEXT
     )
@@ -165,6 +166,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     # Add new columns if table existed before
     ensure_pick_columns(conn)
+    ensure_event_columns(conn)
 
 
 def ensure_pick_columns(conn: sqlite3.Connection) -> None:
@@ -191,17 +193,57 @@ def ensure_pick_columns(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def normalize_event_type(raw: Optional[str]) -> Optional[str]:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    norm = value.lower()
+    mapping = {
+        "wc": "WC",
+        "world cup": "WC",
+        "wm": "WM",
+        "wch": "WM",
+        "world championship": "WM",
+        "ec": "EC",
+        "euc": "EC",
+        "european cup": "EC",
+        "em": "EM",
+        "european championship": "EM",
+        "usabmx": "USABMX",
+        "usap": "USABMX",
+        "ffc": "FFC",
+        "scc": "SCC",
+        "other": "Other",
+    }
+    return mapping.get(norm, value)
+
+
+def ensure_event_columns(conn: sqlite3.Connection) -> None:
+    wanted = {
+        "event_type": "TEXT",
+    }
+    cur = conn.execute("PRAGMA table_info(events)")
+    existing = {row[1] for row in cur.fetchall()}
+    for col, col_type in wanted.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {col_type}")
+    conn.commit()
+
+
 def upsert_event(conn: sqlite3.Connection, meta: Dict[str, Optional[str]]) -> None:
+    item = dict(meta)
+    item["event_type"] = normalize_event_type(item.get("event_type"))
     conn.execute("""
-    INSERT INTO events (event_id, display_name, location, country, event_date, last_seen)
-    VALUES (:event_id, :display_name, :location, :country, :event_date, :last_seen)
+    INSERT INTO events (event_id, display_name, location, country, event_type, event_date, last_seen)
+    VALUES (:event_id, :display_name, :location, :country, :event_type, :event_date, :last_seen)
     ON CONFLICT(event_id) DO UPDATE SET
         display_name=excluded.display_name,
         location=excluded.location,
         country=excluded.country,
+        event_type=coalesce(excluded.event_type, events.event_type),
         event_date=excluded.event_date,
         last_seen=excluded.last_seen
-    """, meta)
+    """, item)
     conn.commit()
 
 

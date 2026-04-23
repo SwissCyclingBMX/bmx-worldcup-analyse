@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from ingest import DEFAULT_DB_PATH, init_db, now_iso, upsert_event, upsert_picks
+from ingest import DEFAULT_DB_PATH, init_db, normalize_event_type, now_iso, upsert_event, upsert_picks
 
 SERIES_TO_CODE = {
     "USABMX": "usap",
@@ -56,6 +56,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional explicit series code for derived event_id (overrides --series).",
     )
     ap.add_argument(
+        "--event-type",
+        default="",
+        help="Optional Wettkampf Typ override: WC | WM | EC | EM | USABMX | FFC | SCC | Other",
+    )
+    ap.add_argument(
         "--all-classes",
         action="store_true",
         help="Ingest all classes (default ingests Men/Women Pro + Elite)",
@@ -75,6 +80,20 @@ def resolve_series_code(args: argparse.Namespace) -> str:
         return code or "usap"
     series_label = str(args.series or "USABMX").strip().upper()
     return SERIES_TO_CODE.get(series_label, "other")
+
+
+def resolve_event_type(args: argparse.Namespace) -> str:
+    explicit = normalize_event_type(getattr(args, "event_type", ""))
+    if explicit:
+        return explicit
+    series_label = str(args.series or "Other").strip()
+    mapping = {
+        "USABMX": "USABMX",
+        "FFC": "FFC",
+        "SCC": "SCC",
+        "Other": "Other",
+    }
+    return mapping.get(series_label, "Other")
 
 
 def unwrap_payload(obj: Any) -> Dict[str, Any]:
@@ -333,6 +352,7 @@ def ingest_payload(conn: sqlite3.Connection, payload: Dict[str, Any], args: argp
             "display_name": event_name,
             "location": None,
             "country": region or None,
+            "event_type": resolve_event_type(args),
             "event_date": date_iso,
             "last_seen": now_iso(),
         },

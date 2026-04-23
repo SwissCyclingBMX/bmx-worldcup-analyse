@@ -14,12 +14,14 @@ sqorz:
   EVENT_ID (required)
   SERIES (optional: FFC | USABMX | SCC | Other)
   SERIES_CODE (optional explicit code; overrides SERIES)
+  EVENT_TYPE (optional: WC | WM | EC | EM | USABMX | FFC | SCC | Other)
   CLASS_FILTERS (optional, newline/comma/semicolon separated)
   ALL_CLASSES=1 (optional)
 
 jstiming:
   RACE_URLS (optional, newline/comma/semicolon separated)
   TRAINING_URLS (optional, newline/comma/semicolon separated)
+  EVENT_TYPE (optional: WC | WM | EC | EM | USABMX | FFC | SCC | Other)
   ALL_CLASSES=1 (optional; archive/backfill use)
   VERBOSE=1 (optional)
 
@@ -103,10 +105,13 @@ def build_cmd() -> List[str]:
         ]
         series_code = str(os.getenv("SERIES_CODE", "")).strip()
         series_label = str(os.getenv("SERIES", "")).strip()
+        event_type = str(os.getenv("EVENT_TYPE", "")).strip()
         if series_code:
             cmd.extend(["--series-code", series_code])
         elif series_label:
             cmd.extend(["--series", series_label])
+        if event_type:
+            cmd.extend(["--event-type", event_type])
         if str(os.getenv("ALL_CLASSES", "0")).strip() in {"1", "true", "True"}:
             cmd.append("--all-classes")
         else:
@@ -124,6 +129,9 @@ def build_cmd() -> List[str]:
             cmd.extend(["--race", u])
         for u in training_urls:
             cmd.extend(["--training", u])
+        event_type = str(os.getenv("EVENT_TYPE", "")).strip()
+        if event_type:
+            cmd.extend(["--event-type", event_type])
         if str(os.getenv("ALL_CLASSES", "0")).strip() in {"1", "true", "True"}:
             cmd.append("--all-classes")
         if str(os.getenv("VERBOSE", "0")).strip() in {"1", "true", "True"}:

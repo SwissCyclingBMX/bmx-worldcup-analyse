@@ -17,6 +17,7 @@ from access_control import render_sidebar_nav, require_page_access
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_DB_PATH = os.path.join(REPO_DIR, "bmx.db")
 ARCHIVE_DB_PATH = os.path.join(REPO_DIR, "bmx_archive.db")
+EVENT_TYPE_OPTIONS = ["WC", "WM", "EC", "EM", "USABMX", "FFC", "SCC", "Other"]
 
 POLLER_ENV_DIR = "/etc/bmx-pollers"
 POLLER_UNIT_TEMPLATE = "/etc/systemd/system/bmx-poller@.service"
@@ -394,11 +395,7 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
         errors: List[str] = []
 
         if source == "sqorz":
-            series_label = st.selectbox(
-                "Rennserie",
-                ["USABMX", "FFC", "SCC", "Other"],
-                key=f"poll_sqorz_series_{fid}",
-            )
+            series_label = st.selectbox("Wettkampf Typ", ["USABMX", "FFC", "SCC", "Other"], key=f"poll_sqorz_series_{fid}")
             series_code_map = {"USABMX": "usap", "FFC": "ffc", "SCC": "scc", "Other": "other"}
             series_code = series_code_map.get(series_label, "other")
             if series_label == "Other":
@@ -445,11 +442,13 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
             env_values["EVENT_ID"] = event_target
             env_values["SERIES"] = series_label
             env_values["SERIES_CODE"] = series_code
+            env_values["EVENT_TYPE"] = series_label
             env_values["ALL_CLASSES"] = "1" if all_classes else "0"
             if not all_classes:
                 env_values["CLASS_FILTERS"] = class_filters
 
         elif source == "jstiming":
+            event_type = st.selectbox("Wettkampf Typ", EVENT_TYPE_OPTIONS, index=7, key=f"poll_jst_event_type_{fid}")
             race_urls = st.text_area("Race URLs (eine pro Zeile)", key=f"poll_jst_race_{fid}", height=90)
             training_urls = st.text_area("Training URLs (eine pro Zeile)", key=f"poll_jst_training_{fid}", height=90)
             all_classes = st.checkbox(
@@ -476,6 +475,7 @@ for i, fid in enumerate(st.session_state["live_poller_form_ids"], start=1):
                 errors.append("Mindestens eine Race- oder Training-URL ist nötig.")
             env_values["RACE_URLS"] = race_urls
             env_values["TRAINING_URLS"] = training_urls
+            env_values["EVENT_TYPE"] = event_type
             env_values["ALL_CLASSES"] = "1" if all_classes else "0"
             env_values["VERBOSE"] = "1" if verbose else "0"
 
