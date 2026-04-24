@@ -1009,8 +1009,16 @@ def filter_training_metric_outliers(
     df_train: pd.DataFrame,
     metric_col: str,
     category_col: str = "category_label",
+    absolute_lower: Optional[float] = None,
+    absolute_upper: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
-    flagged_df, stats = flag_training_metric_outliers(df_train, metric_col, category_col=category_col)
+    flagged_df, stats = flag_training_metric_outliers(
+        df_train,
+        metric_col,
+        category_col=category_col,
+        absolute_lower=absolute_lower,
+        absolute_upper=absolute_upper,
+    )
     if flagged_df.empty or "measurement_flagged" not in flagged_df.columns:
         return flagged_df, stats
     return flagged_df.loc[~flagged_df["measurement_flagged"]].copy(), stats
@@ -1021,6 +1029,8 @@ def flag_training_metric_outliers(
     metric_col: str,
     category_col: str = "category_label",
     athlete_col: str = "name",
+    absolute_lower: Optional[float] = None,
+    absolute_upper: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
     if df_train.empty or metric_col not in df_train.columns or category_col not in df_train.columns:
         return df_train, {}
@@ -1029,6 +1039,15 @@ def flag_training_metric_outliers(
     metric_all = pd.to_numeric(df_flagged[metric_col], errors="coerce")
     df_flagged["measurement_flagged"] = metric_all.notna() & (metric_all <= 0)
     df_flagged["measurement_flag_reason"] = np.where(df_flagged["measurement_flagged"], "non_positive", "")
+
+    if absolute_lower is not None:
+        too_low_abs = metric_all.notna() & (metric_all < float(absolute_lower))
+        df_flagged.loc[too_low_abs, "measurement_flagged"] = True
+        df_flagged.loc[too_low_abs, "measurement_flag_reason"] = df_flagged.loc[too_low_abs, "measurement_flag_reason"].replace("", "absolute_low")
+    if absolute_upper is not None:
+        too_high_abs = metric_all.notna() & (metric_all > float(absolute_upper))
+        df_flagged.loc[too_high_abs, "measurement_flagged"] = True
+        df_flagged.loc[too_high_abs, "measurement_flag_reason"] = df_flagged.loc[too_high_abs, "measurement_flag_reason"].replace("", "absolute_high")
 
     stats: Dict[str, Dict[str, float]] = {}
 
@@ -2375,8 +2394,15 @@ if training_live:
         st.stop()
 
     filtered_training_stats: Dict[str, Dict[str, float]] = {}
+    metric_abs_lower = 2.1 if metric_col == "start" else None
+    metric_abs_upper = 3.5 if metric_col == "start" else None
     if filter_bad_training:
-        df_live_scope, filtered_training_stats = flag_training_metric_outliers(df_live_scope, "metric_s")
+        df_live_scope, filtered_training_stats = flag_training_metric_outliers(
+            df_live_scope,
+            "metric_s",
+            absolute_lower=metric_abs_lower,
+            absolute_upper=metric_abs_upper,
+        )
         flagged_count = int(df_live_scope["measurement_flagged"].fillna(False).sum())
         if flagged_count > 0:
             st.caption(f"Fehlmessungen markiert und aus Rankings ausgeschlossen: {flagged_count}")
@@ -3083,7 +3109,12 @@ if selected_heat_section == "Startliste - Gate Pick":
             if gid in GROUP_MAP:
                 df_train = df_train[df_train["training_group_label"] == GROUP_MAP[gid]].copy()
             if not df_train.empty:
-                df_train, _ = filter_training_metric_outliers(df_train, "start_s")
+                df_train, _ = filter_training_metric_outliers(
+                    df_train,
+                    "start_s",
+                    absolute_lower=2.1,
+                    absolute_upper=3.5,
+                )
             stats = training_stats(df_train)
             stats_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]
             stats = stats[stats_cols]
