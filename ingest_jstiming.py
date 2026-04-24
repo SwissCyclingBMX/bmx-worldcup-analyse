@@ -728,6 +728,14 @@ def ingest_training_props(conn: sqlite3.Connection, props: Dict[str, Any], event
         for r in parse_riders(h):
             if not r["name"]:
                 continue
+            start_val = r["start"].strip() if isinstance(r["start"], str) else r["start"]
+            t1_val = r["t1"].strip() if isinstance(r["t1"], str) else r["t1"]
+            result_val = r.get("result")
+            result_val = result_val.strip() if isinstance(result_val, str) else result_val
+            # JSTiming gate-practice often exposes only a single live time in `result`.
+            # For training views this is the start metric and should populate `start`.
+            if start_val in (None, "") and result_val not in (None, ""):
+                start_val = result_val
             rows.append(
                 {
                     "event_id": event_id,
@@ -744,8 +752,8 @@ def ingest_training_props(conn: sqlite3.Connection, props: Dict[str, Any], event
                     "training_block_id": block_id,
                     "training_block_label": block_label,
                     "training_block_time": explicit_block_time,
-                    "start": r["start"].strip() if isinstance(r["start"], str) else r["start"],
-                    "t1": r["t1"].strip() if isinstance(r["t1"], str) else r["t1"],
+                    "start": start_val,
+                    "t1": t1_val,
                     "source_kind": "jstiming",
                     "source_file": source_file,
                     "ingested_at": now_iso(),
