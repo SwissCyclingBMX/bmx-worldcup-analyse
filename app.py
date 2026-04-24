@@ -2393,15 +2393,38 @@ if training_live:
         st.info("Keine Trainingszeiten fuer die gewaehlte Metrik vorhanden.")
         st.stop()
 
+    custom_abs_lower: Optional[float] = None
+    custom_abs_upper: Optional[float] = None
+    if filter_bad_training:
+        c_min, c_max = st.columns(2)
+        with c_min:
+            min_raw = st.text_input(
+                "Min. gueltige Zeit (optional)",
+                value=page_prefs.get("training_live_min_time", ""),
+                key="training_live_min_time",
+            ).strip()
+        with c_max:
+            max_raw = st.text_input(
+                "Max. gueltige Zeit (optional)",
+                value=page_prefs.get("training_live_max_time", ""),
+                key="training_live_max_time",
+            ).strip()
+        try:
+            custom_abs_lower = float(min_raw) if min_raw else None
+        except Exception:
+            custom_abs_lower = None
+        try:
+            custom_abs_upper = float(max_raw) if max_raw else None
+        except Exception:
+            custom_abs_upper = None
+
     filtered_training_stats: Dict[str, Dict[str, float]] = {}
-    metric_abs_lower = 2.1 if metric_col == "start" else None
-    metric_abs_upper = 3.5 if metric_col == "start" else None
     if filter_bad_training:
         df_live_scope, filtered_training_stats = flag_training_metric_outliers(
             df_live_scope,
             "metric_s",
-            absolute_lower=metric_abs_lower,
-            absolute_upper=metric_abs_upper,
+            absolute_lower=custom_abs_lower,
+            absolute_upper=custom_abs_upper,
         )
         flagged_count = int(df_live_scope["measurement_flagged"].fillna(False).sum())
         if flagged_count > 0:
@@ -3112,8 +3135,8 @@ if selected_heat_section == "Startliste - Gate Pick":
                 df_train, _ = filter_training_metric_outliers(
                     df_train,
                     "start_s",
-                    absolute_lower=2.1,
-                    absolute_upper=3.5,
+                    absolute_lower=custom_abs_lower,
+                    absolute_upper=custom_abs_upper,
                 )
             stats = training_stats(df_train)
             stats_cols = ["name_key", "best_start", "best_t1", "avg_top3_start", "avg_top3_t1", "cons_score"]
