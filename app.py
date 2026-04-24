@@ -1150,7 +1150,7 @@ def load_training_for_events(event_ids: List[str], rider_names: Optional[List[st
               event_id, category, bib, name, nation, gate,
               kink, bottom, interim, t1_in, total,
               training_block_id, training_block_label, training_block_time,
-              source_kind, source_file, start, t1
+              source_kind, source_file, start, t1, ingested_at
             FROM training_times
             WHERE {where_sql}
             """,
@@ -1187,10 +1187,44 @@ def load_training_for_events(event_ids: List[str], rider_names: Optional[List[st
         df["training_block_label"] = ""
     if "training_block_time" not in df.columns:
         df["training_block_time"] = ""
+    if "ingested_at" not in df.columns:
+        df["ingested_at"] = ""
 
     df["training_block_time"] = df["training_block_time"].fillna("").astype(str).str.strip()
     df["training_block_label"] = df["training_block_label"].fillna("").astype(str).str.strip()
     df["training_block_id"] = df["training_block_id"].fillna("").astype(str).str.strip()
+    first_seen_key = df["training_block_id"].where(
+        df["training_block_id"].str.strip().ne(""),
+        (
+            df["event_id"].fillna("").astype(str)
+            + "|"
+            + df["source_file"].fillna("").astype(str)
+            + "|"
+            + df["training_block_label"].fillna("").astype(str)
+            + "|"
+            + df["gate"].fillna("").astype(str)
+        ),
+    )
+    first_seen_ts = pd.to_datetime(df["ingested_at"], errors="coerce")
+    first_seen_ts_group = first_seen_ts.groupby(first_seen_key, sort=False).transform("min")
+    first_seen_clock = first_seen_ts_group.dt.strftime("%H:%M:%S").fillna("")
+    event_day = pd.to_datetime(
+        df["event_id"].fillna("").astype(str).str.extract(r"^(\d{8})", expand=False),
+        format="%Y%m%d",
+        errors="coerce",
+    )
+    first_seen_day = first_seen_ts_group.dt.strftime("%d.%m.").fillna("")
+    event_day_label = event_day.dt.strftime("%d.%m.").fillna("")
+    first_seen_day = first_seen_day.where(first_seen_day.ne(""), event_day_label)
+    first_seen_label = (
+        first_seen_day.str.strip()
+        + np.where(
+            (first_seen_day.str.strip() != "") & (first_seen_clock.str.strip() != ""),
+            " | ",
+            "",
+        )
+        + first_seen_clock.str.strip()
+    )
     fallback_time = df.apply(
         lambda r: extract_clock_time(
             r.get("training_block_time"),
@@ -1203,6 +1237,10 @@ def load_training_for_events(event_ids: List[str], rider_names: Optional[List[st
         axis=1,
     )
     df.loc[df["training_block_time"] == "", "training_block_time"] = fallback_time[df["training_block_time"] == ""]
+    missing_block_time = df["training_block_time"].fillna("").astype(str).str.strip() == ""
+    df.loc[missing_block_time, "training_block_time"] = first_seen_clock[missing_block_time]
+    df["first_seen_clock"] = first_seen_clock
+    df["first_seen_label"] = first_seen_label.where(first_seen_label.str.strip() != "", first_seen_clock)
     fallback_label = df["training_block_label"].copy()
     fallback_label = fallback_label.where(fallback_label.str.strip().ne(""), df["gate"].fillna("").astype(str).str.strip())
     fallback_label = fallback_label.where(fallback_label.str.strip().ne(""), df["training_block_time"].fillna("").astype(str).str.strip())
@@ -2453,7 +2491,7 @@ if training_live:
     start_summary = (
         df_live_focus.groupby("start_id", as_index=False)
         .agg(
-            DatumZeit=("start_label", lambda s: next((x for x in s if str(x).strip()), "Training")),
+            DatumZeit=("first_seen_label", lambda s: next((x for x in s if str(x).strip()), "Training")),
             Kategorie=("category_label", lambda s: next((x for x in s if str(x).strip()), "")),
             Athleten=(
                 "name",
