@@ -2393,8 +2393,6 @@ if training_live:
         st.info("Keine Trainingszeiten fuer die gewaehlte Metrik vorhanden.")
         st.stop()
 
-    custom_abs_lower: Optional[float] = None
-    custom_abs_upper: Optional[float] = None
     if filter_bad_training:
         c_min, c_max = st.columns(2)
         with c_min:
@@ -3043,6 +3041,19 @@ selected_heat_section = st.segmented_control(
     key="ha_active_section",
 )
 update_page_prefs("heat_analyzer", {"active_section": selected_heat_section})
+
+custom_abs_lower: Optional[float] = None
+custom_abs_upper: Optional[float] = None
+try:
+    _min_pref = str(page_prefs.get("training_live_min_time", "") or "").strip()
+    custom_abs_lower = float(_min_pref) if _min_pref else None
+except Exception:
+    custom_abs_lower = None
+try:
+    _max_pref = str(page_prefs.get("training_live_max_time", "") or "").strip()
+    custom_abs_upper = float(_max_pref) if _max_pref else None
+except Exception:
+    custom_abs_upper = None
 
 if selected_heat_section == "Startliste - Gate Pick":
     lane_pick_enabled = has_lane_pick_data(event_id)
