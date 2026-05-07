@@ -164,6 +164,15 @@ def current_user() -> Dict[str, object]:
         role_sources.add("override")
         roles.extend(overrides[email])
 
+    local_roles = _split_roles(os.environ.get("LOCAL_ACCESS_ROLES"))
+    if local_roles and not headers.get("x-auth-request-email"):
+        role_sources.add("local_env")
+        roles.extend(local_roles)
+        if not email:
+            email = "local-dev"
+        if not user:
+            user = "local-dev"
+
     deduped: List[str] = []
     seen: Set[str] = set()
     for role in roles:

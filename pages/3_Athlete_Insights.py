@@ -1,6 +1,6 @@
 import sqlite3
 import unicodedata
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import re
 import json
 import textwrap
@@ -24,6 +24,8 @@ try:
 except ImportError:
     plt = None
     PdfPages = None
+
+alt.data_transformers.disable_max_rows()
 
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -412,6 +414,13 @@ def parse_time_to_seconds(val) -> float:
             return float(s)
         except Exception:
             return float("nan")
+
+
+def format_seconds_3(v) -> str:
+    x = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+    if pd.isna(x):
+        return ""
+    return f"{float(x):.3f}"
 
 
 def safe_float(v):
@@ -1157,12 +1166,761 @@ def attach_final_rank_event(df: pd.DataFrame, master: pd.DataFrame) -> pd.DataFr
     return out
 
 
+def ensure_training_alias_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS training_name_aliases (
+          source_name_key TEXT NOT NULL,
+          source_name TEXT NOT NULL,
+          source_nation TEXT NOT NULL DEFAULT '',
+          source_bib INTEGER,
+          target_rider_id TEXT NOT NULL,
+          target_uci_id TEXT,
+          target_name TEXT NOT NULL,
+          target_nation TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (source_name_key, source_nation, source_bib)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_training_alias_key ON training_name_aliases(source_name_key)")
+
+
+def _select_col(existing: set[str], table_alias: str, col: str, alias: Optional[str] = None) -> str:
+    out = alias or col
+    if col in existing:
+        return f"{table_alias}.{col} AS {out}"
+    return f"NULL AS {out}"
+
+
+def save_training_alias(source_name: str, source_nation: str, source_bib: Any, target: Dict[str, Any]) -> None:
+    source_name = clean_spaces(source_name)
+    source_nation = clean_spaces(source_nation).upper()
+    bib_val = pd.to_numeric(pd.Series([source_bib]), errors="coerce").iloc[0]
+    source_bib_int = int(bib_val) if pd.notna(bib_val) else None
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        ensure_training_alias_table(conn)
+        if source_bib_int is None:
+            conn.execute(
+                """
+                DELETE FROM training_name_aliases
+                WHERE source_name_key=? AND source_nation=? AND source_bib IS NULL
+                """,
+                (norm_name_key(source_name), source_nation),
+            )
+        conn.execute(
+            """
+            INSERT INTO training_name_aliases (
+              source_name_key, source_name, source_nation, source_bib,
+              target_rider_id, target_uci_id, target_name, target_nation,
+              created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_name_key, source_nation, source_bib) DO UPDATE SET
+              source_name=excluded.source_name,
+              target_rider_id=excluded.target_rider_id,
+              target_uci_id=excluded.target_uci_id,
+              target_name=excluded.target_name,
+              target_nation=excluded.target_nation,
+              updated_at=excluded.updated_at
+            """,
+            (
+                norm_name_key(source_name),
+                source_name,
+                source_nation,
+                source_bib_int,
+                str(target.get("rider_id") or ""),
+                str(target.get("uci_norm_stitched") or target.get("uci_norm") or ""),
+                clean_spaces(str(target.get("name_pretty") or target.get("name_clean") or "")),
+                clean_spaces(str(target.get("nation") or "")).upper(),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def build_training_athlete_targets(all_runs: pd.DataFrame, master_results: pd.DataFrame) -> pd.DataFrame:
+    cols = ["rider_id", "rider_label", "rider_short", "name_pretty", "name_clean", "nation", "uci_norm_stitched", "uci_norm"]
+    frames = []
+    if not all_runs.empty:
+        frames.append(all_runs[[c for c in cols if c in all_runs.columns]].copy())
+    if not master_results.empty:
+        mr = master_results.copy()
+        mr["name_clean"] = (mr["first_name"].fillna("").astype(str) + " " + mr["last_name"].fillna("").astype(str)).apply(clean_spaces)
+        mr["name_pretty"] = mr["name_clean"].apply(pretty_name)
+        mr["nation"] = ""
+        mr["uci_norm_stitched"] = mr["uci_norm"] if "uci_norm" in mr.columns else mr["uci_id"].apply(norm_uci_id)
+        mr["rider_id"] = np.where(mr["uci_norm_stitched"] != "", "uci:" + mr["uci_norm_stitched"], "name:" + mr["name_clean"].apply(norm_name_key))
+        mr["rider_label"] = mr["name_pretty"]
+        mr["rider_short"] = mr["name_pretty"].apply(short_name)
+        mr["uci_norm"] = mr["uci_norm_stitched"]
+        frames.append(mr[cols].copy())
+    if not frames:
+        return pd.DataFrame(columns=cols + ["target_label"])
+    out = pd.concat(frames, ignore_index=True, sort=False)
+    for c in cols:
+        if c not in out.columns:
+            out[c] = ""
+    out = out.fillna("")
+    out["target_label"] = out["rider_label"].where(out["rider_label"].astype(str).str.strip() != "", out["name_pretty"])
+    return out.sort_values(["target_label", "rider_id"], kind="stable").drop_duplicates(subset=["rider_id"])
+
+
+def _parse_training_clock(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        m = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?", text)
+        if m:
+            hh, mm, ss = int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+            if 0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59:
+                return f"{hh:02d}:{mm:02d}:{ss:02d}"
+    return ""
+
+
+def _parse_training_day(event_id: Any, event_date: Any, *values: Any) -> pd.Timestamp:
+    event_id_dt = pd.to_datetime(str(event_id or "")[:8], format="%Y%m%d", errors="coerce")
+    year = int(event_id_dt.year) if pd.notna(event_id_dt) else datetime.now().year
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        m = re.search(r"(\d{1,2})\.(\d{1,2})\.", text)
+        if m:
+            dt = pd.to_datetime(f"{year:04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}", errors="coerce")
+            if pd.notna(dt):
+                return dt.normalize()
+    return parse_event_date(str(event_date or ""), str(event_id or "")).normalize()
+
+
+def derive_training_datetime(row: pd.Series) -> pd.Timestamp:
+    label = str(row.get("training_block_label") or "").strip()
+    block_time = str(row.get("training_block_time") or "").strip()
+    gate = str(row.get("gate") or "").strip()
+    source_file = str(row.get("source_file") or "").strip()
+    ingested_at = pd.to_datetime(row.get("ingested_at"), errors="coerce")
+    day = _parse_training_day(row.get("event_id"), row.get("event_date"), label, gate, block_time, source_file)
+    clock = _parse_training_clock(block_time, label, gate, source_file)
+    if not clock and pd.notna(ingested_at):
+        clock = ingested_at.strftime("%H:%M:%S")
+    if pd.notna(day) and clock:
+        dt = pd.to_datetime(f"{day.strftime('%Y-%m-%d')} {clock}", errors="coerce")
+        if pd.notna(dt):
+            return dt
+    if pd.notna(ingested_at):
+        return ingested_at
+    return day
+
+
+def add_training_sessions(df: pd.DataFrame, gap_minutes: int = 120) -> pd.DataFrame:
+    out = df.copy()
+    if out.empty:
+        out["session_id"] = ""
+        out["session_label"] = ""
+        return out
+    out["session_group_key"] = out["training_location"].fillna("").astype(str) + "|" + out["source_file"].fillna("").astype(str)
+    out = out.sort_values(["session_group_key", "training_datetime", "source_name", "bib"], na_position="last", kind="stable")
+    gap = pd.Timedelta(minutes=gap_minutes)
+    session_nums = pd.Series(index=out.index, dtype="Int64")
+    for _, grp in out.groupby("session_group_key", dropna=False, sort=False):
+        prev_dt = None
+        session_num = 0
+        for idx, dt_val in grp["training_datetime"].items():
+            if prev_dt is None or pd.isna(prev_dt) or pd.isna(dt_val) or (dt_val - prev_dt) > gap:
+                session_num += 1
+            session_nums.loc[idx] = session_num
+            prev_dt = dt_val
+    out["session_num"] = session_nums.astype("Int64")
+    out["session_day"] = pd.to_datetime(out["training_datetime"], errors="coerce").dt.strftime("%Y-%m-%d").fillna("Unknown")
+    out["session_id"] = out["session_group_key"] + "|" + out["session_day"] + "|" + out["session_num"].astype(str)
+    meta = (
+        out.groupby("session_id", as_index=False, dropna=False)
+        .agg(session_start=("training_datetime", "min"), training_location=("training_location", "first"))
+    )
+    meta["session_label"] = (
+        pd.to_datetime(meta["session_start"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M").fillna("Unknown")
+        + " | "
+        + meta["training_location"].fillna("Unknown").astype(str)
+    )
+    return out.merge(meta[["session_id", "session_start", "session_label"]], on="session_id", how="left")
+
+
+@st.cache_data(show_spinner=False, ttl=10)
+def load_training_data(db_path: str = DB_PATH) -> pd.DataFrame:
+    if not os.path.exists(db_path):
+        return pd.DataFrame()
+    conn = sqlite3.connect(db_path)
+    try:
+        ensure_training_alias_table(conn)
+        train_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_times)").fetchall()}
+        if not train_cols:
+            return pd.DataFrame()
+        event_cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        train_select = [
+            _select_col(train_cols, "t", "event_id"),
+            _select_col(train_cols, "t", "category"),
+            _select_col(train_cols, "t", "bib"),
+            _select_col(train_cols, "t", "name", "source_name"),
+            _select_col(train_cols, "t", "nation", "source_nation"),
+            _select_col(train_cols, "t", "gate"),
+            _select_col(train_cols, "t", "source_file"),
+            _select_col(train_cols, "t", "ingested_at"),
+        ] + [
+            _select_col(train_cols, "t", c)
+            for c in ["kink", "bottom", "interim", "t1_in", "start", "t1", "total", "training_block_id", "training_block_label", "training_block_time", "source_kind"]
+        ]
+        event_select = [
+            _select_col(event_cols, "e", "display_name"),
+            _select_col(event_cols, "e", "location", "event_location"),
+            _select_col(event_cols, "e", "country", "event_country"),
+            _select_col(event_cols, "e", "event_date"),
+            _select_col(event_cols, "e", "event_type"),
+        ]
+        df = pd.read_sql_query(
+            f"""
+            SELECT {", ".join(train_select + event_select)}
+            FROM training_times t
+            LEFT JOIN events e ON e.event_id = t.event_id
+            """,
+            conn,
+        )
+        aliases = pd.read_sql_query("SELECT * FROM training_name_aliases", conn)
+        conn.commit()
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+    if df.empty:
+        return df
+    for c in [
+        "category", "source_name", "source_nation", "gate", "source_file", "ingested_at",
+        "training_block_id", "training_block_label", "training_block_time", "source_kind",
+        "display_name", "event_location", "event_country", "event_date", "event_type",
+    ]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].fillna("").astype(str)
+    df["source_name"] = df["source_name"].apply(clean_spaces)
+    df["source_name_key"] = df["source_name"].apply(norm_name_key)
+    df["source_nation"] = df["source_nation"].fillna("").astype(str).str.upper().str.strip()
+    df["bib"] = pd.to_numeric(df["bib"], errors="coerce").astype("Int64")
+    for col in ["kink", "bottom", "interim", "t1_in", "start", "t1", "total"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[f"{col}_s"] = df[col].apply(parse_time_to_seconds)
+        df.loc[df[f"{col}_s"] <= 0, f"{col}_s"] = np.nan
+    df["training_datetime"] = pd.to_datetime(df.apply(derive_training_datetime, axis=1), errors="coerce")
+    df["training_location"] = df["event_location"].apply(wc_location_clean)
+    df.loc[df["training_location"].astype(str).str.strip() == "", "training_location"] = df["display_name"].fillna("").astype(str).str.strip()
+    df.loc[df["training_location"].astype(str).str.strip() == "", "training_location"] = "Unknown"
+    df["source_kind"] = df["source_kind"].where(df["source_kind"].str.strip() != "", df["source_file"].str.extract(r"([^/?]+)", expand=False).fillna(""))
+
+    for c in ["target_rider_id", "target_uci_id", "target_name", "target_nation"]:
+        df[c] = ""
+    if not aliases.empty:
+        aliases = aliases.copy()
+        aliases["source_name_key"] = aliases["source_name_key"].fillna("").astype(str)
+        aliases["source_nation"] = aliases["source_nation"].fillna("").astype(str).str.upper().str.strip()
+        aliases["source_bib"] = pd.to_numeric(aliases["source_bib"], errors="coerce").astype("Int64")
+        specific = aliases.dropna(subset=["source_bib"]).rename(columns={"source_bib": "bib"})
+        df = df.merge(
+            specific[["source_name_key", "source_nation", "bib", "target_rider_id", "target_uci_id", "target_name", "target_nation"]],
+            on=["source_name_key", "source_nation", "bib"],
+            how="left",
+            suffixes=("", "_specific"),
+        )
+        for c in ["target_rider_id", "target_uci_id", "target_name", "target_nation"]:
+            specific_col = f"{c}_specific"
+            if specific_col in df.columns:
+                df[c] = df[specific_col].where(df[specific_col].fillna("").astype(str).str.strip() != "", df[c])
+                df = df.drop(columns=[specific_col])
+        broad = (
+            aliases[aliases["source_bib"].isna()]
+            .sort_values(["source_name_key", "source_nation", "updated_at"], kind="stable")
+            .drop_duplicates(subset=["source_name_key", "source_nation"], keep="last")
+        )
+        df = df.merge(
+            broad[["source_name_key", "source_nation", "target_rider_id", "target_uci_id", "target_name", "target_nation"]].rename(
+                columns={c: f"{c}_broad" for c in ["target_rider_id", "target_uci_id", "target_name", "target_nation"]}
+            ),
+            on=["source_name_key", "source_nation"],
+            how="left",
+        )
+        for c in ["target_rider_id", "target_uci_id", "target_name", "target_nation"]:
+            broad_col = f"{c}_broad"
+            df[c] = df[c].where(df[c].fillna("").astype(str).str.strip() != "", df[broad_col])
+            df = df.drop(columns=[broad_col], errors="ignore")
+
+    df["target_name"] = df["target_name"].fillna("").astype(str).apply(clean_spaces)
+    df["target_nation"] = df["target_nation"].fillna("").astype(str).str.upper().str.strip()
+    df["mapped"] = df["target_rider_id"].fillna("").astype(str).str.strip() != ""
+    df["name_clean"] = df["target_name"].where(df["mapped"], df["source_name"])
+    df["name_pretty"] = df["name_clean"].apply(pretty_name)
+    df["nation"] = df["target_nation"].where(df["mapped"] & (df["target_nation"] != ""), df["source_nation"])
+    df["name_key"] = df["name_clean"].apply(norm_name_key)
+    df["rider_id"] = df["target_rider_id"].where(
+        df["mapped"],
+        "training:" + df["source_name_key"] + "|" + df["source_nation"].fillna("").astype(str),
+    )
+    df["rider_label"] = df["name_pretty"] + np.where(df["nation"].astype(str).str.strip() != "", " (" + df["nation"] + ")", "")
+    df["rider_short"] = df["name_pretty"].apply(short_name)
+    return add_training_sessions(df, gap_minutes=120)
+
+
+def flag_training_metric_outliers(
+    df_train: pd.DataFrame,
+    metric_col: str,
+    category_col: str = "training_location",
+    athlete_col: str = "rider_id",
+    absolute_lower: Optional[float] = None,
+    absolute_upper: Optional[float] = None,
+) -> pd.DataFrame:
+    if df_train.empty or metric_col not in df_train.columns:
+        out = df_train.copy()
+        out["measurement_flagged"] = False
+        out["measurement_flag_reason"] = ""
+        return out
+
+    df_flagged = df_train.copy()
+    metric_all = pd.to_numeric(df_flagged[metric_col], errors="coerce")
+    df_flagged["measurement_flagged"] = metric_all.notna() & (metric_all <= 0)
+    df_flagged["measurement_flag_reason"] = np.where(df_flagged["measurement_flagged"], "non_positive", "")
+
+    if absolute_lower is not None:
+        too_low_abs = metric_all.notna() & (metric_all < float(absolute_lower))
+        df_flagged.loc[too_low_abs, "measurement_flagged"] = True
+        df_flagged.loc[too_low_abs, "measurement_flag_reason"] = df_flagged.loc[too_low_abs, "measurement_flag_reason"].replace("", "absolute_low")
+    if absolute_upper is not None:
+        too_high_abs = metric_all.notna() & (metric_all > float(absolute_upper))
+        df_flagged.loc[too_high_abs, "measurement_flagged"] = True
+        df_flagged.loc[too_high_abs, "measurement_flag_reason"] = df_flagged.loc[too_high_abs, "measurement_flag_reason"].replace("", "absolute_high")
+
+    if category_col in df_flagged.columns:
+        for _, grp in df_flagged.groupby(category_col, dropna=False):
+            metric_vals = pd.to_numeric(grp[metric_col], errors="coerce")
+            metric_vals = metric_vals[np.isfinite(metric_vals) & (metric_vals > 0)]
+            unique_vals = np.sort(metric_vals.unique())
+            if unique_vals.size < 5:
+                continue
+
+            q10, q25, q50, q75 = np.percentile(unique_vals, [10, 25, 50, 75])
+            iqr = max(float(q75 - q25), 0.001)
+            dense_gap = max(0.02, min(0.08, 0.75 * max(float(q50 - q25), 0.01)))
+            lower_bound = float(q10 - max(0.12, 1.5 * iqr, 0.06 * max(float(q10), 1.0)))
+
+            cluster_start = None
+            for i in range(max(0, unique_vals.size - 3)):
+                window = unique_vals[i : i + 4]
+                if window.size < 3:
+                    break
+                gaps = np.diff(window)
+                if gaps.size >= 2 and float(np.max(gaps)) <= dense_gap:
+                    cluster_start = float(window[0])
+                    break
+            if cluster_start is not None and cluster_start <= float(q50):
+                lower_bound = max(lower_bound, cluster_start)
+
+            too_fast = pd.to_numeric(grp[metric_col], errors="coerce") < lower_bound
+            flagged_idx = grp.index[too_fast.fillna(False)]
+            df_flagged.loc[flagged_idx, "measurement_flagged"] = True
+            df_flagged.loc[
+                flagged_idx,
+                "measurement_flag_reason",
+            ] = df_flagged.loc[flagged_idx, "measurement_flag_reason"].replace("", "track_fast")
+
+    if athlete_col in df_flagged.columns:
+        for _, grp in df_flagged.groupby(athlete_col, dropna=False):
+            metric_vals = pd.to_numeric(grp[metric_col], errors="coerce")
+            metric_vals = metric_vals[np.isfinite(metric_vals) & (metric_vals > 0)]
+            unique_vals = np.sort(metric_vals.unique())
+            if unique_vals.size < 5:
+                continue
+            aq25, aq50, aq75 = np.percentile(unique_vals, [25, 50, 75])
+            aiqr = max(float(aq75 - aq25), 0.001)
+            lower_bound = float(aq25 - max(0.08, 1.5 * aiqr, 0.04 * max(float(aq50), 1.0)))
+            upper_bound = float(aq75 + max(0.12, 1.5 * aiqr, 0.06 * max(float(aq50), 1.0)))
+            grp_metric = pd.to_numeric(grp[metric_col], errors="coerce")
+            fast_idx = grp.index[(grp_metric < lower_bound).fillna(False)]
+            slow_idx = grp.index[(grp_metric > upper_bound).fillna(False)]
+            df_flagged.loc[fast_idx, "measurement_flagged"] = True
+            df_flagged.loc[slow_idx, "measurement_flagged"] = True
+            df_flagged.loc[
+                fast_idx,
+                "measurement_flag_reason",
+            ] = df_flagged.loc[fast_idx, "measurement_flag_reason"].replace("", "athlete_fast")
+            df_flagged.loc[
+                slow_idx,
+                "measurement_flag_reason",
+            ] = df_flagged.loc[slow_idx, "measurement_flag_reason"].replace("", "athlete_slow")
+
+    return df_flagged
+
+
+def render_training_insights(all_runs: pd.DataFrame, master_results: pd.DataFrame, page_prefs: dict) -> None:
+    st.subheader("Training")
+    df_train = load_training_data()
+    if df_train.empty:
+        st.info("Keine Trainingsdaten gefunden.")
+        return
+
+    metric_defs = {
+        "Start to Kink": "kink_s",
+        "Split Kink to Bottom": "bottom_s",
+        "Interim": "interim_s",
+        "Split first Straight Bottom to T1": "t1_in_s",
+        "Start": "start_s",
+        "T1": "t1_s",
+        "Total": "total_s",
+    }
+    metric_options = [label for label, col in metric_defs.items() if col in df_train.columns and df_train[col].notna().any()]
+    if not metric_options:
+        st.info("Keine verwertbaren Trainings-Splitzeiten vorhanden.")
+        return
+
+    min_dt = pd.to_datetime(df_train["training_datetime"], errors="coerce").min()
+    max_dt = pd.to_datetime(df_train["training_datetime"], errors="coerce").max()
+    if pd.isna(min_dt) or pd.isna(max_dt):
+        st.info("Keine verwertbaren Trainings-Zeitstempel vorhanden.")
+        return
+    default_start = pd.to_datetime(page_prefs.get("training_start_date"), errors="coerce")
+    default_end = pd.to_datetime(page_prefs.get("training_end_date"), errors="coerce")
+    if pd.isna(default_start):
+        default_start = max_dt - pd.Timedelta(days=60)
+    if pd.isna(default_end):
+        default_end = max_dt
+
+    f1, f2, f3 = st.columns([1, 1, 2])
+    with f1:
+        start_date = st.date_input("Von", value=default_start.date(), format="DD/MM/YYYY", key="ai_training_start_date")
+    with f2:
+        end_date = st.date_input("Bis", value=default_end.date(), format="DD/MM/YYYY", key="ai_training_end_date")
+    with f3:
+        location_opts = sorted([x for x in df_train["training_location"].dropna().astype(str).unique().tolist() if x])
+        default_locations = [x for x in page_prefs.get("training_locations", location_opts) if x in location_opts] or location_opts
+        sel_training_locations = st.multiselect(
+            "Strecken / Orte",
+            location_opts,
+            default=default_locations,
+            key="ai_training_locations",
+        )
+
+    scope = df_train.copy()
+    start_ts = pd.Timestamp(start_date)
+    end_ts = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+    scope = scope[(scope["training_datetime"] >= start_ts) & (scope["training_datetime"] <= end_ts)].copy()
+    if sel_training_locations:
+        scope = scope[scope["training_location"].isin(sel_training_locations)].copy()
+
+    c1, c2, c4 = st.columns(3)
+    with c1:
+        nation_opts = sorted([x for x in scope["nation"].dropna().astype(str).unique().tolist() if x])
+        sel_train_nations = st.multiselect(
+            "Nation (optional)",
+            nation_opts,
+            default=[x for x in page_prefs.get("training_nations", []) if x in nation_opts],
+            key="ai_training_nations",
+        )
+    if sel_train_nations:
+        scope = scope[scope["nation"].isin(sel_train_nations)].copy()
+    with c2:
+        rider_opts = sorted([x for x in scope["rider_label"].dropna().astype(str).unique().tolist() if x])
+        sel_train_riders = st.multiselect(
+            "Athlet (optional)",
+            rider_opts,
+            default=[x for x in page_prefs.get("training_riders", []) if x in rider_opts],
+            key="ai_training_riders",
+        )
+    if sel_train_riders:
+        scope = scope[scope["rider_label"].isin(sel_train_riders)].copy()
+    with c4:
+        selected_metric_labels = st.multiselect(
+            "Split-Metriken",
+            metric_options,
+            default=[x for x in page_prefs.get("training_metric_labels", metric_options[:1]) if x in metric_options] or metric_options[:1],
+            key="ai_training_metric_labels",
+        )
+
+    update_page_prefs("athlete_insights", {
+        "ai_active_section": "Training",
+        "training_start_date": str(start_date),
+        "training_end_date": str(end_date),
+        "training_locations": sel_training_locations,
+        "training_nations": sel_train_nations,
+        "training_riders": sel_train_riders,
+        "training_metric_labels": selected_metric_labels,
+    })
+
+    if scope.empty:
+        st.info("Keine Trainingsdaten fuer die aktuelle Auswahl.")
+        return
+
+    with st.expander("Timing-Namen zu DB-Athleten zuordnen", expanded=False):
+        targets = build_training_athlete_targets(all_runs, master_results)
+        unmapped = (
+            scope[~scope["mapped"].fillna(False)]
+            .groupby(["source_name_key", "source_name", "source_nation"], as_index=False, dropna=False)
+            .agg(
+                runs=("source_name", "size"),
+                first_seen=("training_datetime", "min"),
+                bibs=("bib", lambda s: ", ".join([str(int(x)) for x in pd.to_numeric(s, errors="coerce").dropna().unique()[:8]])),
+            )
+            .sort_values(["runs", "source_name"], ascending=[False, True], kind="stable")
+        )
+        if unmapped.empty:
+            st.caption("Alle Timing-Namen in der aktuellen Auswahl sind zugeordnet oder verwenden bereits ihren Roh-Namen.")
+        elif targets.empty:
+            st.warning("Keine bestehenden DB-Athleten fuer die Zuordnung gefunden.")
+        else:
+            unmapped["option_label"] = (
+                unmapped["source_name"].astype(str)
+                + np.where(unmapped["source_nation"].astype(str).str.strip() != "", " (" + unmapped["source_nation"].astype(str) + ")", "")
+                + " | "
+                + unmapped["runs"].astype(str)
+                + " Laeufe"
+            )
+            source_label = st.selectbox("Timing-Name", unmapped["option_label"].tolist(), key="ai_training_alias_source")
+            source_row = unmapped[unmapped["option_label"] == source_label].iloc[0].to_dict()
+            target_label = st.selectbox("DB-Athlet", targets["target_label"].tolist(), key="ai_training_alias_target")
+            target_row = targets[targets["target_label"] == target_label].iloc[0].to_dict()
+            bib_specific = st.checkbox(
+                "Nur fuer diese Startnummer speichern",
+                value=False,
+                help="Leer lassen, wenn der Timing-Name generell diesem Athleten entsprechen soll.",
+                key="ai_training_alias_bib_specific",
+            )
+            bib_for_alias = None
+            if bib_specific:
+                bib_vals = pd.to_numeric(
+                    scope.loc[scope["source_name_key"] == source_row["source_name_key"], "bib"],
+                    errors="coerce",
+                ).dropna().astype(int).unique().tolist()
+                if bib_vals:
+                    bib_for_alias = st.selectbox("Startnummer", sorted(bib_vals), key="ai_training_alias_bib")
+            if st.button("Zuordnung speichern", key="ai_training_alias_save"):
+                save_training_alias(
+                    source_row["source_name"],
+                    source_row["source_nation"],
+                    bib_for_alias,
+                    target_row,
+                )
+                load_training_data.clear()
+                st.success("Zuordnung gespeichert.")
+                st.rerun()
+
+    metric_rows = []
+    for metric_label in selected_metric_labels:
+        metric_col = metric_defs.get(metric_label)
+        if not metric_col or metric_col not in scope.columns:
+            continue
+        frame = scope.dropna(subset=[metric_col]).copy()
+        if frame.empty:
+            continue
+        frame["metric"] = metric_label
+        frame["metric_value"] = pd.to_numeric(frame[metric_col], errors="coerce")
+        frame = flag_training_metric_outliers(
+            frame,
+            "metric_value",
+            category_col="training_location",
+            athlete_col="rider_id",
+        )
+        metric_rows.append(frame)
+    plot_src = pd.concat(metric_rows, ignore_index=True, sort=False) if metric_rows else pd.DataFrame()
+    if plot_src.empty:
+        st.info("Keine Daten fuer die gewaehlten Split-Metriken.")
+        return
+    flagged_count = int(plot_src["measurement_flagged"].fillna(False).sum()) if "measurement_flagged" in plot_src.columns else 0
+    if flagged_count:
+        st.caption(f"Fehlmessungen automatisch ausgeschlossen: {flagged_count}")
+    plot_src_valid = plot_src.loc[~plot_src["measurement_flagged"].fillna(False)].copy()
+    if plot_src_valid.empty:
+        st.info("Nach dem Filtern von Fehlmessungen bleiben keine verwertbaren Trainingsdaten fuer die gewaehlten Metriken.")
+        return
+
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        trend_mode = st.radio("Verlauf", ["Alle Laeufe", "Bester pro Session"], horizontal=True, key="ai_training_trend_mode")
+    with t2:
+        value_mode = st.radio("Wert", ["Rohzeit", "Delta pro Strecke"], horizontal=True, key="ai_training_value_mode")
+    with t3:
+        show_points = st.toggle("Punkte anzeigen", value=True, key="ai_training_show_points")
+
+    if trend_mode == "Bester pro Session":
+        plot_src_valid = (
+            plot_src_valid.sort_values(["metric_value", "training_datetime"], ascending=[True, True], kind="stable")
+            .drop_duplicates(subset=["rider_id", "training_location", "session_id", "metric"], keep="first")
+            .copy()
+        )
+    if value_mode == "Delta pro Strecke":
+        ref = plot_src_valid.groupby(["training_location", "metric"], dropna=False)["metric_value"].transform("min")
+        plot_src_valid["plot_value"] = plot_src_valid["metric_value"] - ref
+        y_title = "Delta zum Bestwert je Strecke/Metrik im Zeitraum (s)"
+        st.caption("Delta pro Strecke: Referenz ist der schnellste Wert je Strecke und Metrik im aktuell gewaehlten Zeitraum.")
+    else:
+        plot_src_valid["plot_value"] = plot_src_valid["metric_value"]
+        y_title = "Zeit (s)"
+    plot_src_valid["series_label"] = plot_src_valid["rider_short"].fillna(plot_src_valid["rider_label"]) + " - " + plot_src_valid["metric"]
+    plot_src_valid["datetime_label"] = plot_src_valid["training_datetime"].dt.strftime("%d/%m/%y %H:%M")
+    plot_src_valid["session_datetime_label"] = pd.to_datetime(plot_src_valid["session_start"], errors="coerce").dt.strftime("%d/%m/%y %H:%M")
+    plot_src_valid["x_label"] = np.where(
+        trend_mode == "Bester pro Session",
+        plot_src_valid["session_datetime_label"].fillna(plot_src_valid["datetime_label"]),
+        plot_src_valid["datetime_label"],
+    )
+    x_order = (
+        plot_src_valid[["x_label", "training_datetime"]]
+        .dropna(subset=["x_label"])
+        .groupby("x_label", as_index=False)["training_datetime"]
+        .min()
+        .sort_values(["training_datetime", "x_label"], kind="stable")["x_label"]
+        .tolist()
+    )
+    vals = pd.to_numeric(plot_src_valid["plot_value"], errors="coerce").dropna()
+    y_scale = alt.Scale(zero=False)
+    if not vals.empty:
+        y_min = float(vals.min())
+        y_max = float(vals.max())
+        if np.isfinite(y_min) and np.isfinite(y_max):
+            pad = max((y_max - y_min) * 0.12, 0.01)
+            if abs(y_max - y_min) < 1e-9:
+                pad = max(abs(y_max) * 0.05, 0.01)
+            y_scale = alt.Scale(domain=[y_min - pad, y_max + pad], zero=False, nice=False)
+
+    base = alt.Chart(plot_src_valid).encode(
+        x=alt.X(
+            "x_label:N",
+            title="Datum / Uhrzeit",
+            sort=x_order,
+            axis=alt.Axis(labelAngle=-45, labelLimit=120, labelOverlap=False),
+        ),
+        y=alt.Y("plot_value:Q", title=y_title, scale=y_scale),
+        color=alt.Color("training_location:N", title="Strecke"),
+        detail="series_label:N",
+        tooltip=[
+            alt.Tooltip("datetime_label:N", title="Datum/Zeit"),
+            alt.Tooltip("session_label:N", title="Session"),
+            alt.Tooltip("training_location:N", title="Strecke"),
+            alt.Tooltip("rider_label:N", title="Athlet"),
+            alt.Tooltip("source_name:N", title="Timing-Name"),
+            alt.Tooltip("metric:N", title="Metrik"),
+            alt.Tooltip("metric_value:Q", title="Rohzeit", format=".3f"),
+            alt.Tooltip("plot_value:Q", title="Chart-Wert", format=".3f"),
+            alt.Tooltip("source_file:N", title="Quelle"),
+            alt.Tooltip("gate:N", title="Gate/Block"),
+        ],
+    )
+    layers = [base.mark_line()]
+    if show_points:
+        layers.append(base.mark_point(size=55, opacity=0.85).encode(shape=alt.Shape("rider_short:N", title="Athlet")))
+    st.altair_chart(alt.layer(*layers).properties(height=430), use_container_width=True)
+
+    def avg_top3(series: pd.Series) -> float:
+        s = pd.to_numeric(series, errors="coerce").dropna().sort_values()
+        return float(s.head(3).mean()) if not s.empty else np.nan
+
+    summary = (
+        plot_src_valid.groupby(["rider_label", "training_location", "metric"], as_index=False)
+        .agg(
+            runs=("metric_value", "count"),
+            sessions=("session_id", "nunique"),
+            best=("metric_value", "min"),
+            avg_top3=("metric_value", avg_top3),
+            median=("metric_value", "median"),
+            std=("metric_value", "std"),
+        )
+        .sort_values(["rider_label", "training_location", "metric"], kind="stable")
+    )
+    for c in ["best", "avg_top3", "median", "std"]:
+        summary[c] = pd.to_numeric(summary[c], errors="coerce").round(3)
+    st.markdown("**Summary pro Athlet, Strecke und Metrik**")
+    st.dataframe(
+        summary.rename(
+            columns={
+                "rider_label": "Athlet",
+                "training_location": "Strecke",
+                "metric": "Metrik",
+                "runs": "Laeufe",
+                "sessions": "Sessions",
+                "best": "Best",
+                "avg_top3": "Ø Top 3",
+                "median": "Median",
+                "std": "Std",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    flag_cols = [
+        "rider_id",
+        "training_location",
+        "session_id",
+        "training_datetime",
+        "source_name",
+        "bib",
+        "metric",
+        "metric_value",
+        "measurement_flagged",
+        "measurement_flag_reason",
+    ]
+    flags = plot_src[[c for c in flag_cols if c in plot_src.columns]].copy()
+    detail = scope.sort_values(["training_datetime", "training_location", "rider_label"], kind="stable").copy()
+    detail["Datum/Zeit"] = detail["training_datetime"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    if not flags.empty:
+        flagged_detail = (
+            flags[flags["measurement_flagged"].fillna(False)]
+            .groupby(["rider_id", "training_location", "session_id", "training_datetime", "source_name", "bib"], as_index=False, dropna=False)
+            .agg(
+                Fehlmessung=("metric", lambda s: ", ".join(sorted(set(str(x) for x in s if str(x))))),
+                Fehlergrund=("measurement_flag_reason", lambda s: ", ".join(sorted(set(str(x) for x in s if str(x))))),
+            )
+        )
+        detail = detail.merge(
+            flagged_detail,
+            on=["rider_id", "training_location", "session_id", "training_datetime", "source_name", "bib"],
+            how="left",
+        )
+    if "Fehlmessung" not in detail.columns:
+        detail["Fehlmessung"] = ""
+    if "Fehlergrund" not in detail.columns:
+        detail["Fehlergrund"] = ""
+    for label, col in metric_defs.items():
+        if col in detail.columns:
+            detail[label] = detail[col].apply(format_seconds_3)
+    detail_cols = [
+        "Datum/Zeit", "session_label", "training_location", "rider_label", "source_name", "source_nation", "Fehlmessung", "Fehlergrund",
+        "bib", "source_file", "gate",
+    ] + [label for label in metric_defs if label in detail.columns]
+    st.markdown("**Trainingslaeufe**")
+    st.dataframe(
+        detail[detail_cols].rename(
+            columns={
+                "session_label": "Session",
+                "training_location": "Strecke",
+                "rider_label": "Athlet",
+                "source_name": "Timing-Name",
+                "source_nation": "Timing-Nation",
+                "bib": "Bib",
+                "source_file": "Quelle",
+                "gate": "Gate/Block",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 require_page_access(["admin", "coach"], "Athlete Insights")
 render_sidebar_nav()
 page_prefs = load_page_prefs("athlete_insights")
 
 st.title("Athlete Insights")
-st.caption("Trend, Segment Profile und Results Trend.")
+st.caption("Trend, Segment Profile, Results Trend und Training.")
 
 # Keep Vega/Altair tooltips anchored at top-center for better readability on dense charts.
 st.markdown(
@@ -1186,10 +1944,27 @@ st.markdown(
 )
 
 all_runs = load_runs()
+master_results = load_master_results()
+
+section_options = ["Athlete Trend", "Segment Profile", "Results Trend", "Training"]
+section_default = page_prefs.get("ai_active_section", section_options[0])
+if section_default not in section_options:
+    section_default = section_options[0]
+ai_active_section = st.segmented_control(
+    "Ansicht",
+    section_options,
+    default=section_default,
+    key="ai_active_section",
+)
+update_page_prefs("athlete_insights", {"ai_active_section": ai_active_section})
+
+if ai_active_section == "Training":
+    render_training_insights(all_runs, master_results, page_prefs)
+    st.stop()
+
 if all_runs.empty:
     st.warning("Keine Daten gefunden.")
     st.stop()
-master_results = load_master_results()
 
 rider_nation_opts = sorted([x for x in all_runs["nation"].dropna().unique().tolist() if x])
 
@@ -1411,18 +2186,6 @@ runs_sel["final_rank_event_display"] = np.where(
     "NA",
 )
 runs_sel["event_label"] = make_event_label(runs_sel)
-
-section_options = ["Athlete Trend", "Segment Profile", "Results Trend"]
-section_default = page_prefs.get("ai_active_section", section_options[0])
-if section_default not in section_options:
-    section_default = section_options[0]
-ai_active_section = st.segmented_control(
-    "Ansicht",
-    section_options,
-    default=section_default,
-    key="ai_active_section",
-)
-update_page_prefs("athlete_insights", {"ai_active_section": ai_active_section})
 
 if ai_active_section == "Athlete Trend":
     st.subheader("Athlete Trend")
