@@ -1801,22 +1801,25 @@ def render_training_insights(all_runs: pd.DataFrame, master_results: pd.DataFram
         y=alt.Y("plot_value:Q", title=y_title, scale=y_scale),
         color=alt.Color("training_location:N", title="Strecke"),
         detail="series_label:N",
-        tooltip=[
-            alt.Tooltip("datetime_label:N", title="Datum/Zeit"),
-            alt.Tooltip("session_label:N", title="Session"),
-            alt.Tooltip("training_location:N", title="Strecke"),
-            alt.Tooltip("rider_label:N", title="Athlet"),
-            alt.Tooltip("source_name:N", title="Timing-Name"),
-            alt.Tooltip("metric:N", title="Metrik"),
-            alt.Tooltip("metric_value:Q", title="Rohzeit", format=".3f"),
-            alt.Tooltip("plot_value:Q", title="Chart-Wert", format=".3f"),
-            alt.Tooltip("source_file:N", title="Quelle"),
-            alt.Tooltip("gate:N", title="Gate/Block"),
-        ],
     )
+    point_tooltip = [
+        alt.Tooltip("datetime_label:N", title="Datum/Zeit"),
+        alt.Tooltip("session_label:N", title="Session"),
+        alt.Tooltip("training_location:N", title="Strecke"),
+        alt.Tooltip("rider_label:N", title="Athlet"),
+        alt.Tooltip("metric:N", title="Metrik"),
+        alt.Tooltip("metric_value:Q", title="Rohzeit", format=".3f"),
+        alt.Tooltip("plot_value:Q", title="Chart-Wert", format=".3f"),
+    ]
     layers = [base.mark_line()]
     if show_points:
-        layers.append(base.mark_point(size=55, opacity=0.85).encode(shape=alt.Shape("rider_short:N", title="Athlet")))
+        layers.append(
+            base.mark_point(size=55, opacity=0.85)
+            .encode(
+                shape=alt.Shape("rider_short:N", title="Athlet"),
+                tooltip=point_tooltip,
+            )
+        )
     st.altair_chart(alt.layer(*layers).properties(height=430), use_container_width=True)
 
     def avg_top3(series: pd.Series) -> float:
@@ -1922,21 +1925,16 @@ page_prefs = load_page_prefs("athlete_insights")
 st.title("Athlete Insights")
 st.caption("Trend, Segment Profile, Results Trend und Training.")
 
-# Keep Vega/Altair tooltips anchored at top-center for better readability on dense charts.
+# Disable Vega/Altair HTML tooltips on this page. Their browser-level overlay can
+# survive Streamlit reruns/navigation and cover the next Athlete Insights screen.
 st.markdown(
     """
     <style>
       .vg-tooltip,
       .vega-tooltip {
-        position: fixed !important;
-        top: 10px !important;
-        left: 50% !important;
-        transform: translateX(-50%) !important;
-        max-width: min(95vw, 1200px) !important;
-        max-height: 70vh !important;
-        overflow-y: auto !important;
-        white-space: pre-line !important;
-        z-index: 999999 !important;
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
       }
     </style>
     """,
