@@ -475,7 +475,7 @@ def bin_pos(pos: float) -> str:
     return "9+"
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=30)
 def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     conn = sqlite3.connect(db_path)
     try:
@@ -597,7 +597,7 @@ def load_runs(db_path: str = DB_PATH) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=60)
 def load_master_results(db_path: str = DB_PATH) -> pd.DataFrame:
     conn = sqlite3.connect(db_path)
     mr = pd.read_sql_query("SELECT * FROM master_results", conn)
