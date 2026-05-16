@@ -3200,17 +3200,12 @@ if selected_heat_section == "Startliste - Gate Pick":
                     training_source_note = "Training-Zeiten: Fallback vorheriges Event gleiche Location (gleiches Jahr, gleiche Serie)"
 
         if is_round1:
-            df_hist_all = get_analysis_history()
-            df_race_hist = df_hist_all.copy() if not df_hist_all.empty else pd.DataFrame()
             if prev_is_same_loc_year and prev_event_id:
-                if df_race_hist.empty or prev_event_id not in df_race_hist["event_id"].unique():
-                    df_prev = load_picks_for_event(prev_event_id)
-                    df_race_hist = df_prev.copy() if not df_prev.empty else df_race_hist.iloc[0:0].copy()
-                else:
-                    df_race_hist = df_race_hist[df_race_hist["event_id"] == prev_event_id].copy()
+                df_prev = load_picks_for_event(prev_event_id)
+                df_race_hist = df_prev.copy() if not df_prev.empty else pd.DataFrame()
                 race_source_note = "Race-Zeiten: vorheriges Event gleiche Location (gleiches Jahr, gleiche Serie)"
             else:
-                df_race_hist = df_race_hist.iloc[0:0].copy()
+                df_race_hist = pd.DataFrame()
                 race_source_note = "Race-Zeiten: keine Daten (kein passendes Vor-Event gleiche Location/Jahr)"
         else:
             race_hist_parts = []
