@@ -627,6 +627,15 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
         mask_round = mask_round & df["event_id"].isin(race_event_ids)
     for (yr, series), grp in df.loc[mask_round].sort_values(["_event_day", "event_id"]).groupby(["year", "series"]):
         df.loc[grp.index, "round_num"] = range(1, len(grp) + 1)
+    ec_round_from_name = pd.to_numeric(
+        df["display_name"]
+        .fillna("")
+        .astype(str)
+        .str.extract(r"(?i)european\s+(?:bmx\s+)?cup\s*#\s*(\d+)", expand=False),
+        errors="coerce",
+    )
+    explicit_ec_round = mask_round & df["series"].eq("euc") & ec_round_from_name.notna()
+    df.loc[explicit_ec_round, "round_num"] = ec_round_from_name.loc[explicit_ec_round].astype("Int64")
 
     round_label = "ROUND " + df["round_num"].astype("Int64").astype(str) + " - " + loc_clean
     df["label_short"] = base
@@ -2976,6 +2985,10 @@ else:
 # Round filter (for live mode)
 if selected_round != "Alle":
     heats_f = heats_f[heats_f["round_filter_label"].fillna("").astype(str) == selected_round].copy()
+
+# Do not expose placeholder heats without riders as startlists.
+if "has_named_rows" in heats_f.columns:
+    heats_f = heats_f[heats_f["has_named_rows"].fillna(False).astype(bool)].copy()
 
 # Upcoming filter
 if only_upcoming:
