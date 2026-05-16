@@ -3084,7 +3084,9 @@ if selected_heat_section == "Startliste - Gate Pick":
 
         prev_event_id = None
         prev_is_same_loc_year = False
-        if is_round1:
+        # Resolve same-location previous-day context for all live startlists.
+        # Round 1 uses it exclusively; later rounds combine it with current-day history.
+        if str(event_id)[:8].isdigit():
             try:
                 current_date = int(str(event_id)[:8])
                 current_year = str(event_id)[:4]
@@ -3198,17 +3200,30 @@ if selected_heat_section == "Startliste - Gate Pick":
                 df_race_hist = df_race_hist.iloc[0:0].copy()
                 race_source_note = "Race-Zeiten: keine Daten (kein passendes Vor-Event gleiche Location/Jahr)"
         else:
-            df_race_hist = df_event.copy()
-            if not df_race_hist.empty:
-                if "start_dt" in df_race_hist.columns and pd.notna(chosen.get("start_dt")):
-                    df_race_hist = df_race_hist[df_race_hist["start_dt"] < chosen.get("start_dt")].copy()
+            race_hist_parts = []
+            if prev_is_same_loc_year and prev_event_id:
+                df_prev = load_picks_for_event(prev_event_id)
+                if not df_prev.empty:
+                    race_hist_parts.append(df_prev)
+
+            df_current_hist = df_event.copy()
+            if not df_current_hist.empty:
+                if "start_dt" in df_current_hist.columns and pd.notna(chosen.get("start_dt")):
+                    df_current_hist = df_current_hist[df_current_hist["start_dt"] < chosen.get("start_dt")].copy()
                 else:
                     # Fallback: use round_key/heat_id ordering
-                    df_race_hist = df_race_hist[
-                        (df_race_hist["round_key"] < rk)
-                        | ((df_race_hist["round_key"] == rk) & (df_race_hist["heat_id"] < hid))
+                    df_current_hist = df_current_hist[
+                        (df_current_hist["round_key"] < rk)
+                        | ((df_current_hist["round_key"] == rk) & (df_current_hist["heat_id"] < hid))
                     ].copy()
-            race_source_note = "Race-Zeiten: aktuelles Event (nur bis vor den gewählten Heat)"
+                if not df_current_hist.empty:
+                    race_hist_parts.append(df_current_hist)
+            df_race_hist = pd.concat(race_hist_parts, ignore_index=True) if race_hist_parts else pd.DataFrame()
+            race_source_note = (
+                "Race-Zeiten: vorheriges Event + aktuelles Event (nur bis vor den gewählten Heat)"
+                if prev_is_same_loc_year and prev_event_id
+                else "Race-Zeiten: aktuelles Event (nur bis vor den gewählten Heat)"
+            )
 
         if not df_race_hist.empty:
             heat_riders_norm = set(df_heat["name_norm"].dropna().tolist())
