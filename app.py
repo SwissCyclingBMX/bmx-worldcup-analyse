@@ -544,11 +544,11 @@ def load_events(cache_bust: int = 0) -> pd.DataFrame:
         | name_norm.str.contains("european championship", case=False, regex=False)
         | name_norm.str.contains("european championships", case=False, regex=False)
     ))
-    is_euc = is_euc | (missing_type & (
+    is_euc = is_euc | (
         event_id_norm.str.contains("_euc_", case=False, regex=False)
         | name_norm.str.contains("european cup", case=False, regex=False)
         | name_norm.str.contains("european bmx cup", case=False, regex=False)
-    ))
+    )
     is_usap = is_usap | (missing_type & (
         event_id_norm.str.contains("_usap_", case=False, regex=False)
         | event_id_norm.str.contains("_usabmx_", case=False, regex=False)
@@ -3097,13 +3097,17 @@ if selected_heat_section == "Startliste - Gate Pick":
                 current_label = ""
                 if not current_row.empty:
                     current_label = str(current_row.iloc[0].get("label_short", "") or current_row.iloc[0].get("display_name", ""))
-                m_curr = re.search(r"ROUND\\s*(\\d+)", current_label, flags=re.IGNORECASE)
+                m_curr = re.search(r"ROUND\s*(\d+)", current_label, flags=re.IGNORECASE)
                 current_round_num = int(m_curr.group(1)) if m_curr else None
-                series = "euc" if "_euc_" in str(event_id) else "wc"
+                series = str(selected_event_row.get("_series_code", "") or "").strip().lower()
+                if not series:
+                    series = "euc" if "_euc_" in str(event_id) else "wc"
                 if series in ("wc", "euc") and current_loc:
-                    ev = events.copy()
+                    ev = events_work.copy()
                     ev = ev[ev["event_id"] != event_id]
-                    if series == "euc":
+                    if "_series_code" in ev.columns:
+                        ev = ev[ev["_series_code"].astype(str).str.lower() == series]
+                    elif series == "euc":
                         ev = ev[ev["event_id"].astype(str).str.contains("_euc_", regex=False)]
                     else:
                         ev = ev[~ev["event_id"].astype(str).str.contains("_euc_", regex=False)]
@@ -3121,7 +3125,7 @@ if selected_heat_section == "Startliste - Gate Pick":
                                     prevs["label_short"]
                                     .fillna(prevs["display_name"])
                                     .astype(str)
-                                    .str.extract(r"ROUND\\s*(\\d+)", flags=re.IGNORECASE)[0]
+                                    .str.extract(r"ROUND\s*(\d+)", flags=re.IGNORECASE)[0]
                                 )
                                 prevs["round_num"] = pd.to_numeric(prevs["round_num"], errors="coerce")
                                 prev_round = prevs[prevs["round_num"] == (current_round_num - 1)]
