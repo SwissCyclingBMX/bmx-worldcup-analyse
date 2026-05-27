@@ -1838,11 +1838,11 @@ def render_training_insights(page_prefs: dict) -> None:
 
     t1, t2, t3 = st.columns(3)
     with t1:
-        trend_mode = st.radio("Verlauf", ["Alle Laeufe", "Bester pro Session"], horizontal=True, key="ai_training_trend_mode")
+        trend_mode = st.radio("Verlauf", ["Alle Laeufe", "Bester pro Session"], index=1, horizontal=True, key="ai_training_trend_mode")
     with t2:
         value_mode = st.radio("Wert", ["Rohzeit", "Delta pro Strecke"], horizontal=True, key="ai_training_value_mode")
     with t3:
-        show_points = st.toggle("Punkte anzeigen", value=True, key="ai_training_show_points")
+        show_points = st.toggle("Punkte anzeigen", value=False, key="ai_training_show_points")
 
     if trend_mode == "Bester pro Session":
         plot_src_valid = (
@@ -1861,19 +1861,11 @@ def render_training_insights(page_prefs: dict) -> None:
     plot_src_valid["series_label"] = plot_src_valid["rider_short"].fillna(plot_src_valid["rider_label"]) + " - " + plot_src_valid["metric"]
     plot_src_valid["datetime_label"] = plot_src_valid["training_datetime"].dt.strftime("%d/%m/%y %H:%M")
     plot_src_valid["session_datetime_label"] = pd.to_datetime(plot_src_valid["session_start"], errors="coerce").dt.strftime("%d/%m/%y %H:%M")
-    plot_src_valid["x_label"] = np.where(
-        trend_mode == "Bester pro Session",
-        plot_src_valid["session_datetime_label"].fillna(plot_src_valid["datetime_label"]),
-        plot_src_valid["datetime_label"],
-    )
-    x_order = (
-        plot_src_valid[["x_label", "training_datetime"]]
-        .dropna(subset=["x_label"])
-        .groupby("x_label", as_index=False)["training_datetime"]
-        .min()
-        .sort_values(["training_datetime", "x_label"], kind="stable")["x_label"]
-        .tolist()
-    )
+    if trend_mode == "Bester pro Session":
+        plot_src_valid["x_dt"] = pd.to_datetime(plot_src_valid["session_start"], errors="coerce")
+        plot_src_valid["x_dt"] = plot_src_valid["x_dt"].where(plot_src_valid["x_dt"].notna(), plot_src_valid["training_datetime"])
+    else:
+        plot_src_valid["x_dt"] = plot_src_valid["training_datetime"]
     vals = pd.to_numeric(plot_src_valid["plot_value"], errors="coerce").dropna()
     y_scale = alt.Scale(zero=False)
     if not vals.empty:
@@ -1887,10 +1879,9 @@ def render_training_insights(page_prefs: dict) -> None:
 
     base = alt.Chart(plot_src_valid).encode(
         x=alt.X(
-            "x_label:N",
+            "x_dt:T",
             title="Datum / Uhrzeit",
-            sort=x_order,
-            axis=alt.Axis(labelAngle=-45, labelLimit=120, labelOverlap=False),
+            axis=alt.Axis(labelAngle=-35, labelLimit=120),
         ),
         y=alt.Y("plot_value:Q", title=y_title, scale=y_scale),
         color=alt.Color("training_location:N", title="Strecke"),
