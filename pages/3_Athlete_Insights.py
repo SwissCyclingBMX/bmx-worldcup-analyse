@@ -1351,8 +1351,8 @@ def add_training_sessions(df: pd.DataFrame, gap_minutes: int = 120) -> pd.DataFr
     return out.merge(meta[["session_id", "session_start", "session_label"]], on="session_id", how="left")
 
 
-@st.cache_data(show_spinner=False, ttl=10)
-def load_training_data(db_path: str = DB_PATH) -> pd.DataFrame:
+@st.cache_data(show_spinner=False, ttl=300)
+def load_training_data(db_path: str = DB_PATH, db_mtime: float = 0.0) -> pd.DataFrame:
     if not os.path.exists(db_path):
         return pd.DataFrame()
     conn = sqlite3.connect(db_path)
@@ -1373,7 +1373,11 @@ def load_training_data(db_path: str = DB_PATH) -> pd.DataFrame:
             _select_col(train_cols, "t", "ingested_at"),
         ] + [
             _select_col(train_cols, "t", c)
-            for c in ["kink", "bottom", "interim", "t1_in", "start", "t1", "total", "training_block_id", "training_block_label", "training_block_time", "source_kind"]
+            for c in [
+                "kink", "bottom", "interim", "t1_in", "start", "t1", "total",
+                "split_count", "split_cumulative", "split_deltas",
+                "training_block_id", "training_block_label", "training_block_time", "source_kind",
+            ]
         ]
         event_select = [
             _select_col(event_cols, "e", "display_name"),
@@ -1415,6 +1419,15 @@ def load_training_data(db_path: str = DB_PATH) -> pd.DataFrame:
             df[col] = ""
         df[f"{col}_s"] = df[col].apply(parse_time_to_seconds)
         df.loc[df[f"{col}_s"] <= 0, f"{col}_s"] = np.nan
+    for split_base in ["split_cumulative", "split_deltas"]:
+        if split_base not in df.columns:
+            df[split_base] = ""
+        split_lists = df[split_base].fillna("").astype(str).str.split(",")
+        max_splits = min(12, max((len([x for x in vals if str(x).strip()]) for vals in split_lists), default=0))
+        for idx in range(max_splits):
+            col = f"{split_base}_{idx + 1}_s"
+            df[col] = split_lists.apply(lambda vals, i=idx: parse_time_to_seconds(vals[i]) if i < len(vals) else np.nan)
+            df.loc[df[col] <= 0, col] = np.nan
     df["training_datetime"] = pd.to_datetime(df.apply(derive_training_datetime, axis=1), errors="coerce")
     df["training_location"] = df["event_location"].apply(wc_location_clean)
     df.loc[df["training_location"].astype(str).str.strip() == "", "training_location"] = df["display_name"].fillna("").astype(str).str.strip()
@@ -1562,9 +1575,10 @@ def flag_training_metric_outliers(
     return df_flagged
 
 
-def render_training_insights(all_runs: pd.DataFrame, master_results: pd.DataFrame, page_prefs: dict) -> None:
+def render_training_insights(page_prefs: dict) -> None:
     st.subheader("Training")
-    df_train = load_training_data()
+    db_mtime = os.path.getmtime(DB_PATH) if os.path.exists(DB_PATH) else 0.0
+    df_train = load_training_data(db_mtime=db_mtime)
     if df_train.empty:
         st.info("Keine Trainingsdaten gefunden.")
         return
@@ -1578,6 +1592,13 @@ def render_training_insights(all_runs: pd.DataFrame, master_results: pd.DataFram
         "T1": "t1_s",
         "Total": "total_s",
     }
+    for idx in range(1, 13):
+        cum_col = f"split_cumulative_{idx}_s"
+        delta_col = f"split_deltas_{idx}_s"
+        if cum_col in df_train.columns:
+            metric_defs[f"BMX-Racer Split {idx}"] = cum_col
+        if delta_col in df_train.columns:
+            metric_defs[f"BMX-Racer Delta {idx}"] = delta_col
     metric_options = [label for label, col in metric_defs.items() if col in df_train.columns and df_train[col].notna().any()]
     if not metric_options:
         st.info("Keine verwertbaren Trainings-Splitzeiten vorhanden.")
@@ -1661,7 +1682,7 @@ def render_training_insights(all_runs: pd.DataFrame, master_results: pd.DataFram
         return
 
     with st.expander("Timing-Namen zu DB-Athleten zuordnen", expanded=False):
-        targets = build_training_athlete_targets(all_runs, master_results)
+        edit_aliases = st.checkbox("Zuordnungen bearbeiten", value=False, key="ai_training_alias_edit")
         unmapped = (
             scope[~scope["mapped"].fillna(False)]
             .groupby(["source_name_key", "source_name", "source_nation"], as_index=False, dropna=False)
@@ -1674,9 +1695,16 @@ def render_training_insights(all_runs: pd.DataFrame, master_results: pd.DataFram
         )
         if unmapped.empty:
             st.caption("Alle Timing-Namen in der aktuellen Auswahl sind zugeordnet oder verwenden bereits ihren Roh-Namen.")
-        elif targets.empty:
-            st.warning("Keine bestehenden DB-Athleten fuer die Zuordnung gefunden.")
+        elif not edit_aliases:
+            st.caption(f"{len(unmapped)} Timing-Namen ohne feste DB-Zuordnung. Zum Bearbeiten aktivieren.")
         else:
+            all_runs = load_runs()
+            master_results = load_master_results()
+            targets = build_training_athlete_targets(all_runs, master_results)
+            if targets.empty:
+                st.warning("Keine bestehenden DB-Athleten fuer die Zuordnung gefunden.")
+                targets = pd.DataFrame()
+        if not unmapped.empty and edit_aliases and not targets.empty:
             unmapped["option_label"] = (
                 unmapped["source_name"].astype(str)
                 + np.where(unmapped["source_nation"].astype(str).str.strip() != "", " (" + unmapped["source_nation"].astype(str) + ")", "")
@@ -1941,9 +1969,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-all_runs = load_runs()
-master_results = load_master_results()
-
 section_options = ["Athlete Trend", "Segment Profile", "Results Trend", "Training"]
 section_default = page_prefs.get("ai_active_section", section_options[0])
 if section_default not in section_options:
@@ -1957,8 +1982,11 @@ ai_active_section = st.segmented_control(
 update_page_prefs("athlete_insights", {"ai_active_section": ai_active_section})
 
 if ai_active_section == "Training":
-    render_training_insights(all_runs, master_results, page_prefs)
+    render_training_insights(page_prefs)
     st.stop()
+
+all_runs = load_runs()
+master_results = load_master_results()
 
 if all_runs.empty:
     st.warning("Keine Daten gefunden.")
