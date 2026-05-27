@@ -1352,7 +1352,44 @@ def add_training_sessions(df: pd.DataFrame, gap_minutes: int = 120) -> pd.DataFr
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def load_training_data(db_path: str = DB_PATH, db_mtime: float = 0.0) -> pd.DataFrame:
+def load_training_locations(db_path: str = DB_PATH, db_mtime: float = 0.0) -> List[str]:
+    if not os.path.exists(db_path):
+        return []
+    conn = sqlite3.connect(db_path)
+    try:
+        event_cols = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        loc_expr = _select_col(event_cols, "e", "location", "event_location")
+        display_expr = _select_col(event_cols, "e", "display_name")
+        df = pd.read_sql_query(
+            f"""
+            SELECT DISTINCT {loc_expr}, {display_expr}
+            FROM training_times t
+            LEFT JOIN events e ON e.event_id = t.event_id
+            """,
+            conn,
+        )
+    except Exception:
+        return []
+    finally:
+        conn.close()
+    if df.empty:
+        return []
+    for c in ["event_location", "display_name"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].fillna("").astype(str)
+    loc = df["event_location"].apply(wc_location_clean)
+    loc = loc.where(loc.astype(str).str.strip() != "", df["display_name"].astype(str).str.strip())
+    loc = loc.where(loc.astype(str).str.strip() != "", "Unknown")
+    return sorted([x for x in loc.dropna().astype(str).unique().tolist() if x])
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def load_training_data(
+    db_path: str = DB_PATH,
+    db_mtime: float = 0.0,
+    location_filter: tuple[str, ...] = (),
+) -> pd.DataFrame:
     if not os.path.exists(db_path):
         return pd.DataFrame()
     conn = sqlite3.connect(db_path)
@@ -1386,13 +1423,34 @@ def load_training_data(db_path: str = DB_PATH, db_mtime: float = 0.0) -> pd.Data
             _select_col(event_cols, "e", "event_date"),
             _select_col(event_cols, "e", "event_type"),
         ]
+        where_sql = ""
+        params: List[Any] = []
+        if location_filter:
+            event_id_rows = conn.execute(
+                "SELECT event_id, display_name, location FROM events"
+            ).fetchall()
+            event_ids = []
+            wanted_locations = set(location_filter)
+            for event_id, display_name, location in event_id_rows:
+                loc = wc_location_clean(location or "")
+                if not loc:
+                    loc = str(display_name or "").strip() or "Unknown"
+                if loc in wanted_locations:
+                    event_ids.append(str(event_id))
+            if not event_ids:
+                return pd.DataFrame()
+            placeholders = ",".join("?" for _ in event_ids)
+            where_sql = f"WHERE t.event_id IN ({placeholders})"
+            params = event_ids
         df = pd.read_sql_query(
             f"""
             SELECT {", ".join(train_select + event_select)}
             FROM training_times t
             LEFT JOIN events e ON e.event_id = t.event_id
+            {where_sql}
             """,
             conn,
+            params=params,
         )
         aliases = pd.read_sql_query("SELECT * FROM training_name_aliases", conn)
         conn.commit()
@@ -1578,7 +1636,25 @@ def flag_training_metric_outliers(
 def render_training_insights(page_prefs: dict) -> None:
     st.subheader("Training")
     db_mtime = os.path.getmtime(DB_PATH) if os.path.exists(DB_PATH) else 0.0
-    df_train = load_training_data(db_mtime=db_mtime)
+    location_opts = load_training_locations(db_mtime=db_mtime)
+    if not location_opts:
+        st.info("Keine Trainingsdaten gefunden.")
+        return
+
+    default_locations = [x for x in page_prefs.get("training_locations", location_opts) if x in location_opts] or location_opts
+    loc_col, date_col_1, date_col_2 = st.columns([2, 1, 1])
+    with loc_col:
+        sel_training_locations = st.multiselect(
+            "Strecken / Orte",
+            location_opts,
+            default=default_locations,
+            key="ai_training_locations",
+        )
+
+    df_train = load_training_data(
+        db_mtime=db_mtime,
+        location_filter=tuple(sel_training_locations),
+    )
     if df_train.empty:
         st.info("Keine Trainingsdaten gefunden.")
         return
@@ -1616,20 +1692,10 @@ def render_training_insights(page_prefs: dict) -> None:
     if pd.isna(default_end):
         default_end = max_dt
 
-    f1, f2, f3 = st.columns([1, 1, 2])
-    with f1:
+    with date_col_1:
         start_date = st.date_input("Von", value=default_start.date(), format="DD/MM/YYYY", key="ai_training_start_date")
-    with f2:
+    with date_col_2:
         end_date = st.date_input("Bis", value=default_end.date(), format="DD/MM/YYYY", key="ai_training_end_date")
-    with f3:
-        location_opts = sorted([x for x in df_train["training_location"].dropna().astype(str).unique().tolist() if x])
-        default_locations = [x for x in page_prefs.get("training_locations", location_opts) if x in location_opts] or location_opts
-        sel_training_locations = st.multiselect(
-            "Strecken / Orte",
-            location_opts,
-            default=default_locations,
-            key="ai_training_locations",
-        )
 
     scope = df_train.copy()
     start_ts = pd.Timestamp(start_date)
