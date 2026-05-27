@@ -1641,7 +1641,13 @@ def render_training_insights(page_prefs: dict) -> None:
         st.info("Keine Trainingsdaten gefunden.")
         return
 
-    default_locations = [x for x in page_prefs.get("training_locations", location_opts) if x in location_opts] or location_opts
+    saved_locations = [x for x in page_prefs.get("training_locations", []) if x in location_opts]
+    if saved_locations:
+        default_locations = saved_locations
+    elif "Aigle" in location_opts:
+        default_locations = ["Aigle"]
+    else:
+        default_locations = location_opts[:1]
     loc_col, date_col_1, date_col_2 = st.columns([2, 1, 1])
     with loc_col:
         sel_training_locations = st.multiselect(
@@ -1650,6 +1656,10 @@ def render_training_insights(page_prefs: dict) -> None:
             default=default_locations,
             key="ai_training_locations",
         )
+
+    if not sel_training_locations:
+        st.info("Bitte mindestens eine Strecke / einen Ort auswaehlen.")
+        return
 
     df_train = load_training_data(
         db_mtime=db_mtime,
