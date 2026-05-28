@@ -1918,6 +1918,105 @@ def render_training_insights(page_prefs: dict) -> None:
         )
     st.altair_chart(alt.layer(*layers).properties(height=430), use_container_width=True)
 
+    st.markdown("**Boxplot**")
+    b1, b2 = st.columns([1, 2])
+    with b1:
+        box_comparison_mode = st.selectbox(
+            "Vergleichsmodus",
+            ["Athlet", "Monat", "Woche", "Tag", "Session"],
+            index=0,
+            key="ai_training_box_comparison_mode",
+        )
+    with b2:
+        box_show_points = st.toggle("Einzelwerte anzeigen", value=True, key="ai_training_box_show_points")
+
+    box_df = plot_src_valid.dropna(subset=["plot_value"]).copy()
+    if not box_df.empty:
+        box_dt = pd.to_datetime(box_df["training_datetime"], errors="coerce")
+        box_session_dt = pd.to_datetime(box_df["session_start"], errors="coerce")
+        if box_comparison_mode == "Athlet":
+            box_df["box_group"] = box_df["rider_short"].fillna(box_df["rider_label"]).fillna("Unknown").astype(str)
+            box_df["box_sort"] = box_df["box_group"]
+            color_col = "metric"
+        elif box_comparison_mode == "Monat":
+            box_df["box_group"] = box_dt.dt.strftime("%Y-%m").fillna("Unknown")
+            box_df["box_sort"] = box_dt.dt.strftime("%Y-%m").fillna("9999-99")
+            color_col = "rider_short"
+        elif box_comparison_mode == "Woche":
+            iso = box_dt.dt.isocalendar()
+            box_df["box_group"] = (
+                iso["year"].astype("Int64").astype(str)
+                + "-W"
+                + iso["week"].astype("Int64").astype(str).str.zfill(2)
+            ).replace("<NA>-W<NA>", "Unknown")
+            box_df["box_sort"] = box_df["box_group"].replace("Unknown", "9999-W99")
+            color_col = "rider_short"
+        elif box_comparison_mode == "Tag":
+            box_df["box_group"] = box_dt.dt.strftime("%Y-%m-%d").fillna("Unknown")
+            box_df["box_sort"] = box_dt.dt.strftime("%Y-%m-%d").fillna("9999-99-99")
+            color_col = "rider_short"
+        else:
+            box_df["box_group"] = box_df["session_label"].fillna("").astype(str).str.strip()
+            box_df.loc[box_df["box_group"] == "", "box_group"] = box_session_dt.dt.strftime("%Y-%m-%d %H:%M").fillna("Unknown")
+            box_df["box_sort"] = box_session_dt.fillna(box_dt)
+            color_col = "rider_short"
+
+        if len(selected_metric_labels) > 1 and box_comparison_mode != "Athlet":
+            box_df["box_x"] = box_df["box_group"].astype(str) + " / " + box_df["metric"].astype(str)
+        else:
+            box_df["box_x"] = box_df["box_group"].astype(str)
+        order_df = (
+            box_df[["box_x", "box_sort"]]
+            .drop_duplicates()
+            .sort_values(["box_sort", "box_x"], kind="stable")
+        )
+        box_order = order_df["box_x"].astype(str).tolist()
+        box_df["color_value"] = box_df[color_col].fillna("Unknown").astype(str)
+        if go is None:
+            st.warning("Plotly ist fuer den Training-Boxplot nicht verfuegbar.")
+        else:
+            fig = go.Figure()
+            for color_value in sorted(box_df["color_value"].dropna().unique().tolist()):
+                cdf = box_df[box_df["color_value"] == color_value].copy()
+                fig.add_trace(
+                    go.Box(
+                        x=cdf["box_x"],
+                        y=cdf["plot_value"],
+                        name=str(color_value),
+                        boxpoints="all" if box_show_points else False,
+                        jitter=0.35,
+                        pointpos=0,
+                        marker={"size": 5, "opacity": 0.55},
+                        customdata=np.stack(
+                            [
+                                cdf["rider_label"].fillna("").astype(str),
+                                cdf["metric"].fillna("").astype(str),
+                                cdf["datetime_label"].fillna("").astype(str),
+                                cdf["session_label"].fillna("").astype(str),
+                            ],
+                            axis=-1,
+                        ),
+                        hovertemplate=(
+                            "Gruppe: %{x}<br>"
+                            "Wert: %{y:.3f}s<br>"
+                            "Athlet: %{customdata[0]}<br>"
+                            "Metrik: %{customdata[1]}<br>"
+                            "Datum/Zeit: %{customdata[2]}<br>"
+                            "Session: %{customdata[3]}<extra></extra>"
+                        ),
+                    )
+                )
+            fig.update_layout(
+                height=430,
+                boxmode="group" if box_comparison_mode == "Athlet" else "overlay",
+                yaxis_title=y_title,
+                xaxis_title=box_comparison_mode,
+                legend_title="Metrik" if box_comparison_mode == "Athlet" else "Athlet",
+                margin={"l": 40, "r": 20, "t": 20, "b": 120},
+            )
+            fig.update_xaxes(categoryorder="array", categoryarray=box_order, tickangle=-45)
+            st.plotly_chart(fig, use_container_width=True, key="ai_training_boxplot")
+
     def avg_top3(series: pd.Series) -> float:
         s = pd.to_numeric(series, errors="coerce").dropna().sort_values()
         return float(s.head(3).mean()) if not s.empty else np.nan
