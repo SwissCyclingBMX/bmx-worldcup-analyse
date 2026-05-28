@@ -1847,76 +1847,10 @@ def render_training_insights(page_prefs: dict) -> None:
         st.info("Nach dem Filtern von Fehlmessungen bleiben keine verwertbaren Trainingsdaten fuer die gewaehlten Metriken.")
         return
 
-    t1, t2, t3 = st.columns(3)
-    with t1:
-        trend_mode = st.radio("Verlauf", ["Alle Laeufe", "Bester pro Session"], index=1, horizontal=True, key="ai_training_trend_mode")
-    with t2:
-        value_mode = st.radio("Wert", ["Rohzeit", "Delta pro Strecke"], horizontal=True, key="ai_training_value_mode")
-    with t3:
-        show_points = st.toggle("Punkte anzeigen", value=False, key="ai_training_show_points")
-
-    if trend_mode == "Bester pro Session":
-        plot_src_valid = (
-            plot_src_valid.sort_values(["metric_value", "training_datetime"], ascending=[True, True], kind="stable")
-            .drop_duplicates(subset=["rider_id", "training_location", "session_id", "metric"], keep="first")
-            .copy()
-        )
-    if value_mode == "Delta pro Strecke":
-        ref = plot_src_valid.groupby(["training_location", "metric"], dropna=False)["metric_value"].transform("min")
-        plot_src_valid["plot_value"] = plot_src_valid["metric_value"] - ref
-        y_title = "Delta zum Bestwert je Strecke/Metrik im Zeitraum (s)"
-        st.caption("Delta pro Strecke: Referenz ist der schnellste Wert je Strecke und Metrik im aktuell gewaehlten Zeitraum.")
-    else:
-        plot_src_valid["plot_value"] = plot_src_valid["metric_value"]
-        y_title = "Zeit (s)"
-    plot_src_valid["series_label"] = plot_src_valid["rider_short"].fillna(plot_src_valid["rider_label"]) + " - " + plot_src_valid["metric"]
+    plot_src_valid["plot_value"] = plot_src_valid["metric_value"]
+    y_title = "Zeit (s)"
     plot_src_valid["datetime_label"] = plot_src_valid["training_datetime"].dt.strftime("%d/%m/%y %H:%M")
     plot_src_valid["session_datetime_label"] = pd.to_datetime(plot_src_valid["session_start"], errors="coerce").dt.strftime("%d/%m/%y %H:%M")
-    if trend_mode == "Bester pro Session":
-        plot_src_valid["x_dt"] = pd.to_datetime(plot_src_valid["session_start"], errors="coerce")
-        plot_src_valid["x_dt"] = plot_src_valid["x_dt"].where(plot_src_valid["x_dt"].notna(), plot_src_valid["training_datetime"])
-    else:
-        plot_src_valid["x_dt"] = plot_src_valid["training_datetime"]
-    vals = pd.to_numeric(plot_src_valid["plot_value"], errors="coerce").dropna()
-    y_scale = alt.Scale(zero=False)
-    if not vals.empty:
-        y_min = float(vals.min())
-        y_max = float(vals.max())
-        if np.isfinite(y_min) and np.isfinite(y_max):
-            pad = max((y_max - y_min) * 0.12, 0.01)
-            if abs(y_max - y_min) < 1e-9:
-                pad = max(abs(y_max) * 0.05, 0.01)
-            y_scale = alt.Scale(domain=[y_min - pad, y_max + pad], zero=False, nice=False)
-
-    base = alt.Chart(plot_src_valid).encode(
-        x=alt.X(
-            "x_dt:T",
-            title="Datum / Uhrzeit",
-            axis=alt.Axis(labelAngle=-35, labelLimit=120),
-        ),
-        y=alt.Y("plot_value:Q", title=y_title, scale=y_scale),
-        color=alt.Color("training_location:N", title="Strecke"),
-        detail="series_label:N",
-    )
-    point_tooltip = [
-        alt.Tooltip("datetime_label:N", title="Datum/Zeit"),
-        alt.Tooltip("session_label:N", title="Session"),
-        alt.Tooltip("training_location:N", title="Strecke"),
-        alt.Tooltip("rider_label:N", title="Athlet"),
-        alt.Tooltip("metric:N", title="Metrik"),
-        alt.Tooltip("metric_value:Q", title="Rohzeit", format=".3f"),
-        alt.Tooltip("plot_value:Q", title="Chart-Wert", format=".3f"),
-    ]
-    layers = [base.mark_line()]
-    if show_points:
-        layers.append(
-            base.mark_point(size=55, opacity=0.85)
-            .encode(
-                shape=alt.Shape("rider_short:N", title="Athlet"),
-                tooltip=point_tooltip,
-            )
-        )
-    st.altair_chart(alt.layer(*layers).properties(height=430), use_container_width=True)
 
     st.markdown("**Boxplot**")
     b1, b2 = st.columns([1, 2])
@@ -1972,48 +1906,101 @@ def render_training_insights(page_prefs: dict) -> None:
         )
         box_order = order_df["box_x"].astype(str).tolist()
         box_df["color_value"] = box_df[color_col].fillna("Unknown").astype(str)
+        metric_axis_order = [m for m in selected_metric_labels if m in set(box_df["metric"].dropna().astype(str))]
+        use_dual_axis = len(metric_axis_order) == 2
         if go is None:
             st.warning("Plotly ist fuer den Training-Boxplot nicht verfuegbar.")
         else:
             fig = go.Figure()
-            for color_value in sorted(box_df["color_value"].dropna().unique().tolist()):
-                cdf = box_df[box_df["color_value"] == color_value].copy()
-                fig.add_trace(
-                    go.Box(
-                        x=cdf["box_x"],
-                        y=cdf["plot_value"],
-                        name=str(color_value),
-                        boxpoints="all" if box_show_points else False,
-                        jitter=0.35,
-                        pointpos=0,
-                        marker={"size": 5, "opacity": 0.55},
-                        customdata=np.stack(
-                            [
-                                cdf["rider_label"].fillna("").astype(str),
-                                cdf["metric"].fillna("").astype(str),
-                                cdf["datetime_label"].fillna("").astype(str),
-                                cdf["session_label"].fillna("").astype(str),
-                            ],
-                            axis=-1,
-                        ),
-                        hovertemplate=(
-                            "Gruppe: %{x}<br>"
-                            "Wert: %{y:.3f}s<br>"
-                            "Athlet: %{customdata[0]}<br>"
-                            "Metrik: %{customdata[1]}<br>"
-                            "Datum/Zeit: %{customdata[2]}<br>"
-                            "Session: %{customdata[3]}<extra></extra>"
+            palette = [
+                "#64b5f6",
+                "#2196f3",
+                "#ff7043",
+                "#66bb6a",
+                "#ab47bc",
+                "#ffa726",
+                "#26a69a",
+                "#ec407a",
+            ]
+            color_values = sorted(box_df["color_value"].dropna().unique().tolist())
+            color_map = {str(value): palette[i % len(palette)] for i, value in enumerate(color_values)}
+            seen_legend = set()
+            trace_groups = [("all", None)]
+            if use_dual_axis:
+                trace_groups = [(metric, metric) for metric in metric_axis_order]
+            for _, metric_filter in trace_groups:
+                metric_df = box_df if metric_filter is None else box_df[box_df["metric"].astype(str) == str(metric_filter)]
+                for color_value in color_values:
+                    cdf = metric_df[metric_df["color_value"] == color_value].copy()
+                    if cdf.empty:
+                        continue
+                    trace_color = color_map.get(str(color_value))
+                    trace_axis = "y"
+                    if use_dual_axis and str(metric_filter) == str(metric_axis_order[1]):
+                        trace_axis = "y2"
+                    legend_key = str(color_value)
+                    show_legend = legend_key not in seen_legend
+                    seen_legend.add(legend_key)
+                    marker_style = {"size": 5, "opacity": 0.55}
+                    line_style = None
+                    if use_dual_axis and trace_color:
+                        marker_style["color"] = trace_color
+                        line_style = {"color": trace_color}
+                    fig.add_trace(
+                        go.Box(
+                            x=cdf["box_x"],
+                            y=cdf["plot_value"],
+                            name=str(color_value),
+                            yaxis=trace_axis,
+                            legendgroup=legend_key,
+                            showlegend=show_legend,
+                            boxpoints="all" if box_show_points else False,
+                            jitter=0.35,
+                            pointpos=0,
+                            marker=marker_style,
+                            line=line_style,
+                            customdata=np.stack(
+                                [
+                                    cdf["rider_label"].fillna("").astype(str),
+                                    cdf["metric"].fillna("").astype(str),
+                                    cdf["datetime_label"].fillna("").astype(str),
+                                    cdf["session_label"].fillna("").astype(str),
+                                ],
+                                axis=-1,
+                            ),
+                            hovertemplate=(
+                                "Gruppe: %{x}<br>"
+                                "Wert: %{y:.3f}s<br>"
+                                "Athlet: %{customdata[0]}<br>"
+                                "Metrik: %{customdata[1]}<br>"
+                                "Datum/Zeit: %{customdata[2]}<br>"
+                                "Session: %{customdata[3]}<extra></extra>"
+                            ),
                         ),
                     )
-                )
+            yaxis_layout = {"title": y_title}
+            layout_margin = {"l": 40, "r": 20, "t": 20, "b": 120}
+            if use_dual_axis:
+                yaxis_layout = {"title": f"{metric_axis_order[0]} (s)"}
+                layout_margin["r"] = 70
             fig.update_layout(
                 height=430,
                 boxmode="group" if box_comparison_mode == "Athlet" else "overlay",
-                yaxis_title=y_title,
+                yaxis=yaxis_layout,
                 xaxis_title=box_comparison_mode,
                 legend_title="Metrik" if box_comparison_mode == "Athlet" else "Athlet",
-                margin={"l": 40, "r": 20, "t": 20, "b": 120},
+                margin=layout_margin,
             )
+            if use_dual_axis:
+                fig.update_layout(
+                    yaxis2={
+                        "title": f"{metric_axis_order[1]} (s)",
+                        "overlaying": "y",
+                        "side": "right",
+                        "showgrid": False,
+                        "zeroline": False,
+                    }
+                )
             fig.update_xaxes(categoryorder="array", categoryarray=box_order, tickangle=-45)
             st.plotly_chart(fig, use_container_width=True, key="ai_training_boxplot")
 
