@@ -3272,44 +3272,81 @@ elif ai_active_section == "Segment Profile":
             )
 elif ai_active_section == "Results Trend":
     st.subheader("Results Trend")
-    show_boxplot = st.toggle("Boxplot statt Liniengrafik", value=False, key="results_trend_show_boxplot")
-    show_dnq_labels = st.toggle("Show DNQ labels (>32)", value=True, key="results_trend_show_dnq_labels")
+    rt_toggles = st.columns(3)
+    with rt_toggles[0]:
+        show_boxplot = st.toggle("Boxplot statt Liniengrafik", value=False, key="results_trend_show_boxplot")
+    with rt_toggles[1]:
+        show_round_results = st.toggle(
+            "Einzelne gefahrene Runden anzeigen",
+            value=False,
+            key="results_trend_show_round_results",
+        )
+    with rt_toggles[2]:
+        if show_round_results:
+            show_dnq_labels = False
+            st.caption("DNQ labels nur fuer Final Rank.")
+        else:
+            show_dnq_labels = st.toggle("Show DNQ labels (>32)", value=True, key="results_trend_show_dnq_labels")
     rr = runs_sel.copy().sort_values(["rider_id", "event_dt", "event_id", "round_sort", "heat_id"])
 
-    # One row per rider+event to map overall/final classification.
-    rider_event = (
-        rr.groupby(["rider_id", "event_id"], as_index=False)
-        .agg(
-            rider_short=("rider_short", "first"),
-            rider_label=("rider_label", "first"),
-            event_short=("event_short", "first"),
-            event_label_full=("display_name", "first"),
-            category=("category", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
-            gender=("gender", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
-            reached_phase=("phase", lambda s: "Final" if (s == "Final").any() else ("KO" if (s == "KO").any() else "Early")),
-            event_dt=("event_dt", "first"),
-            location=("location", "first"),
-            year=("year", "first"),
+    rank_label = "Run Rank" if show_round_results else "Final Rank"
+    table_title = "**Rank pro gefahrener Runde**" if show_round_results else "**Final Rank pro Event (master_results)**"
+    empty_message = "Keine Runden-Resultate fuer die aktuelle Rider-Auswahl." if show_round_results else "Keine Event-Ergebnisse fuer die aktuelle Rider-Auswahl."
+    missing_rank_message = "Keine Runden-Ranks fuer die aktuelle Auswahl gefunden." if show_round_results else "Keine Final Classification in master_results fuer die aktuelle Auswahl gefunden."
+
+    if show_round_results:
+        rider_event = rr.copy()
+        rider_event["round_rank"] = pd.to_numeric(rider_event["rank"], errors="coerce")
+        rider_event["final_rank"] = rider_event["round_rank"]
+        rider_event["round_label"] = rider_event["round_short"].fillna(rider_event["round_title"]).fillna("Runde")
+        rider_event["event_label_full"] = rider_event["display_name"].fillna(rider_event["event_label"]).fillna(rider_event["event_id"])
+        rider_event["event_short"] = rider_event["event_short"].fillna("Unknown") + " • " + rider_event["round_label"]
+        rider_event["event_label_full"] = rider_event["event_label_full"] + " • " + rider_event["round_label"]
+        rider_event["point_id"] = (
+            rider_event["rider_id"].astype(str)
+            + "|"
+            + rider_event["event_id"].astype(str)
+            + "|"
+            + rider_event["round_key"].fillna("").astype(str)
+            + "|"
+            + rider_event["heat_id"].fillna("").astype(str)
         )
-    )
-    event_rank_map = rr[["rider_id", "event_id", "final_rank_event"]].copy()
-    event_rank_map["final_rank_event"] = pd.to_numeric(event_rank_map["final_rank_event"], errors="coerce")
-    event_rank_map = (
-        event_rank_map.dropna(subset=["final_rank_event"])
-        .groupby(["rider_id", "event_id"], as_index=False)["final_rank_event"]
-        .min()
-    )
-    rider_event = rider_event.merge(event_rank_map, on=["rider_id", "event_id"], how="left")
-    rider_event["final_rank"] = pd.to_numeric(rider_event["final_rank_event"], errors="coerce")
-    rider_event["point_id"] = rider_event["rider_id"].astype(str) + "|" + rider_event["event_id"].astype(str)
-    rider_event = rider_event.sort_values(["event_dt", "event_id", "rider_short"])
+        rider_event = rider_event.sort_values(["event_dt", "event_id", "round_sort", "heat_id", "rider_short"])
+    else:
+        # One row per rider+event to map overall/final classification.
+        rider_event = (
+            rr.groupby(["rider_id", "event_id"], as_index=False)
+            .agg(
+                rider_short=("rider_short", "first"),
+                rider_label=("rider_label", "first"),
+                event_short=("event_short", "first"),
+                event_label_full=("display_name", "first"),
+                category=("category", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+                gender=("gender", lambda s: s.mode().iloc[0] if not s.mode().empty else s.iloc[0]),
+                reached_phase=("phase", lambda s: "Final" if (s == "Final").any() else ("KO" if (s == "KO").any() else "Early")),
+                event_dt=("event_dt", "first"),
+                location=("location", "first"),
+                year=("year", "first"),
+            )
+        )
+        event_rank_map = rr[["rider_id", "event_id", "final_rank_event"]].copy()
+        event_rank_map["final_rank_event"] = pd.to_numeric(event_rank_map["final_rank_event"], errors="coerce")
+        event_rank_map = (
+            event_rank_map.dropna(subset=["final_rank_event"])
+            .groupby(["rider_id", "event_id"], as_index=False)["final_rank_event"]
+            .min()
+        )
+        rider_event = rider_event.merge(event_rank_map, on=["rider_id", "event_id"], how="left")
+        rider_event["final_rank"] = pd.to_numeric(rider_event["final_rank_event"], errors="coerce")
+        rider_event["point_id"] = rider_event["rider_id"].astype(str) + "|" + rider_event["event_id"].astype(str)
+        rider_event = rider_event.sort_values(["event_dt", "event_id", "rider_short"])
 
     if rider_event.empty:
-        st.info("Keine Event-Ergebnisse fuer die aktuelle Rider-Auswahl.")
+        st.info(empty_message)
     else:
         plot_df = rider_event.dropna(subset=["final_rank"]).copy()
         if plot_df.empty:
-            st.info("Keine Final Classification in master_results fuer die aktuelle Auswahl gefunden.")
+            st.info(missing_rank_message)
         else:
             plot_df["event_id_dt"] = pd.to_datetime(
                 plot_df["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce"
@@ -3332,19 +3369,27 @@ elif ai_active_section == "Results Trend":
             plot_df["x_index"] = plot_df["x_order"].astype(float)
             plot_df["final_rank_num"] = pd.to_numeric(plot_df["final_rank"], errors="coerce")
             plot_df["final_rank_raw"] = plot_df["final_rank_num"]
-            plot_df["is_overflow"] = plot_df["final_rank_raw"] > 32
+            plot_df["is_overflow"] = False if show_round_results else (plot_df["final_rank_raw"] > 32)
             plot_df["final_rank_plot"] = np.where(
                 plot_df["is_overflow"],
                 33.0,
                 plot_df["final_rank_raw"],
             )
-            plot_df["line_rank_plot"] = plot_df["final_rank_raw"].clip(upper=32)
+            plot_df["line_rank_plot"] = plot_df["final_rank_raw"] if show_round_results else plot_df["final_rank_raw"].clip(upper=32)
             plot_df["overflow_clamped"] = np.where(plot_df["is_overflow"], "yes", "no")
             plot_df["final_rank_over32_label"] = np.where(
                 plot_df["is_overflow"],
                 plot_df["final_rank_raw"].astype("Int64").astype(str),
                 "",
             )
+            rank_domain_upper = 33.5
+            rank_tick_values = [1, 4, 8, 16, 32]
+            if show_round_results:
+                rank_vals = pd.to_numeric(plot_df["final_rank_raw"], errors="coerce").dropna()
+                rank_cap = int(np.ceil(rank_vals.max())) if not rank_vals.empty and np.isfinite(rank_vals.max()) else 8
+                rank_cap = max(8, min(32, rank_cap))
+                rank_domain_upper = rank_cap + 0.5
+                rank_tick_values = [x for x in [1, 2, 4, 8, 16, 32] if x <= rank_cap]
             plot_df["event_label"] = (
                 plot_df["event_label_full"].fillna(plot_df["event_short"]).fillna(plot_df["event_id"])
             )
@@ -3357,9 +3402,9 @@ elif ai_active_section == "Results Trend":
             )
             y_axis = alt.Y(
                 "line_rank_plot:Q",
-                title="Final Rank",
-                scale=alt.Scale(domain=[1, 33.5], domainMin=1, domainMax=33.5, reverse=True, nice=False),
-                axis=alt.Axis(values=[1, 4, 8, 16, 32]),
+                title=rank_label,
+                scale=alt.Scale(domain=[1, rank_domain_upper], domainMin=1, domainMax=rank_domain_upper, reverse=True, nice=False),
+                axis=alt.Axis(values=rank_tick_values, format="d"),
             )
             zone_bands = [
                 {"y0": 1, "y1": 3, "zone_color": "#2ca02c"},
@@ -3371,7 +3416,7 @@ elif ai_active_section == "Results Trend":
             for z in zone_bands:
                 zdf = pd.DataFrame([z])
                 zlayer = alt.Chart(zdf).mark_rect(color=z["zone_color"], opacity=0.12).encode(
-                    y=alt.Y("y0:Q", scale=alt.Scale(domain=[1, 33.5], reverse=True, nice=False), title=None),
+                    y=alt.Y("y0:Q", scale=alt.Scale(domain=[1, rank_domain_upper], reverse=True, nice=False), title=None),
                     y2="y1:Q",
                 )
                 zone_layers.append(zlayer)
@@ -3414,7 +3459,7 @@ elif ai_active_section == "Results Trend":
                     alt.Tooltip("location:N", title="Location"),
                     alt.Tooltip("rider_short:N", title="Rider"),
                     alt.Tooltip("reached_phase:N", title="Phase"),
-                    alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
+                    alt.Tooltip("final_rank_raw:Q", title=rank_label),
                     alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
                 ],
             )
@@ -3433,6 +3478,7 @@ elif ai_active_section == "Results Trend":
                         "locations": sel_locations,
                         "rounds": sel_rounds,
                         "show_boxplot": show_boxplot,
+                        "show_round_results": show_round_results,
                     },
                 )
                 results_trend_exclusion_state = sync_exclusion_state(
@@ -3491,7 +3537,8 @@ elif ai_active_section == "Results Trend":
                                 customdata=customdata,
                                 hovertemplate=(
                                     "Rider: %{x}<br>"
-                                    "Final Rank: %{y}<br>"
+                                    f"{rank_label}: "
+                                    "%{y}<br>"
                                     "Event label: %{customdata[0]}<br>"
                                     "Date: %{customdata[1]}<br>"
                                     "Location: %{customdata[2]}<br>"
@@ -3514,7 +3561,13 @@ elif ai_active_section == "Results Trend":
                         paper_bgcolor="white",
                         boxmode="group",
                         xaxis=dict(title="Rider", tickangle=-90, categoryorder="array", categoryarray=rider_order, tickson="boundaries"),
-                        yaxis=dict(title="Final Rank", range=[48, 1], tickmode="array", tickvals=[1, 4, 8, 16, 32, 48], gridcolor="#e5e7eb"),
+                        yaxis=dict(
+                            title=rank_label,
+                            range=([rank_domain_upper, 1] if show_round_results else [48, 1]),
+                            tickmode="array",
+                            tickvals=(rank_tick_values if show_round_results else [1, 4, 8, 16, 32, 48]),
+                            gridcolor="#e5e7eb",
+                        ),
                     )
                     results_trend_event = st.plotly_chart(
                         fig,
@@ -3571,8 +3624,8 @@ elif ai_active_section == "Results Trend":
                     x=x_axis,
                     y=alt.Y(
                         "final_rank_plot:Q",
-                        scale=alt.Scale(domain=[1, 33.5], domainMin=1, domainMax=33.5, reverse=True, nice=False),
-                        title="Final Rank",
+                        scale=alt.Scale(domain=[1, rank_domain_upper], domainMin=1, domainMax=rank_domain_upper, reverse=True, nice=False),
+                        title=rank_label,
                     ),
                     color=alt.Color("rider_short:N", title="Rider"),
                     detail="rider_short:N",
@@ -3582,13 +3635,13 @@ elif ai_active_section == "Results Trend":
                         alt.Tooltip("location:N", title="Location"),
                         alt.Tooltip("rider_short:N", title="Rider"),
                         alt.Tooltip("reached_phase:N", title="Phase"),
-                        alt.Tooltip("final_rank_raw:Q", title="Final Rank"),
+                        alt.Tooltip("final_rank_raw:Q", title=rank_label),
                         alt.Tooltip("overflow_clamped:N", title="Overflow clamped"),
                     ],
                 )
                 overflow_points = overflow_base.mark_point(shape="triangle-up", size=45, opacity=0.95)
                 layers = [*zone_layers, line, points, overflow_points]
-                if show_dnq_labels:
+                if show_dnq_labels and not show_round_results:
                     over32_text = (
                         overflow_base.mark_text(dy=-8, fontSize=10)
                         .encode(text="final_rank_over32_label:N")
@@ -3599,26 +3652,40 @@ elif ai_active_section == "Results Trend":
                 )
                 st.altair_chart(trend_chart, use_container_width=True)
 
-        st.markdown("**Final Rank pro Event (master_results)**")
+        st.markdown(table_title)
         final_rank_tbl = rider_event.copy()
         final_rank_tbl["event_id_dt"] = pd.to_datetime(
             final_rank_tbl["event_id"].astype(str).str[:8], format="%Y%m%d", errors="coerce"
         )
         final_rank_tbl["event_dt_sort"] = pd.to_datetime(final_rank_tbl["event_dt"], errors="coerce")
         final_rank_tbl["event_sort"] = final_rank_tbl["event_dt_sort"].where(final_rank_tbl["event_dt_sort"].notna(), final_rank_tbl["event_id_dt"])
-        final_rank_tbl = final_rank_tbl.sort_values(
-            ["event_sort", "rider_short"],
-            ascending=[True, True],
-            na_position="last",
-        )
+        if show_round_results:
+            final_rank_tbl = final_rank_tbl.sort_values(
+                ["event_sort", "round_sort", "heat_id", "rider_short"],
+                ascending=[True, True, True, True],
+                na_position="last",
+            )
+        else:
+            final_rank_tbl = final_rank_tbl.sort_values(
+                ["event_sort", "rider_short"],
+                ascending=[True, True],
+                na_position="last",
+            )
         final_rank_tbl["Date"] = final_rank_tbl["event_sort"].dt.strftime("%Y-%m-%d")
-        final_rank_tbl["Final Rank"] = pd.to_numeric(final_rank_tbl["final_rank"], errors="coerce")
-        final_rank_tbl["Final Rank"] = np.where(
-            final_rank_tbl["Final Rank"].notna(),
-            final_rank_tbl["Final Rank"].astype("Int64").astype(str),
+        final_rank_tbl[rank_label] = pd.to_numeric(final_rank_tbl["final_rank"], errors="coerce")
+        final_rank_tbl[rank_label] = np.where(
+            final_rank_tbl[rank_label].notna(),
+            final_rank_tbl[rank_label].astype("Int64").astype(str),
             "NA",
         )
-        final_rank_tbl["Event Label"] = final_rank_tbl["event_label_full"].fillna(final_rank_tbl["event_short"]).fillna("Unknown")
+        if show_round_results:
+            final_rank_tbl["Event Label"] = final_rank_tbl["display_name"].fillna(final_rank_tbl["event_id"]).fillna("Unknown")
+            final_rank_tbl["Round"] = final_rank_tbl["round_label"].fillna(final_rank_tbl["round_title"]).fillna("")
+            final_rank_tbl["Heat"] = final_rank_tbl["heat_title"].fillna(final_rank_tbl["heat_id"]).fillna("").astype(str)
+            table_cols = ["Date", "Event Label", "Location", "Rider", "Round", "Heat", rank_label]
+        else:
+            final_rank_tbl["Event Label"] = final_rank_tbl["event_label_full"].fillna(final_rank_tbl["event_short"]).fillna("Unknown")
+            table_cols = ["Date", "Event Label", "Location", "Rider", rank_label]
         final_rank_tbl = final_rank_tbl.rename(
             columns={
                 "location": "Location",
@@ -3626,7 +3693,7 @@ elif ai_active_section == "Results Trend":
             }
         )
         st.dataframe(
-            final_rank_tbl[["Date", "Event Label", "Location", "Rider", "Final Rank"]],
+            final_rank_tbl[table_cols],
             use_container_width=True,
             hide_index=True,
         )
@@ -3647,6 +3714,16 @@ elif ai_active_section == "Results Trend":
             )
             .sort_values("rider_short", ascending=True, na_position="last")
         )
+        if show_round_results:
+            summary = summary.rename(
+                columns={
+                    "avg_final_rank": "avg_run_rank",
+                    "median_final_rank": "median_run_rank",
+                    "best_final_rank": "best_run_rank",
+                    "worst_final_rank": "worst_run_rank",
+                    "variability_final_rank": "variability_run_rank",
+                }
+            )
         st.dataframe(summary.round(3), use_container_width=True, hide_index=True)
 
 st.caption(
